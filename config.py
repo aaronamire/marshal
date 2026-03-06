@@ -38,7 +38,7 @@ TOOL_FAILURE_ESCALATION_THRESHOLD = 3  # same tool+args fail count before livelo
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).parent
 
-AUDIT_DB_PATH = _PROJECT_ROOT / "leaves_audit.db"
+AUDIT_DB_PATH = Path.home() / ".leaves" / "intents.db"
 SCHEMA_PATH = _PROJECT_ROOT / "agents" / "schema" / "goal_spec.json"
 INTENT_PARSER_PROMPT_PATH = _PROJECT_ROOT / "agents" / "prompts" / "intent_parser.txt"
 FILE_AGENT_REGISTRY_PATH = _PROJECT_ROOT / "agents" / "registry" / "file-agent.json"
