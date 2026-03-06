@@ -169,11 +169,29 @@ class IntentParser:
         json_str = text[obj_start:obj_end + 1]
         try:
             return json.loads(json_str)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as first_err:
+            # The model sometimes truncates output mid-JSON.
+            # Try progressively shorter substrings ending at the last valid '}'.
+            raw_chars = list(text[obj_start:])
+            depth = 0
+            last_valid_end = -1
+            for i, ch in enumerate(raw_chars):
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[obj_start:obj_start + i + 1]
+                        try:
+                            result = json.loads(candidate)
+                            return result
+                        except json.JSONDecodeError:
+                            pass
+
             raise LeavesError(
                 LeavesErrorCode.JSON_PARSE_FAILED,
-                detail=f"JSON decode error: {e}. Raw: {json_str[:200]!r}",
-                cause=e,
+                detail=f"JSON decode error: {first_err}. Raw: {json_str[:200]!r}",
+                cause=first_err,
             )
 
     def _inject_os_fields(
@@ -195,21 +213,23 @@ class IntentParser:
         # Always overwrite natural_text with the original user input
         goal_spec["natural_text"] = user_text
 
-        # Inject default authorization when missing.
-        # Derive preview_required and reversible from actions.
-        if "authorization" not in goal_spec:
-            actions = goal_spec.get("actions", [])
-            has_destructive = any(a.get("destructive", False) for a in actions)
-            resources = list({
-                a.get("params", {}).get("path", "~")
-                for a in actions
-                if "path" in a.get("params", {})
-            }) or ["~"]
-            goal_spec["authorization"] = {
-                "resources": resources,
-                "preview_required": has_destructive,
-                "reversible": not has_destructive,
-            }
+        # Ensure authorization block is complete.
+        # The 1B model frequently omits it entirely or provides only partial fields.
+        # We always derive the values from action.destructive — never trust LLM values.
+        actions = goal_spec.get("actions", [])
+        has_destructive = any(a.get("destructive", False) for a in actions)
+        resources = list({
+            a.get("params", {}).get("path", "~")
+            for a in actions
+            if "path" in a.get("params", {})
+        }) or ["~"]
+
+        auth = goal_spec.get("authorization", {})
+        goal_spec["authorization"] = {
+            "resources": auth.get("resources") or resources,
+            "preview_required": auth.get("preview_required", has_destructive),
+            "reversible": auth.get("reversible", not has_destructive),
+        }
 
         # Inject metadata — set defaults for fields the model may omit
         metadata = goal_spec.setdefault("metadata", {})
