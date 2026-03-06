@@ -186,6 +186,8 @@ class IntentParser:
         """
         Replace LLM-supplied placeholders with OS-controlled values.
         The LLM never generates the actual UUID — we always inject it here.
+        Also injects a default authorization block when the model omits it
+        (the 1B model occasionally forgets this required field).
         """
         # Always overwrite intent_id with a real UUID v4
         goal_spec["intent_id"] = str(uuid.uuid4())
@@ -193,10 +195,27 @@ class IntentParser:
         # Always overwrite natural_text with the original user input
         goal_spec["natural_text"] = user_text
 
-        # Inject metadata
+        # Inject default authorization when missing.
+        # Derive preview_required and reversible from actions.
+        if "authorization" not in goal_spec:
+            actions = goal_spec.get("actions", [])
+            has_destructive = any(a.get("destructive", False) for a in actions)
+            resources = list({
+                a.get("params", {}).get("path", "~")
+                for a in actions
+                if "path" in a.get("params", {})
+            }) or ["~"]
+            goal_spec["authorization"] = {
+                "resources": resources,
+                "preview_required": has_destructive,
+                "reversible": not has_destructive,
+            }
+
+        # Inject metadata — set defaults for fields the model may omit
         metadata = goal_spec.setdefault("metadata", {})
         metadata["parse_latency_ms"] = round(parse_latency_ms, 1)
         metadata["model"] = model
+        metadata.setdefault("confidence", 0.80)  # safe default if model omits it
 
         return goal_spec
 
