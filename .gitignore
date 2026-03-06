@@ -1,0 +1,22 @@
+# Models (too large for git)
+*.gguf
+models/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+leaves-env/
+
+# Build artifacts
+*.o
+*.ko
+target/
+build/
+
+# Runtime
+*.db
+*.db-shm
+*.db-wal
+.leaves/

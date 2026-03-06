@@ -1,0 +1,10 @@
+# Core — no torch, no CUDA, no GPU packages
+requests>=2.31.0
+jsonschema>=4.21.0
+pydantic>=2.5.0
+sqlalchemy>=2.0.0
+rich>=13.7.0
+
+# Lightweight JSON validation only
+# sentence-transformers removed — we use llama.cpp for inference
+# torch removed — not needed on CPU-only Intel HD 620
