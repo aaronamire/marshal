@@ -101,6 +101,7 @@ class IntentParser:
             parse_latency_ms=parse_latency_ms,
             model=response.model,
         )
+        self._check_actions_present(goal_spec)
         self._validate_schema(goal_spec)
         self._check_confidence(goal_spec)
 
@@ -238,6 +239,36 @@ class IntentParser:
         metadata.setdefault("confidence", 0.80)  # safe default if model omits it
 
         return goal_spec
+
+    def _check_actions_present(self, goal_spec: dict[str, Any]) -> None:
+        """Raise NOT_IMPLEMENTED for categories with no agent support yet."""
+        IMPLEMENTED_AGENTS = {"file"}
+        actions = goal_spec.get("actions", [])
+        category = goal_spec.get("category", "")
+
+        if not actions:
+            raise LeavesError(
+                LeavesErrorCode.NOT_IMPLEMENTED,
+                detail=(
+                    f"Category '{category}' is not yet implemented in Phase 1. "
+                    f"Only file_task is supported. Email, web, system, and writing "
+                    f"agents are planned for Phase 2+."
+                ),
+            )
+
+        # Warn if all actions use unimplemented agents (will be skipped at execution)
+        unimplemented = [
+            a for a in actions if a.get("agent") not in IMPLEMENTED_AGENTS
+        ]
+        if len(unimplemented) == len(actions):
+            raise LeavesError(
+                LeavesErrorCode.NOT_IMPLEMENTED,
+                detail=(
+                    f"All actions require agent(s) not implemented in Phase 1: "
+                    f"{list({a.get('agent') for a in unimplemented})}. "
+                    f"Only the 'file' agent is available."
+                ),
+            )
 
     def _validate_schema(self, goal_spec: dict[str, Any]) -> None:
         try:

@@ -100,7 +100,11 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
     LeavesErrorCode.DB_ERROR: "A database error occurred. Check logs.",
     LeavesErrorCode.USER_CANCELLED: "Operation cancelled.",
     LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
-    LeavesErrorCode.NOT_IMPLEMENTED: "This feature is not yet implemented.",
+    LeavesErrorCode.NOT_IMPLEMENTED: (
+        "That type of task isn't implemented yet. "
+        "Phase 1 supports file operations only. "
+        "Email, web, system, and writing tasks are coming in Phase 2."
+    ),
 }
 
 # Sanity check at import time — all codes must have user messages
