@@ -44,6 +44,10 @@ class LeavesErrorCode(enum.Enum):
     TOOL_FAILURE_ESCALATED = "TOOL_FAILURE_ESCALATED"
     MAX_RETRIES_EXCEEDED = "MAX_RETRIES_EXCEEDED"
 
+    # Agent availability
+    AGENT_NOT_AVAILABLE = "AGENT_NOT_AVAILABLE"
+    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
+
     # Database
     DB_ERROR = "DB_ERROR"
 
@@ -91,6 +95,8 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
         "The operation has been stopped to prevent a loop."
     ),
     LeavesErrorCode.MAX_RETRIES_EXCEEDED: "Maximum retry attempts exceeded.",
+    LeavesErrorCode.AGENT_NOT_AVAILABLE: "That agent type is not available in this phase.",
+    LeavesErrorCode.DEPENDENCY_FAILED: "A required action dependency failed. Skipping.",
     LeavesErrorCode.DB_ERROR: "A database error occurred. Check logs.",
     LeavesErrorCode.USER_CANCELLED: "Operation cancelled.",
     LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",

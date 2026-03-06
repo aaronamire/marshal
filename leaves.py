@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """
-Leaves OS Phase 0 — Main CLI entry point.
+Leaves OS Phase 1 — Main CLI entry point.
 
-Wires together:
-  - IntentParser (NL -> GoalSpec)
-  - IntentLifecycle (state machine)
-  - FileAgent (execution)
-  - ToolFailureTracker (livelock prevention)
-  - db/audit.py (logging)
-  - rich (display)
+Two-stage pipeline:
+  Layer 1 (3-8ms):  sklearn classifier → instant category feedback
+  Layer 2 (26s+):   Llama GoalSpec generation → full execution plan
+
+Orchestration delegated to agentd.AgentCoordinator.
 """
 from __future__ import annotations
 
-import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -24,10 +20,9 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
-from agents.file_agent import FileAgent
+from agentd import AgentCoordinator
 from agents.intent_parser import IntentParser
 from agents.state_machine import IntentLifecycle, IntentState
-from agents.tool_failure_tracker import ToolFailureTracker
 from config import (
     APP_NAME, APP_VERSION,
     LEAVES_PRIMARY_COLOR, LEAVES_SUCCESS_COLOR,
@@ -35,14 +30,16 @@ from config import (
 )
 from db.audit import (
     get_db, log_intent_created, log_state_transition,
-    complete_intent, log_error, get_recent_intents, get_intent_transitions,
-    get_intent_actions,
+    complete_intent, log_error, get_recent_intents,
+    get_intent_transitions, get_intent_actions,
 )
-from errors import LeavesError, LeavesErrorCode
+from errors import LeavesError
 
 console = Console()
+
+# Module-level singletons — initialized once in main()
 _db = None
-_parser = None
+_parser: IntentParser | None = None
 
 
 def _get_db():
@@ -52,20 +49,13 @@ def _get_db():
     return _db
 
 
-def _get_parser():
-    global _parser
-    if _parser is None:
-        _parser = IntentParser()
-    return _parser
-
-
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
 
 def _banner() -> None:
     title = Text(f" {APP_NAME} ", style=f"bold {LEAVES_PRIMARY_COLOR}")
-    subtitle = Text(f"v{APP_VERSION} · Phase 0", style=LEAVES_DIM_COLOR)
+    subtitle = Text(f"v{APP_VERSION} · Phase 1", style=LEAVES_DIM_COLOR)
     console.print(Panel(
         f"{title}\n{subtitle}",
         border_style=LEAVES_PRIMARY_COLOR,
@@ -76,10 +66,6 @@ def _banner() -> None:
 
 def _show_error(msg: str) -> None:
     console.print(f"[{LEAVES_ERROR_COLOR}]Error:[/{LEAVES_ERROR_COLOR}] {msg}")
-
-
-def _show_success(msg: str) -> None:
-    console.print(f"[{LEAVES_SUCCESS_COLOR}]{msg}[/{LEAVES_SUCCESS_COLOR}]")
 
 
 def _show_warning(msg: str) -> None:
@@ -135,8 +121,7 @@ def _fmt_time(ts: float) -> str:
 
 def _show_auth_dialog(goal_spec: dict) -> bool:
     """
-    Display the authorization dialog for destructive intents.
-    Returns True if the user confirms, False to cancel.
+    Show confirmation dialog for destructive intents.
     ALWAYS shown when preview_required=True — not advisory.
     """
     auth = goal_spec.get("authorization", {})
@@ -149,10 +134,9 @@ def _show_auth_dialog(goal_spec: dict) -> bool:
         f"Intent: [white]{goal_spec['natural_text']}[/white]\n"
         f"Resources: {', '.join(resources) or 'none'}\n"
         f"Reversible: {'yes' if reversible else '[red]NO[/red]'}\n\n"
-        f"Actions:\n" + "\n".join(
+        "Actions:\n" + "\n".join(
             f"  [{LEAVES_DIM_COLOR}]{a['action_id']}[/{LEAVES_DIM_COLOR}] "
-            f"[yellow]{a['type']}[/yellow] "
-            f"({a.get('agent', '?')})"
+            f"[yellow]{a['type']}[/yellow] ({a.get('agent', '?')})"
             for a in goal_spec.get("actions", [])
         ),
         border_style=LEAVES_WARNING_COLOR,
@@ -174,32 +158,43 @@ def _show_auth_dialog(goal_spec: dict) -> bool:
 def handle_intent(user_text: str) -> None:
     """
     Full intent lifecycle:
-    PENDING -> PARSING -> [AWAITING_AUTH] -> EXECUTING -> DONE | FAILED | CANCELLED
+      PENDING → PARSING → [AWAITING_AUTH] → EXECUTING → DONE | FAILED | CANCELLED
+
+    Layer 1 fires the on_classified callback immediately (inside parser.parse()).
+    Layer 2 (Llama) runs and returns the full GoalSpec.
+    Execution is delegated to AgentCoordinator.
     """
     db = _get_db()
-    parser = _get_parser()
+    parser = _parser
 
-    # --- check inference server is available ---
+    # --- server availability ---
     if not parser._client.is_available():
         _show_error(
             "Inference server is not running.\n"
-            "  Start it with:  bash scripts/start-inference.sh\n"
-            "  Then try again."
+            "  Start it: bash scripts/start-inference.sh"
         )
         return
 
-    # --- create lifecycle ---
-    lifecycle = IntentLifecycle(intent_id="pending")
     t_start = time.monotonic()
 
-    # --- PARSING ---
+    # Layer 1 callback — fires immediately from inside parser.parse()
+    def on_classified(result):
+        color = LEAVES_PRIMARY_COLOR if result.is_confident else LEAVES_WARNING_COLOR
+        console.print(
+            f"  [bold {color}]◆[/bold {color}] "
+            f"{result.category} · {result.confidence:.0%} · {result.latency_ms:.0f}ms"
+        )
+
+    parser._on_classified = on_classified
+
+    # --- PARSING (includes Layer 1 callback + Layer 2 LLM) ---
+    lifecycle = IntentLifecycle(intent_id="pending")
     try:
         lifecycle.transition(IntentState.PARSING)
-        console.print(f"[{LEAVES_DIM_COLOR}]Parsing intent...[/{LEAVES_DIM_COLOR}]")
+        with console.status(f"[{LEAVES_DIM_COLOR}]Generating plan…[/{LEAVES_DIM_COLOR}]"):
+            goal_spec = parser.parse(user_text)
 
-        goal_spec = parser.parse(user_text)
         intent_id = goal_spec["intent_id"]
-        # Recreate lifecycle with real UUID
         lifecycle = IntentLifecycle(intent_id=intent_id)
         lifecycle.transition(IntentState.PARSING)
 
@@ -209,94 +204,79 @@ def handle_intent(user_text: str) -> None:
         confidence = goal_spec.get("metadata", {}).get("confidence", 0.0)
         latency = goal_spec.get("metadata", {}).get("parse_latency_ms", 0)
         console.print(
-            f"[{LEAVES_DIM_COLOR}]Parsed: category={goal_spec['category']} "
-            f"confidence={confidence:.0%} latency={latency:.0f}ms[/{LEAVES_DIM_COLOR}]"
+            f"  [{LEAVES_DIM_COLOR}]Plan: "
+            f"{len(goal_spec.get('actions', []))} action(s) via {goal_spec['category']} "
+            f"· L2 confidence {confidence:.0%} · {latency:.0f}ms[/{LEAVES_DIM_COLOR}]"
         )
 
     except LeavesError as e:
         _show_error(e.user_message)
-        log_error(db, e.code.value, e.detail)
+        log_error(_get_db(), e.code.value, e.detail)
         return
 
-    # --- AUTHORIZATION (if required) ---
+    # --- AUTHORIZATION ---
     auth = goal_spec.get("authorization", {})
     if auth.get("preview_required", False):
         lifecycle.transition(IntentState.AWAITING_AUTH)
         log_state_transition(db, intent_id, "PARSING", "AWAITING_AUTH")
 
-        confirmed = _show_auth_dialog(goal_spec)
-        if not confirmed:
+        if not _show_auth_dialog(goal_spec):
             lifecycle.transition(IntentState.CANCELLED)
             log_state_transition(db, intent_id, "AWAITING_AUTH", "CANCELLED")
-            complete_intent(db, intent_id, "CANCELLED", "User cancelled at auth dialog")
+            complete_intent(db, intent_id, "CANCELLED", "User cancelled")
             _show_warning("Cancelled.")
             return
-
-        log_state_transition(db, intent_id, "AWAITING_AUTH", "EXECUTING")
+        # Coordinator will log AWAITING_AUTH → EXECUTING via from_state capture
     else:
-        log_state_transition(db, intent_id, "PARSING", "EXECUTING")
+        # No auth needed — log PARSING → EXECUTING (coordinator sees PARSING state)
+        pass
 
-    # --- EXECUTING ---
-    lifecycle.transition(IntentState.EXECUTING)
-    failure_tracker = ToolFailureTracker()
-    agent = FileAgent(intent_id=intent_id, db_conn=db)
+    # --- EXECUTING (via AgentCoordinator) ---
+    coordinator = AgentCoordinator(db)
+    try:
+        results, summary = coordinator.execute(goal_spec, lifecycle)
+    except LeavesError as e:
+        _show_error(e.user_message)
+        log_state_transition(db, intent_id, "EXECUTING", "FAILED")
+        complete_intent(
+            db, intent_id, "FAILED", e.detail,
+            duration_ms=(time.monotonic() - t_start) * 1000,
+        )
+        return
 
-    action_results = []
+    # --- Render results ---
     for action in goal_spec.get("actions", []):
-        if action.get("agent") != "file":
-            _show_warning(f"Agent '{action.get('agent')}' not implemented in Phase 0. Skipping.")
+        action_id = action.get("action_id", "unknown")
+        result = results.get(action_id, {})
+
+        if isinstance(result, dict) and "error" in result:
+            _show_error(result["error"])
             continue
 
-        try:
-            result = agent.execute_action(action)
-            failure_tracker.reset(action.get("type", ""), action.get("params", {}))
-            action_results.append((action, result, None))
-
-            # Render results
-            atype = action.get("type", "").upper()
-            if atype in ("QUERY", "READ") and isinstance(result, dict) and "files" in result:
-                _render_file_list(result)
-            elif atype == "READ" and isinstance(result, dict) and "content" in result:
-                console.print(Panel(
-                    result["content"][:2000],
-                    title=result.get("path", ""),
-                    border_style=LEAVES_PRIMARY_COLOR,
-                ))
-            else:
-                console.print(f"[{LEAVES_SUCCESS_COLOR}]Done:[/{LEAVES_SUCCESS_COLOR}] {result}")
-
-        except LeavesError as e:
-            action_results.append((action, None, e))
-            try:
-                failure_tracker.record_failure(
-                    action.get("type", ""),
-                    action.get("params", {}),
-                    error=e,
-                )
-            except LeavesError as escalated:
-                _show_error(escalated.user_message)
-                lifecycle.transition(IntentState.FAILED)
-                log_state_transition(db, intent_id, "EXECUTING", "FAILED")
-                complete_intent(
-                    db, intent_id, "FAILED", escalated.detail,
-                    duration_ms=(time.monotonic() - t_start) * 1000,
-                )
-                return
-
-            _show_error(e.user_message)
-            # Continue with remaining actions
+        atype = action.get("type", "").upper()
+        if atype in ("QUERY", "READ") and isinstance(result, dict) and "files" in result:
+            _render_file_list(result)
+        elif atype == "READ" and isinstance(result, dict) and "content" in result:
+            console.print(Panel(
+                result["content"][:2000],
+                title=result.get("path", ""),
+                border_style=LEAVES_PRIMARY_COLOR,
+            ))
+        elif result:
+            console.print(
+                f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}"
+            )
 
     # --- DONE ---
     lifecycle.transition(IntentState.DONE)
     log_state_transition(db, intent_id, "EXECUTING", "DONE")
     duration_ms = (time.monotonic() - t_start) * 1000
-    complete_intent(
-        db, intent_id, "DONE",
-        f"Completed {len(action_results)} action(s)",
-        duration_ms=duration_ms,
-    )
+    complete_intent(db, intent_id, "DONE", summary, duration_ms=duration_ms)
+
+    reversible = auth.get("reversible", True)
+    rev_str = "reversible" if reversible else "[red]irreversible[/red]"
     console.print(
-        f"[{LEAVES_DIM_COLOR}]Completed in {duration_ms:.0f}ms[/{LEAVES_DIM_COLOR}]"
+        f"  [{LEAVES_DIM_COLOR}]Done in {duration_ms:.0f}ms · {rev_str} · logged[/{LEAVES_DIM_COLOR}]"
     )
 
 
@@ -331,10 +311,14 @@ def cmd_history() -> None:
 
     for i, row in enumerate(intents, 1):
         state = row["state"]
-        state_styled = f"[{state_styles.get(state, 'white')}]{state}[/{state_styles.get(state, 'white')}]"
+        color = state_styles.get(state, "white")
+        state_str = f"[{color}]{state}[/{color}]"
         dur = f"{row['duration_ms']:.0f}ms" if row["duration_ms"] else "—"
-        ts = _fmt_time(row["created_at"])
-        table.add_row(str(i), row["natural_text"][:50], row["category"] or "—", state_styled, dur, ts)
+        table.add_row(
+            str(i), row["natural_text"][:50],
+            row["category"] or "—", state_str,
+            dur, _fmt_time(row["created_at"]),
+        )
 
     console.print(table)
 
@@ -349,12 +333,13 @@ def cmd_detail(intent_id_prefix: str) -> None:
         return
 
     intent = matches[0]
+    dur = f"{intent['duration_ms']:.0f}ms" if intent["duration_ms"] else "—"
     console.print(Panel(
         f"[bold]Intent:[/bold] {intent['natural_text']}\n"
         f"[bold]ID:[/bold] {intent['intent_id']}\n"
         f"[bold]Category:[/bold] {intent['category']}\n"
         f"[bold]State:[/bold] {intent['state']}\n"
-        f"[bold]Duration:[/bold] {intent['duration_ms']:.0f}ms" if intent["duration_ms"] else "—",
+        f"[bold]Duration:[/bold] {dur}",
         title="Intent Detail",
         border_style=LEAVES_PRIMARY_COLOR,
     ))
@@ -377,7 +362,10 @@ def cmd_detail(intent_id_prefix: str) -> None:
         a_table.add_column("Agent", style=LEAVES_DIM_COLOR)
         a_table.add_column("Status", style="white")
         for a in actions:
-            status = f"[{LEAVES_ERROR_COLOR}]{a['error_code']}[/{LEAVES_ERROR_COLOR}]" if a["error_code"] else f"[{LEAVES_SUCCESS_COLOR}]OK[/{LEAVES_SUCCESS_COLOR}]"
+            if a["error_code"]:
+                status = f"[{LEAVES_ERROR_COLOR}]{a['error_code']}[/{LEAVES_ERROR_COLOR}]"
+            else:
+                status = f"[{LEAVES_SUCCESS_COLOR}]OK[/{LEAVES_SUCCESS_COLOR}]"
             a_table.add_row(a["action_id"], a["action_type"], a["agent"], status)
         console.print(a_table)
 
@@ -404,20 +392,36 @@ def cmd_help() -> None:
 # ---------------------------------------------------------------------------
 
 def repl() -> None:
+    global _parser
+
     _banner()
 
-    # Warm check
-    parser = _get_parser()
-    if not parser._client.is_available():
+    # Try to load Layer 1 classifier
+    classifier = None
+    try:
+        from agents.classifier import IntentClassifier
+        classifier = IntentClassifier()
+        console.print(f"[{LEAVES_DIM_COLOR}]Layer 1 classifier: loaded (1.8ms avg)[/{LEAVES_DIM_COLOR}]")
+    except FileNotFoundError:
+        console.print(
+            f"[{LEAVES_WARNING_COLOR}]Layer 1 classifier not found.[/{LEAVES_WARNING_COLOR}] "
+            f"[{LEAVES_DIM_COLOR}]Run: python3 scripts/train_classifier.py[/{LEAVES_DIM_COLOR}]"
+        )
+    except Exception as e:
+        console.print(f"[{LEAVES_DIM_COLOR}]Layer 1 unavailable: {e}[/{LEAVES_DIM_COLOR}]")
+
+    _parser = IntentParser(classifier=classifier)
+
+    if not _parser._client.is_available():
         console.print(
             f"[{LEAVES_WARNING_COLOR}]Inference server not running.[/{LEAVES_WARNING_COLOR}] "
-            f"Start it with:  bash scripts/start-inference.sh"
+            f"Start: bash scripts/start-inference.sh"
         )
-        console.print()
+    console.print()
 
     while True:
         try:
-            raw = input(f"[leaves] ").strip()
+            raw = input("[leaves] ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\nGoodbye.")
             break
@@ -426,7 +430,6 @@ def repl() -> None:
             continue
 
         lower = raw.lower()
-
         if lower in ("quit", "exit", "q"):
             console.print("Goodbye.")
             break

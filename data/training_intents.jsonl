@@ -1,0 +1,221 @@
+{"text": "find all PDFs in my Downloads folder", "label": "file_task"}
+{"text": "show me all Python files in my home directory", "label": "file_task"}
+{"text": "list files I modified today", "label": "file_task"}
+{"text": "find images larger than 5MB", "label": "file_task"}
+{"text": "show me all files modified in the last week", "label": "file_task"}
+{"text": "find all text files in Documents", "label": "file_task"}
+{"text": "list all zip files anywhere in my home", "label": "file_task"}
+{"text": "show me my largest files", "label": "file_task"}
+{"text": "find all markdown files", "label": "file_task"}
+{"text": "list files that start with report", "label": "file_task"}
+{"text": "find all mp3 and mp4 files", "label": "file_task"}
+{"text": "show me files modified before 2023", "label": "file_task"}
+{"text": "find all log files in my home directory", "label": "file_task"}
+{"text": "list all files in my Desktop folder", "label": "file_task"}
+{"text": "find Excel spreadsheets modified this year", "label": "file_task"}
+{"text": "find files named exactly budget.xlsx", "label": "file_task"}
+{"text": "list all hidden files in my home directory", "label": "file_task"}
+{"text": "find files between 1MB and 10MB", "label": "file_task"}
+{"text": "show me folders in my Documents directory", "label": "file_task"}
+{"text": "find my tax stuff", "label": "file_task"}
+{"text": "where are my photos", "label": "file_task"}
+{"text": "show me stuff I downloaded recently", "label": "file_task"}
+{"text": "find files I created this month", "label": "file_task"}
+{"text": "list all CSV files", "label": "file_task"}
+{"text": "find duplicate file names", "label": "file_task"}
+{"text": "show me recently modified documents", "label": "file_task"}
+{"text": "find all files with no extension", "label": "file_task"}
+{"text": "list files in my projects folder", "label": "file_task"}
+{"text": "find all backup files", "label": "file_task"}
+{"text": "show me the newest files in Downloads", "label": "file_task"}
+{"text": "move all PDFs from Desktop to Documents", "label": "file_task"}
+{"text": "copy my photos to the backup folder", "label": "file_task"}
+{"text": "rename all files in Downloads to lowercase", "label": "file_task"}
+{"text": "move old files to archive folder", "label": "file_task"}
+{"text": "organize my Downloads by file type", "label": "file_task"}
+{"text": "copy the project files to backup", "label": "file_task"}
+{"text": "move all logs older than a month to archive", "label": "file_task"}
+{"text": "rename budget2023 to budget2024", "label": "file_task"}
+{"text": "move my tax documents to the taxes folder", "label": "file_task"}
+{"text": "copy important files to external drive", "label": "file_task"}
+{"text": "delete all .tmp files in home", "label": "file_task"}
+{"text": "remove all duplicate photos", "label": "file_task"}
+{"text": "clean up old log files from last year", "label": "file_task"}
+{"text": "delete empty folders in Downloads", "label": "file_task"}
+{"text": "remove all .pyc cache files", "label": "file_task"}
+{"text": "show me the contents of my README file", "label": "file_task"}
+{"text": "open and display my notes.txt", "label": "file_task"}
+{"text": "read the config file in my project", "label": "file_task"}
+{"text": "show me what is in that text file", "label": "file_task"}
+{"text": "display the log file from yesterday", "label": "file_task"}
+{"text": "I need to find all my invoices", "label": "file_task"}
+{"text": "where did I put that PDF", "label": "file_task"}
+{"text": "help me organize my downloads", "label": "file_task"}
+{"text": "show me what is in my documents folder", "label": "file_task"}
+{"text": "I want to see all my photos", "label": "file_task"}
+{"text": "clean up my desktop files", "label": "file_task"}
+{"text": "find everything from last year", "label": "file_task"}
+{"text": "what files did I work on today", "label": "file_task"}
+{"text": "I am looking for a spreadsheet", "label": "file_task"}
+{"text": "where are my project files", "label": "file_task"}
+{"text": "find the file I was working on yesterday", "label": "file_task"}
+{"text": "list all scripts in my home directory", "label": "file_task"}
+{"text": "show me files ending in .conf", "label": "file_task"}
+{"text": "find all files newer than last week", "label": "file_task"}
+{"text": "what is in my downloads", "label": "file_task"}
+{"text": "show me all word documents", "label": "file_task"}
+{"text": "find any file named todo", "label": "file_task"}
+{"text": "list all directories in my home folder", "label": "file_task"}
+{"text": "find all files I created this year", "label": "file_task"}
+{"text": "show me the biggest files I have", "label": "file_task"}
+{"text": "find old videos in my home directory", "label": "file_task"}
+{"text": "list all JSON files in the project", "label": "file_task"}
+{"text": "show me all config files", "label": "file_task"}
+{"text": "find all test files in the codebase", "label": "file_task"}
+{"text": "where did I save that document", "label": "file_task"}
+{"text": "show me all files from last month", "label": "file_task"}
+{"text": "find emails from last week", "label": "email_task"}
+{"text": "show me unread emails", "label": "email_task"}
+{"text": "search my inbox for invoices", "label": "email_task"}
+{"text": "find emails from john@example.com", "label": "email_task"}
+{"text": "show me emails with attachments", "label": "email_task"}
+{"text": "find emails about the project meeting", "label": "email_task"}
+{"text": "list emails I sent yesterday", "label": "email_task"}
+{"text": "find all emails from my boss", "label": "email_task"}
+{"text": "show me emails older than 30 days", "label": "email_task"}
+{"text": "search for emails mentioning budget", "label": "email_task"}
+{"text": "find emails with PDF attachments", "label": "email_task"}
+{"text": "show me starred emails", "label": "email_task"}
+{"text": "find the email thread about the contract", "label": "email_task"}
+{"text": "list all emails from newsletters", "label": "email_task"}
+{"text": "find emails I need to reply to", "label": "email_task"}
+{"text": "show me emails from last month", "label": "email_task"}
+{"text": "find emails mentioning deadline", "label": "email_task"}
+{"text": "search for emails about the conference", "label": "email_task"}
+{"text": "list emails with large attachments", "label": "email_task"}
+{"text": "find emails I flagged as important", "label": "email_task"}
+{"text": "show me all sent emails this week", "label": "email_task"}
+{"text": "find the email with the flight confirmation", "label": "email_task"}
+{"text": "search inbox for receipts", "label": "email_task"}
+{"text": "find emails from the team", "label": "email_task"}
+{"text": "show me emails about the proposal", "label": "email_task"}
+{"text": "compose an email to my manager", "label": "email_task"}
+{"text": "write an email thanking the client", "label": "email_task"}
+{"text": "draft a reply to the job offer", "label": "email_task"}
+{"text": "send a follow-up email to sales team", "label": "email_task"}
+{"text": "write a professional email declining the meeting", "label": "email_task"}
+{"text": "search the web for Python tutorials", "label": "web_task"}
+{"text": "look up the weather in Tokyo", "label": "web_task"}
+{"text": "find information about machine learning", "label": "web_task"}
+{"text": "search for best restaurants near me", "label": "web_task"}
+{"text": "look up how to install Arch Linux", "label": "web_task"}
+{"text": "find the latest news about AI", "label": "web_task"}
+{"text": "search for Python documentation", "label": "web_task"}
+{"text": "look up the price of a MacBook", "label": "web_task"}
+{"text": "find tutorials on Rust programming", "label": "web_task"}
+{"text": "search for open source projects", "label": "web_task"}
+{"text": "look up the current Bitcoin price", "label": "web_task"}
+{"text": "find reviews for the new iPhone", "label": "web_task"}
+{"text": "search for recipes with chicken", "label": "web_task"}
+{"text": "look up how to fix this error", "label": "web_task"}
+{"text": "find the documentation for React", "label": "web_task"}
+{"text": "search for jobs as a software engineer", "label": "web_task"}
+{"text": "look up the population of Kazakhstan", "label": "web_task"}
+{"text": "find articles about climate change", "label": "web_task"}
+{"text": "search for the best VPN services", "label": "web_task"}
+{"text": "look up flight prices to London", "label": "web_task"}
+{"text": "find a YouTube video about Linux", "label": "web_task"}
+{"text": "search for apartments in Almaty", "label": "web_task"}
+{"text": "look up the meaning of this word", "label": "web_task"}
+{"text": "find the API documentation", "label": "web_task"}
+{"text": "search for open source alternatives to Photoshop", "label": "web_task"}
+{"text": "browse to the GitHub page", "label": "web_task"}
+{"text": "fetch the contents of that URL", "label": "web_task"}
+{"text": "look up the exchange rate", "label": "web_task"}
+{"text": "find the Wikipedia article about this", "label": "web_task"}
+{"text": "search online for this topic", "label": "web_task"}
+{"text": "go to that website", "label": "web_task"}
+{"text": "open the browser and find this", "label": "web_task"}
+{"text": "check the news online", "label": "web_task"}
+{"text": "google how to do this", "label": "web_task"}
+{"text": "look this up on the internet", "label": "web_task"}
+{"text": "find an online tutorial", "label": "web_task"}
+{"text": "check what the internet says about this", "label": "web_task"}
+{"text": "search for that on the web", "label": "web_task"}
+{"text": "visit the official website", "label": "web_task"}
+{"text": "look up the online manual", "label": "web_task"}
+{"text": "find it online", "label": "web_task"}
+{"text": "check online if this is available", "label": "web_task"}
+{"text": "what does Google say about this", "label": "web_task"}
+{"text": "find a Stack Overflow answer", "label": "web_task"}
+{"text": "look for this on Reddit", "label": "web_task"}
+{"text": "show me system information", "label": "system_task"}
+{"text": "check my CPU usage", "label": "system_task"}
+{"text": "show me how much RAM I am using", "label": "system_task"}
+{"text": "list all running processes", "label": "system_task"}
+{"text": "check disk space", "label": "system_task"}
+{"text": "show network connections", "label": "system_task"}
+{"text": "what processes are using the most memory", "label": "system_task"}
+{"text": "check my battery status", "label": "system_task"}
+{"text": "show me system logs", "label": "system_task"}
+{"text": "list all installed packages", "label": "system_task"}
+{"text": "check if a port is open", "label": "system_task"}
+{"text": "show me the current date and time", "label": "system_task"}
+{"text": "what is my IP address", "label": "system_task"}
+{"text": "list all background services", "label": "system_task"}
+{"text": "check if a service is running", "label": "system_task"}
+{"text": "show me environment variables", "label": "system_task"}
+{"text": "what user am I logged in as", "label": "system_task"}
+{"text": "check kernel version", "label": "system_task"}
+{"text": "list all mounted drives", "label": "system_task"}
+{"text": "show me the process tree", "label": "system_task"}
+{"text": "how long has the system been running", "label": "system_task"}
+{"text": "check CPU temperature", "label": "system_task"}
+{"text": "show active network interfaces", "label": "system_task"}
+{"text": "list all open files", "label": "system_task"}
+{"text": "check system performance", "label": "system_task"}
+{"text": "kill the process using port 8080", "label": "system_task"}
+{"text": "restart the nginx service", "label": "system_task"}
+{"text": "show me memory usage over time", "label": "system_task"}
+{"text": "list all cron jobs", "label": "system_task"}
+{"text": "what version of Python is installed", "label": "system_task"}
+{"text": "write a summary of my project", "label": "writing_task"}
+{"text": "draft an email to my team", "label": "writing_task"}
+{"text": "create a README for this project", "label": "writing_task"}
+{"text": "write a cover letter", "label": "writing_task"}
+{"text": "summarize this document", "label": "writing_task"}
+{"text": "translate this text to Spanish", "label": "writing_task"}
+{"text": "write a meeting agenda", "label": "writing_task"}
+{"text": "create a todo list", "label": "writing_task"}
+{"text": "draft a report on this topic", "label": "writing_task"}
+{"text": "write a short bio", "label": "writing_task"}
+{"text": "create documentation for this code", "label": "writing_task"}
+{"text": "write a blog post about AI", "label": "writing_task"}
+{"text": "draft a proposal for the client", "label": "writing_task"}
+{"text": "summarize the key points", "label": "writing_task"}
+{"text": "write a thank you email", "label": "writing_task"}
+{"text": "create a project plan", "label": "writing_task"}
+{"text": "draft a job description", "label": "writing_task"}
+{"text": "write release notes", "label": "writing_task"}
+{"text": "create a FAQ document", "label": "writing_task"}
+{"text": "summarize this article", "label": "writing_task"}
+{"text": "write a LinkedIn post", "label": "writing_task"}
+{"text": "draft a response to this message", "label": "writing_task"}
+{"text": "create a presentation outline", "label": "writing_task"}
+{"text": "write a technical specification", "label": "writing_task"}
+{"text": "draft a contract clause", "label": "writing_task"}
+{"text": "proofread this paragraph", "label": "writing_task"}
+{"text": "rewrite this sentence more formally", "label": "writing_task"}
+{"text": "generate ideas for the presentation", "label": "writing_task"}
+{"text": "write a commit message for these changes", "label": "writing_task"}
+{"text": "create a changelog entry", "label": "writing_task"}
+{"text": "help me write this document", "label": "writing_task"}
+{"text": "compose a formal letter", "label": "writing_task"}
+{"text": "draft a press release", "label": "writing_task"}
+{"text": "write a product description", "label": "writing_task"}
+{"text": "create an executive summary", "label": "writing_task"}
+{"text": "write a weekly status update", "label": "writing_task"}
+{"text": "draft an announcement for the team", "label": "writing_task"}
+{"text": "write a review of this code", "label": "writing_task"}
+{"text": "compose a resignation letter", "label": "writing_task"}
+{"text": "create a meeting summary from these notes", "label": "writing_task"}

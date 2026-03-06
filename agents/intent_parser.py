@@ -11,7 +11,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 import jsonschema
 
@@ -32,20 +32,28 @@ class IntentParser:
     """
     Converts raw natural language text into a validated GoalSpec dict.
 
-    Pipeline:
-      1. Validate input length / emptiness
-      2. Build Llama-3 chat prompt with user input inside <USER_INTENT> tags
-      3. Call inference backend
-      4. Extract JSON from response (handle code fences, leading text)
-      5. Inject OS-controlled fields (intent_id UUID, latency)
-      6. Validate against goal_spec.json schema
-      7. Check confidence threshold
+    Two-stage pipeline:
+      Layer 1 (3-8ms):  Optional sklearn classifier — fires on_classified callback
+                        immediately so the UI can show instant feedback.
+      Layer 2 (26s+):   Llama inference — generates the full GoalSpec.
+
+    Layer 1 failure never blocks Layer 2.
+
+    Security: user input is NEVER interpolated into the instruction section of
+    the prompt. It is placed inside <USER_INTENT> tags (structural injection defense).
     """
 
-    def __init__(self, client: InferenceClient | None = None):
+    def __init__(
+        self,
+        client: Optional[InferenceClient] = None,
+        classifier=None,  # Optional[IntentClassifier]
+        on_classified: Optional[Callable] = None,
+    ):
         self._client = client or InferenceClient()
         self._schema = json.loads(SCHEMA_PATH.read_text())
         self._system_prompt = INTENT_PARSER_PROMPT_PATH.read_text()
+        self._classifier = classifier
+        self._on_classified = on_classified  # called immediately after Layer 1
 
     # ------------------------------------------------------------------
     # Public API
@@ -58,6 +66,21 @@ class IntentParser:
         """
         self._validate_input(user_text)
 
+        # --- Layer 1: instant classification (3-8ms) ---
+        # Fires the callback so UI can update before Layer 2 runs.
+        # Any failure is silently swallowed — never blocks Layer 2.
+        if self._classifier is not None:
+            try:
+                l1 = self._classifier.classify(user_text)
+                if self._on_classified is not None:
+                    try:
+                        self._on_classified(l1)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # --- Layer 2: full GoalSpec via Llama inference ---
         prompt = self._build_prompt(user_text)
         request = InferenceRequest(
             prompt=prompt,

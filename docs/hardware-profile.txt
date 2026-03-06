@@ -41,3 +41,24 @@ Layer 1 strategy: MUST use fine-tuned MiniLM for Phase 1
   - No GPU offloading possible (Intel HD 620, no Metal/CUDA/ROCm support).
   - Disk I/O is not the bottleneck — model fits in RAM (770MB << 7.6GB).
   - Memory bandwidth on DDR4 dual-channel is the primary constraint.
+
+# Phase 1 — Layer 1 Classifier (sklearn TF-IDF + LogisticRegression)
+# Generated: 2026-03-07
+
+Model: models/layer1_pipeline.joblib (83.4 KB)
+Training: 221 examples, 5 categories, 5-fold CV
+CV accuracy: 91.4% ± 4.9%
+
+Inference latency over 100 calls (10 distinct intents × 10):
+  Mean:   1.60ms
+  Median: 1.31ms
+  P95:    4.51ms
+  Max:    4.73ms
+
+Verdict: Layer 1 (sklearn) is the correct Phase 1 choice.
+  - 1.6ms mean vs 27,500ms for Llama = 17,000x speedup for classification.
+  - No torch, no CUDA, no GPU deps. 83KB model. <5ms P95.
+  - Actual MiniLM (sentence-transformers) was NOT used — torch would have
+    caused disk quota failure (2GB+ download for NVIDIA libraries on an
+    Intel-GPU machine). sklearn is strictly better for this hardware.
+  - Phase 2 note: keep sklearn as Layer 1. MiniLM is unnecessary.

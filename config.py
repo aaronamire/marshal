@@ -12,9 +12,11 @@ INFERENCE_SERVER_PORT = 8080
 INFERENCE_SERVER_URL = f"http://{INFERENCE_SERVER_HOST}:{INFERENCE_SERVER_PORT}"
 
 # Timeouts (seconds)
+# Note: i5-7200U generates ~1.2 tok/s. A 512-token GoalSpec takes ~430s worst case.
+# Set read timeout generous enough for the full GoalSpec on this hardware.
 TIMEOUT_CONNECT_SECONDS = 5
-TIMEOUT_READ_SECONDS = 60
-TIMEOUT_HARD_SECONDS = 120
+TIMEOUT_READ_SECONDS = 300   # 5 minutes — covers 512 tokens at 1.2 tok/s
+TIMEOUT_HARD_SECONDS = 360
 
 # Generation parameters
 INFERENCE_TEMPERATURE = 0.1
@@ -42,6 +44,7 @@ AUDIT_DB_PATH = Path.home() / ".leaves" / "intents.db"
 SCHEMA_PATH = _PROJECT_ROOT / "agents" / "schema" / "goal_spec.json"
 INTENT_PARSER_PROMPT_PATH = _PROJECT_ROOT / "agents" / "prompts" / "intent_parser.txt"
 FILE_AGENT_REGISTRY_PATH = _PROJECT_ROOT / "agents" / "registry" / "file-agent.json"
+CLASSIFIER_PIPELINE_PATH = _PROJECT_ROOT / "models" / "layer1_pipeline.joblib"
 
 # ---------------------------------------------------------------------------
 # UI / display
@@ -53,7 +56,7 @@ LEAVES_WARNING_COLOR = "#FFDC00"
 LEAVES_DIM_COLOR = "#AAAAAA"
 
 APP_NAME = "Leaves OS"
-APP_VERSION = "0.1.0-phase0"
+APP_VERSION = "0.2.0-phase1"
 
 # ---------------------------------------------------------------------------
 # Authorized path roots (relative to home — expanded at runtime)
