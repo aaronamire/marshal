@@ -1,0 +1,76 @@
+{
+  "agent_id": "dev.leaves.file-agent",
+  "version": "0.1.0",
+  "display_name": "File Agent",
+  "description": "Handles file system queries, reads, writes, moves, copies, and deletes within the authorized path roots.",
+  "handles_categories": ["file_task"],
+  "handles_action_types": ["QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY"],
+  "tools": [
+    {
+      "name": "fs_list",
+      "description": "List files matching a glob pattern in a directory.",
+      "params": {
+        "path": {"type": "string", "description": "Directory path (~ expanded)"},
+        "pattern": {"type": "string", "description": "Glob pattern, e.g. *.pdf"},
+        "recursive": {"type": "boolean", "description": "Search recursively", "default": false}
+      },
+      "destructive": false
+    },
+    {
+      "name": "fs_read_meta",
+      "description": "Read metadata (size, mtime, permissions) for a file or directory.",
+      "params": {
+        "path": {"type": "string", "description": "Path to inspect"}
+      },
+      "destructive": false
+    },
+    {
+      "name": "fs_read_text",
+      "description": "Read text content of a file (up to MAX_READ_BYTES).",
+      "params": {
+        "path": {"type": "string", "description": "Path to read"},
+        "max_bytes": {"type": "integer", "description": "Max bytes to read", "default": 65536}
+      },
+      "destructive": false
+    },
+    {
+      "name": "fs_write",
+      "description": "Write content to a file (creates or overwrites).",
+      "params": {
+        "path": {"type": "string", "description": "Destination path"},
+        "content": {"type": "string", "description": "Text content to write"},
+        "overwrite": {"type": "boolean", "description": "Allow overwrite if exists", "default": false}
+      },
+      "destructive": true
+    },
+    {
+      "name": "fs_delete",
+      "description": "Delete a file (NOT a directory).",
+      "params": {
+        "path": {"type": "string", "description": "Path to delete"}
+      },
+      "destructive": true
+    },
+    {
+      "name": "fs_move",
+      "description": "Move or rename a file.",
+      "params": {
+        "src": {"type": "string", "description": "Source path"},
+        "dst": {"type": "string", "description": "Destination path"}
+      },
+      "destructive": true
+    },
+    {
+      "name": "fs_copy",
+      "description": "Copy a file.",
+      "params": {
+        "src": {"type": "string", "description": "Source path"},
+        "dst": {"type": "string", "description": "Destination path"}
+      },
+      "destructive": false
+    }
+  ],
+  "authorized_roots": ["~"],
+  "phase": 0,
+  "status": "active"
+}

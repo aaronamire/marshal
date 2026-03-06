@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "dev.leaves.goal-spec.v1",
+  "title": "GoalSpec",
+  "description": "Validated intent specification produced by IntentParser and consumed by agents.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["intent_id", "natural_text", "category", "actions", "authorization"],
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "description": "UUID v4 injected by the OS (never from LLM output).",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "natural_text": {
+      "type": "string",
+      "description": "The original user input, verbatim.",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "category": {
+      "type": "string",
+      "description": "Top-level intent category.",
+      "enum": ["file_task", "email_task", "web_task", "system_task", "writing_task"]
+    },
+    "actions": {
+      "type": "array",
+      "description": "Ordered list of atomic operations to perform.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action_id", "type", "agent", "params", "destructive"],
+        "properties": {
+          "action_id": {
+            "type": "string",
+            "description": "Stable identifier for this action. Format: act-<N>.",
+            "pattern": "^act-[0-9]+$"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY", "SUMMARIZE", "COMPOSE"],
+            "description": "The kind of operation. QUERY and READ are non-destructive."
+          },
+          "agent": {
+            "type": "string",
+            "enum": ["file", "email", "web", "system", "writing"],
+            "description": "Which agent handles this action."
+          },
+          "params": {
+            "type": "object",
+            "description": "Agent-specific parameters. Schema varies by agent type.",
+            "additionalProperties": true
+          },
+          "destructive": {
+            "type": "boolean",
+            "description": "True if this action modifies or deletes data."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^act-[0-9]+$"},
+            "description": "action_ids this action depends on (for future DAG execution)."
+          }
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resources", "preview_required", "reversible"],
+      "properties": {
+        "resources": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Paths or resource identifiers that will be accessed."
+        },
+        "preview_required": {
+          "type": "boolean",
+          "description": "If true, user must confirm before execution proceeds."
+        },
+        "reversible": {
+          "type": "boolean",
+          "description": "If false, the operation cannot be undone."
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Non-functional metadata injected by the OS.",
+      "properties": {
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Model confidence score [0,1]."
+        },
+        "parse_latency_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Time in milliseconds to parse the intent."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier used for parsing."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+# Leaves OS Hardware Profile
+# Generated: 2026-03-06
+
+CPU: Intel Core i5-7200U (2c/4t @ 2.50GHz, turbo 3.10GHz)
+RAM: 7.6GB DDR4
+GPU: Intel HD 620 (integrated, no CUDA, no discrete GPU)
+OS:  Arch Linux
+
+# Inference Results — measured via HTTP API against running llama-server
+Model: Llama-3.2-1B-Instruct-Q4_K_M.gguf (770MB on disk)
+Server: llama-server --threads 4 --ctx-size 2048
+
+Classification latency (32-token cap, 5-run average): ~27,578 ms
+GoalSpec latency (512-token cap, 3-run):               >120,000 ms (timed out)
+
+Note: Classification was measured with a simple 1-shot JSON prompt.
+      The model still generated conversational text (not JSON), suggesting
+      that the 1B parameter model struggles to follow pure-JSON-output
+      instructions reliably at temperature=0.1 with this prompt style.
+      The intent_parser.txt system prompt with Llama-3 chat format performs
+      better for structured output but takes longer.
+
+# Verdict
+Layer 1 strategy: MUST use fine-tuned MiniLM for Phase 1
+  - Classification latency of 27.5s is 34x over the 800ms threshold.
+  - Even with better prompting, 1B parameters on i5-7200U cannot reach <800ms.
+  - Phase 0: Use Llama 1B via llama-server HTTP for GoalSpec generation only.
+  - Phase 1 plan: Fine-tune MiniLM-L6-v2 classifier (6MB) for category
+    routing; use Llama 1B only for GoalSpec generation on the classified category.
+  - Estimated MiniLM CPU inference on i5-7200U: 10-50ms (acceptable).
+
+# GoalSpec Generation UX Strategy (Phase 0)
+  - Users will experience 30-120s latency per intent.
+  - Show "Parsing intent..." spinner immediately on input.
+  - This is acceptable for Phase 0 (proof of concept), not for production.
+  - Phase 1 target: <2s end-to-end via MiniLM + optimized GoalSpec prompt.
+
+# Notes
+  - First inference call takes ~56s (model still loading/warming KV cache).
+  - Subsequent calls: 17-25s (KV cache warm, but model is memory-bandwidth bound).
+  - No GPU offloading possible (Intel HD 620, no Metal/CUDA/ROCm support).
+  - Disk I/O is not the bottleneck — model fits in RAM (770MB << 7.6GB).
+  - Memory bandwidth on DDR4 dual-channel is the primary constraint.
