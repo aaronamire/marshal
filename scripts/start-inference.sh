@@ -6,7 +6,7 @@ LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
 MODEL="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 PORT=8080
 HOST="127.0.0.1"
-THREADS=4
+THREADS=2  # Physical cores only — DO NOT use 4 (logical) on Kaby Lake HT
 
 if [ ! -f "$LLAMA_SERVER" ]; then
     echo "ERROR: llama-server not found at $LLAMA_SERVER"
@@ -43,6 +43,7 @@ exec "$LLAMA_SERVER" \
     --port "$PORT" \
     --host "$HOST" \
     --threads "$THREADS" \
-    --ctx-size 4096 \
-    --n-predict 512 \
+    --ctx-size 2048 \
+    --mlock \
+    --no-mmap \
     --log-disable

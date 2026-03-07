@@ -12,15 +12,15 @@ INFERENCE_SERVER_PORT = 8080
 INFERENCE_SERVER_URL = f"http://{INFERENCE_SERVER_HOST}:{INFERENCE_SERVER_PORT}"
 
 # Timeouts (seconds)
-# Note: i5-7200U generates ~1.2 tok/s. A 512-token GoalSpec takes ~430s worst case.
-# Set read timeout generous enough for the full GoalSpec on this hardware.
+# i5-7200U with --mlock --no-mmap --threads 2 --ctx-size 2048 generates ~20-30 tok/s.
+# 1024 tokens at 20 tok/s = ~51s. 60s read timeout is safe; was 300s due to swap.
 TIMEOUT_CONNECT_SECONDS = 5
-TIMEOUT_READ_SECONDS = 300   # 5 minutes — covers 512 tokens at 1.2 tok/s
+TIMEOUT_READ_SECONDS = 60    # 1 minute — covers 1024 tokens at 20 tok/s with headroom
 TIMEOUT_HARD_SECONDS = 360
 
 # Generation parameters
 INFERENCE_TEMPERATURE = 0.1
-INFERENCE_MAX_TOKENS = 512
+INFERENCE_MAX_TOKENS = 1024
 INFERENCE_STOP_TOKENS = ["<|eot_id|>", "<|end_of_text|>"]
 
 # ---------------------------------------------------------------------------
