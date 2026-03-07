@@ -45,6 +45,7 @@ _PROJECT_ROOT = Path(__file__).parent
 AUDIT_DB_PATH = Path.home() / ".leaves" / "intents.db"
 SCHEMA_PATH = _PROJECT_ROOT / "agents" / "schema" / "goal_spec.json"
 INTENT_PARSER_PROMPT_PATH = _PROJECT_ROOT / "agents" / "prompts" / "intent_parser.txt"
+GBNF_GRAMMAR_PATH = _PROJECT_ROOT / "inference" / "grammar" / "goal_spec.gbnf"
 FILE_AGENT_REGISTRY_PATH = _PROJECT_ROOT / "agents" / "registry" / "file-agent.json"
 CLASSIFIER_PIPELINE_PATH = _PROJECT_ROOT / "models" / "layer1_pipeline.joblib"
 

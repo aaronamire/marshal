@@ -33,6 +33,7 @@ class InferenceRequest:
     temperature: float = INFERENCE_TEMPERATURE
     max_tokens: int = INFERENCE_MAX_TOKENS
     stop_tokens: list[str] = field(default_factory=lambda: list(INFERENCE_STOP_TOKENS))
+    grammar: Optional[str] = None  # GBNF grammar string; None = unconstrained
     stream: bool = False
 
 
@@ -60,8 +61,8 @@ class InferenceBackend(ABC):
 
 class LocalLlamaCppBackend(InferenceBackend):
     """
-    Talks to a locally running llama.cpp server via its HTTP API.
-    Server endpoint: POST /completion
+    Talks to a locally running llama.cpp server via its OpenAI-compatible HTTP API.
+    Server endpoint: POST /v1/completions  (grammar field only works here, not /completion)
     Health check:    GET  /health
     """
 
@@ -86,18 +87,23 @@ class LocalLlamaCppBackend(InferenceBackend):
                 detail=f"llama.cpp server not reachable at {self._base_url}",
             )
 
+        # /v1/completions uses OpenAI field names (max_tokens, not n_predict)
+        # and is the only endpoint that honours the per-request "grammar" field.
         payload = {
+            "model": "local",
             "prompt": request.prompt,
-            "n_predict": request.max_tokens,
+            "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stop": request.stop_tokens,
             "stream": request.stream,
         }
+        if request.grammar is not None:
+            payload["grammar"] = request.grammar
 
         t0 = time.monotonic()
         try:
             r = self._session.post(
-                f"{self._base_url}/completion",
+                f"{self._base_url}/v1/completions",
                 json=payload,
                 timeout=(TIMEOUT_CONNECT_SECONDS, TIMEOUT_READ_SECONDS),
             )
@@ -129,18 +135,28 @@ class LocalLlamaCppBackend(InferenceBackend):
                 cause=e,
             )
 
-        content = data.get("content", "")
+        # OpenAI response format: {"choices": [{"text": "...", ...}], "usage": {...}}
+        try:
+            content = data["choices"][0]["text"]
+        except (KeyError, IndexError):
+            raise LeavesError(
+                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                detail=f"Unexpected response structure: {str(data)[:200]}",
+            )
         if not content:
             raise LeavesError(
                 LeavesErrorCode.INFERENCE_BAD_RESPONSE,
-                detail="Server returned empty content field.",
+                detail="Server returned empty text in choices[0].",
             )
+
+        model_name = data.get("model", "llama.cpp")
+        tokens_predicted = data.get("usage", {}).get("completion_tokens", 0)
 
         return InferenceResponse(
             content=content,
             latency_ms=latency_ms,
-            tokens_predicted=data.get("tokens_predicted", 0),
-            model=data.get("model", "llama.cpp"),
+            tokens_predicted=tokens_predicted,
+            model=model_name,
         )
 
 

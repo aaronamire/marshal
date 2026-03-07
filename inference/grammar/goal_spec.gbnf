@@ -1,0 +1,49 @@
+# Leaves OS — GoalSpec GBNF grammar
+# llama.cpp GBNF: one rule per line. Multi-line bodies are not supported —
+# the parser terminates each rule at the first newline.
+
+root ::= goal-spec
+ws ::= [ \t\n\r]*
+
+# Top-level GoalSpec — all fields in prompt order, each on one line
+goal-spec ::= "{" ws "\"intent_id\"" ws ":" ws string ws "," ws "\"natural_text\"" ws ":" ws string ws "," ws "\"category\"" ws ":" ws category ws "," ws "\"actions\"" ws ":" ws actions-array ws "," ws "\"authorization\"" ws ":" ws authorization ws "," ws "\"metadata\"" ws ":" ws metadata ws "}"
+
+# Closed enum — no other value accepted
+category ::= "\"file_task\"" | "\"email_task\"" | "\"web_task\"" | "\"system_task\"" | "\"writing_task\""
+
+# EXPLICIT typed array — "[" opens, "]" closes. "}" cannot appear here.
+actions-array ::= "[" ws action (ws "," ws action)* ws "]"
+
+# Action object — field order fixed, depends_on optional
+action ::= "{" ws "\"action_id\"" ws ":" ws action-id ws "," ws "\"type\"" ws ":" ws action-type ws "," ws "\"agent\"" ws ":" ws agent-type ws "," ws "\"params\"" ws ":" ws json-object ws "," ws "\"destructive\"" ws ":" ws boolean (ws "," ws "\"depends_on\"" ws ":" ws depends-on-array)? ws "}"
+
+# action_id must match "act-<N>"
+action-id ::= "\"act-" [0-9]+ "\""
+
+action-type ::= "\"QUERY\"" | "\"READ\"" | "\"WRITE\"" | "\"DELETE\"" | "\"MOVE\"" | "\"COPY\"" | "\"SUMMARIZE\"" | "\"COMPOSE\""
+
+agent-type ::= "\"file\"" | "\"email\"" | "\"web\"" | "\"system\"" | "\"writing\""
+
+# depends_on — explicit typed array, may be empty
+depends-on-array ::= "[" ws (action-id (ws "," ws action-id)*)? ws "]"
+
+# Authorization block
+authorization ::= "{" ws "\"resources\"" ws ":" ws resources-array ws "," ws "\"preview_required\"" ws ":" ws boolean ws "," ws "\"reversible\"" ws ":" ws boolean ws "}"
+
+# resources — explicit typed array, may be empty
+resources-array ::= "[" ws (string (ws "," ws string)*)? ws "]"
+
+# Metadata — model outputs only confidence; OS injects parse_latency_ms and model
+metadata ::= "{" ws "\"confidence\"" ws ":" ws number ws "}"
+
+# Open params schema (additionalProperties:true) — generic JSON object/value rules
+json-object ::= "{" ws (json-kv (ws "," ws json-kv)*)? ws "}"
+json-kv ::= string ws ":" ws json-value
+json-value ::= string | number | boolean | "null" | json-object | json-array
+json-array ::= "[" ws (json-value (ws "," ws json-value)*)? ws "]"
+
+# Primitives
+string ::= "\"" char* "\""
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+number ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [-+]? [0-9]+)?
+boolean ::= "true" | "false"

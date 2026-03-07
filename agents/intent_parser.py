@@ -20,6 +20,7 @@ from config import (
     MAX_INTENT_LENGTH,
     SCHEMA_PATH,
     INTENT_PARSER_PROMPT_PATH,
+    GBNF_GRAMMAR_PATH,
     INFERENCE_TEMPERATURE,
     INFERENCE_MAX_TOKENS,
     INFERENCE_STOP_TOKENS,
@@ -52,6 +53,7 @@ class IntentParser:
         self._client = client or InferenceClient()
         self._schema = json.loads(SCHEMA_PATH.read_text())
         self._system_prompt = INTENT_PARSER_PROMPT_PATH.read_text()
+        self._grammar = GBNF_GRAMMAR_PATH.read_text()
         self._classifier = classifier
         self._on_classified = on_classified  # called immediately after Layer 1
 
@@ -87,6 +89,7 @@ class IntentParser:
             temperature=INFERENCE_TEMPERATURE,
             max_tokens=INFERENCE_MAX_TOKENS,
             stop_tokens=list(INFERENCE_STOP_TOKENS),
+            grammar=self._grammar,
         )
 
         t0 = time.monotonic()
@@ -94,7 +97,7 @@ class IntentParser:
         parse_latency_ms = (time.monotonic() - t0) * 1000
 
         raw = response.content
-        goal_spec = self._extract_json(raw)
+        goal_spec = self._parse_gbnf_output(raw)
         goal_spec = self._inject_os_fields(
             goal_spec,
             user_text=user_text,
@@ -140,59 +143,25 @@ class IntentParser:
             "<|start_header_id|>assistant<|end_header_id|>\n"
         )
 
-    def _extract_json(self, raw: str) -> dict[str, Any]:
+    def _parse_gbnf_output(self, raw: str) -> dict[str, Any]:
         """
-        Extract a JSON object from the model's raw output.
-        Handles: bare JSON, ```json ... ```, ``` ... ```, leading explanation text.
+        Parse the model output as JSON.
+
+        With GBNF grammar-constrained decoding the server cannot emit tokens that
+        produce syntactically invalid JSON, so a direct json.loads() is sufficient.
+        If parsing fails anyway it means the grammar file is wrong — that is a bug
+        in goal_spec.gbnf, not a model quality issue.
         """
-        text = raw.strip()
-
-        # Strip markdown code fences
-        if "```" in text:
-            start = text.find("```")
-            end = text.rfind("```")
-            if start != end:
-                inner = text[start + 3:end]
-                # strip optional language tag
-                if inner.startswith("json"):
-                    inner = inner[4:]
-                text = inner.strip()
-
-        # Find the outermost JSON object
-        obj_start = text.find("{")
-        obj_end = text.rfind("}")
-        if obj_start == -1 or obj_end == -1 or obj_end <= obj_start:
-            raise LeavesError(
-                LeavesErrorCode.JSON_PARSE_FAILED,
-                detail=f"No JSON object found in model output: {raw[:200]!r}",
-            )
-
-        json_str = text[obj_start:obj_end + 1]
         try:
-            return json.loads(json_str)
-        except json.JSONDecodeError as first_err:
-            # The model sometimes truncates output mid-JSON.
-            # Try progressively shorter substrings ending at the last valid '}'.
-            raw_chars = list(text[obj_start:])
-            depth = 0
-            last_valid_end = -1
-            for i, ch in enumerate(raw_chars):
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[obj_start:obj_start + i + 1]
-                        try:
-                            result = json.loads(candidate)
-                            return result
-                        except json.JSONDecodeError:
-                            pass
-
+            return json.loads(raw.strip())
+        except json.JSONDecodeError as e:
             raise LeavesError(
                 LeavesErrorCode.JSON_PARSE_FAILED,
-                detail=f"JSON decode error: {first_err}. Raw: {json_str[:200]!r}",
-                cause=first_err,
+                detail=(
+                    f"GBNF grammar violation — this is a bug in goal_spec.gbnf: {e}. "
+                    f"Raw ({len(raw)} chars): {raw[:300]!r}"
+                ),
+                cause=e,
             )
 
     def _inject_os_fields(
