@@ -12,8 +12,10 @@ INFERENCE_SERVER_PORT = 8080
 INFERENCE_SERVER_URL = f"http://{INFERENCE_SERVER_HOST}:{INFERENCE_SERVER_PORT}"
 
 # Timeouts (seconds)
-# i5-7200U with --mlock --no-mmap --threads 2 --ctx-size 2048 generates ~20-30 tok/s.
-# 1024 tokens at 20 tok/s = ~51s. 60s read timeout is safe; was 300s due to swap.
+# i5-7200U with --mlock --no-mmap --threads 2 generates ~20-30 tok/s.
+# ctx-size=4096: KV cache ~64MB (fine). System prompt alone is ~1040 tokens, so 2048
+# is too tight with 1024-token output budget (1040+1024=2064 > 2048). Use 4096.
+# 1024 tokens at 20 tok/s = ~51s. 60s read timeout has comfortable headroom.
 TIMEOUT_CONNECT_SECONDS = 5
 TIMEOUT_READ_SECONDS = 60    # 1 minute — covers 1024 tokens at 20 tok/s with headroom
 TIMEOUT_HARD_SECONDS = 360

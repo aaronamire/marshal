@@ -43,7 +43,7 @@ exec "$LLAMA_SERVER" \
     --port "$PORT" \
     --host "$HOST" \
     --threads "$THREADS" \
-    --ctx-size 2048 \
+    --ctx-size 4096 \
     --mlock \
     --no-mmap \
     --log-disable
