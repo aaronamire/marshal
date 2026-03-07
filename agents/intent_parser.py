@@ -241,12 +241,24 @@ class IntentParser:
         return goal_spec
 
     def _check_actions_present(self, goal_spec: dict[str, Any]) -> None:
-        """Raise NOT_IMPLEMENTED for categories with no agent support yet."""
+        """Raise NOT_IMPLEMENTED for unimplemented categories; INFERENCE_BAD_RESPONSE
+        when the model returns empty actions for a supported category."""
+        IMPLEMENTED_CATEGORIES = {"file_task"}
         IMPLEMENTED_AGENTS = {"file"}
         actions = goal_spec.get("actions", [])
         category = goal_spec.get("category", "")
 
         if not actions:
+            if category in IMPLEMENTED_CATEGORIES:
+                # Model understands the category but failed to generate actions.
+                # This is a model output quality issue, not a missing feature.
+                raise LeavesError(
+                    LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                    detail=(
+                        f"Model returned no actions for '{category}'. "
+                        f"Try rephrasing — e.g., name specific files or directories."
+                    ),
+                )
             raise LeavesError(
                 LeavesErrorCode.NOT_IMPLEMENTED,
                 detail=(
@@ -256,7 +268,7 @@ class IntentParser:
                 ),
             )
 
-        # Warn if all actions use unimplemented agents (will be skipped at execution)
+        # All actions use unimplemented agents
         unimplemented = [
             a for a in actions if a.get("agent") not in IMPLEMENTED_AGENTS
         ]
