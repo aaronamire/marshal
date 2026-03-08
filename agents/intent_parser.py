@@ -49,11 +49,12 @@ class IntentParser:
         client: Optional[InferenceClient] = None,
         classifier=None,  # Optional[IntentClassifier]
         on_classified: Optional[Callable] = None,
+        use_gbnf: bool = True,
     ):
         self._client = client or InferenceClient()
         self._schema = json.loads(SCHEMA_PATH.read_text())
         self._system_prompt = INTENT_PARSER_PROMPT_PATH.read_text()
-        self._grammar = GBNF_GRAMMAR_PATH.read_text()
+        self._grammar = GBNF_GRAMMAR_PATH.read_text() if use_gbnf else None
         self._classifier = classifier
         self._on_classified = on_classified  # called immediately after Layer 1
 

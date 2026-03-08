@@ -41,11 +41,20 @@ RULES:
 3. confidence MUST be a float between 0.0 and 1.0 reflecting how certain you are.
 4. action_id format MUST be "act-1", "act-2", etc. (exactly this format).
 5. For file operations: agent is "file", category is "file_task".
-6. QUERY/READ actions have destructive=false. DELETE/WRITE/MOVE have destructive=true.
+6. QUERY and READ are NEVER destructive (destructive=false always). DELETE, WRITE, MOVE, COPY
+   are always destructive (destructive=true always). Never set QUERY with destructive=true.
 7. For destructive actions, set authorization.preview_required=true and authorization.reversible=false.
 8. Expand ~ in paths to the literal string "~" (do not expand to /home/username).
 9. If you cannot parse the intent with confidence >= 0.4, still return valid JSON with your best guess
    and a low confidence score — never return an error message or non-JSON text.
+
+ACTION TYPE MAPPING (use the most specific type — do not substitute QUERY for these):
+- find / list / search / show → QUERY
+- read / show contents / open → READ
+- delete / remove / erase   → DELETE (use QUERY first to find files, then DELETE)
+- move / rename             → MOVE
+- copy / duplicate          → COPY
+- create / write / save     → WRITE
 
 CATEGORY GUIDE:
 - file_task: anything about files, folders, directories, documents, finding/moving/deleting/reading files
