@@ -51,8 +51,8 @@ RULES:
 ACTION TYPE MAPPING (use the most specific type — do not substitute QUERY for these):
 - find / list / search / show → QUERY
 - read / show contents / open → READ
-- delete / remove / erase   → DELETE (use QUERY first to find files, then DELETE)
-- move / rename             → MOVE
+- delete / remove / erase   → ALWAYS two actions: QUERY (act-1) then DELETE (act-2, type MUST be "DELETE", depends_on act-1). act-2 is NEVER type "QUERY" — it is always type "DELETE". Never use QUERY as a substitute for DELETE.
+- move / rename             → MOVE (optionally preceded by QUERY to find files)
 - copy / duplicate          → COPY
 - create / write / save     → WRITE
 
@@ -120,6 +120,92 @@ Correct output:
   },
   "metadata": {
     "confidence": 0.93
+  }
+}
+
+EXAMPLE 3:
+User intent: "show me the contents of ~/README.md"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "show me the contents of ~/README.md",
+  "category": "file_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "READ",
+      "agent": "file",
+      "params": {"path": "~/README.md"},
+      "destructive": false
+    }
+  ],
+  "authorization": {
+    "resources": ["~/README.md"],
+    "preview_required": false,
+    "reversible": true
+  },
+  "metadata": {
+    "confidence": 0.97
+  }
+}
+
+EXAMPLE 4:
+User intent: "rename ~/notes.txt to ~/notes-backup.txt"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "rename ~/notes.txt to ~/notes-backup.txt",
+  "category": "file_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "MOVE",
+      "agent": "file",
+      "params": {"source": "~/notes.txt", "destination": "~/notes-backup.txt"},
+      "destructive": true
+    }
+  ],
+  "authorization": {
+    "resources": ["~/notes.txt"],
+    "preview_required": true,
+    "reversible": false
+  },
+  "metadata": {
+    "confidence": 0.96
+  }
+}
+
+EXAMPLE 5:
+User intent: "move all PDFs from ~/Downloads to ~/archive/pdfs"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "move all PDFs from ~/Downloads to ~/archive/pdfs",
+  "category": "file_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "QUERY",
+      "agent": "file",
+      "params": {"path": "~/Downloads", "pattern": "*.pdf", "recursive": false},
+      "destructive": false
+    },
+    {
+      "action_id": "act-2",
+      "type": "MOVE",
+      "agent": "file",
+      "params": {"source": "~/Downloads", "destination": "~/archive/pdfs", "pattern": "*.pdf"},
+      "destructive": true,
+      "depends_on": ["act-1"]
+    }
+  ],
+  "authorization": {
+    "resources": ["~/Downloads", "~/archive/pdfs"],
+    "preview_required": true,
+    "reversible": false
+  },
+  "metadata": {
+    "confidence": 0.95
   }
 }
 

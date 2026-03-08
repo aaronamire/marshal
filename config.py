@@ -13,16 +13,19 @@ INFERENCE_SERVER_URL = f"http://{INFERENCE_SERVER_HOST}:{INFERENCE_SERVER_PORT}"
 
 # Timeouts (seconds)
 # i5-7200U with --mlock --no-mmap --threads 2 generates ~20-30 tok/s.
-# ctx-size=4096: KV cache ~64MB (fine). System prompt alone is ~1040 tokens, so 2048
-# is too tight with 1024-token output budget (1040+1024=2064 > 2048). Use 4096.
-# 1024 tokens at 20 tok/s = ~51s. 60s read timeout has comfortable headroom.
+# ctx-size=4096: KV cache ~64MB (fine). System prompt alone is ~2000 tokens after
+# adding 3 extra few-shot examples. Prefill cost ~15ms/tok × 2000 tok = 30s,
+# plus 1024 output tokens at 20 tok/s = 51s → total ~81s worst-case. Use 120s.
+# Task 4 (prompt caching) will bring this back down to ~6s.
 TIMEOUT_CONNECT_SECONDS = 5
-TIMEOUT_READ_SECONDS = 60    # 1 minute — covers 1024 tokens at 20 tok/s with headroom
+TIMEOUT_READ_SECONDS = 90    # 90s — INFERENCE_MAX_TOKENS=512 caps generation at ~26s; 90s handles thermal throttling
 TIMEOUT_HARD_SECONDS = 360
 
 # Generation parameters
 INFERENCE_TEMPERATURE = 0.1
-INFERENCE_MAX_TOKENS = 1024
+# GoalSpec JSON tops out at ~300 tokens even for 3-action intents. 512 gives
+# headroom without running hot enough to throttle the i5-7200U during a full eval run.
+INFERENCE_MAX_TOKENS = 512
 INFERENCE_STOP_TOKENS = ["<|eot_id|>", "<|end_of_text|>"]
 
 # ---------------------------------------------------------------------------
