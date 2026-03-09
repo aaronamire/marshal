@@ -1,0 +1,32 @@
+{"intent": "show me the contents of ~/README.md", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/README.md"}, "destructive": false}]}
+{"intent": "read the file ~/Documents/report.pdf", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/Documents/report.pdf"}, "destructive": false}]}
+{"intent": "what is in ~/notes/meeting.txt", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/notes/meeting.txt"}, "destructive": false}]}
+{"intent": "open ~/dev/leaves-os/config.py", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/dev/leaves-os/config.py"}, "destructive": false}]}
+{"intent": "rename ~/notes.txt to ~/notes-backup.txt", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/notes.txt", "destination": "~/notes-backup.txt"}, "destructive": true}]}
+{"intent": "move ~/Desktop/screenshot.png to ~/Pictures", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/Desktop/screenshot.png", "destination": "~/Pictures"}, "destructive": true}]}
+{"intent": "move all PDFs from ~/Downloads to ~/archive/pdfs", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/Downloads", "pattern": "*.pdf", "destination": "~/archive/pdfs"}, "destructive": true}]}
+{"intent": "rename ~/project/draft.md to ~/project/README.md", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/project/draft.md", "destination": "~/project/README.md"}, "destructive": true}]}
+{"intent": "copy my config.py to ~/backup/config.py", "category": "file_task", "actions": [{"type": "COPY", "params": {"source": "~/config.py", "destination": "~/backup/config.py"}, "destructive": false}]}
+{"intent": "copy ~/config.py to ~/config.py.bak", "category": "file_task", "actions": [{"type": "COPY", "params": {"source": "~/config.py", "destination": "~/config.py.bak"}, "destructive": false}]}
+{"intent": "copy my ~/Documents folder to ~/backup/Documents", "category": "file_task", "actions": [{"type": "COPY", "params": {"source": "~/Documents", "destination": "~/backup/Documents"}, "destructive": false}]}
+{"intent": "delete all .tmp files in my home directory", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~", "pattern": "*.tmp", "search_type": "glob"}, "destructive": false}, {"type": "DELETE", "params": {"path": "~", "pattern": "*.tmp"}, "destructive": true}]}
+{"intent": "delete all log files in /var/log older than 7 days", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "/var/log", "pattern": "*.log", "search_type": "glob"}, "destructive": false}, {"type": "DELETE", "params": {"path": "/var/log", "pattern": "*.log"}, "destructive": true}]}
+{"intent": "remove the file ~/Downloads/setup.exe", "category": "file_task", "actions": [{"type": "DELETE", "params": {"path": "~/Downloads/setup.exe"}, "destructive": true}]}
+{"intent": "find all PDFs in my Downloads folder", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/Downloads", "pattern": "*.pdf", "search_type": "glob"}, "destructive": false}]}
+{"intent": "list Python files in ~/dev", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/dev", "pattern": "*.py", "search_type": "glob"}, "destructive": false}]}
+{"intent": "find all files larger than 100MB in my home directory", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~", "search_type": "size", "min_size_mb": 100}, "destructive": false}]}
+{"intent": "how many files are in ~/Downloads", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/Downloads", "search_type": "count"}, "destructive": false}]}
+{"intent": "show me all hidden files in my home directory", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~", "pattern": ".*", "search_type": "glob"}, "destructive": false}]}
+{"intent": "find all log files in /var/log", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "/var/log", "pattern": "*.log", "search_type": "glob"}, "destructive": false}]}
+{"intent": "list all files modified in the last hour in ~/Downloads", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/Downloads", "search_type": "modified", "minutes": 60}, "destructive": false}]}
+{"intent": "find all PDFs in my Downloads folder and move them to ~/Documents", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/Downloads", "pattern": "*.pdf", "search_type": "glob"}, "destructive": false}, {"type": "MOVE", "params": {"source": "~/Downloads", "pattern": "*.pdf", "destination": "~/Documents"}, "destructive": true}]}
+{"intent": "find all Python files in ~/dev and copy them to ~/backup", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/dev", "pattern": "*.py", "search_type": "glob"}, "destructive": false}, {"type": "COPY", "params": {"source": "~/dev", "pattern": "*.py", "destination": "~/backup"}, "destructive": false}]}
+{"intent": "find the largest file in ~/Documents and show its contents", "category": "file_task", "actions": [{"type": "QUERY", "params": {"path": "~/Documents", "search_type": "size"}, "destructive": false}, {"type": "READ", "params": {"path": "~/Documents"}, "destructive": false}]}
+{"intent": "create a new file at ~/notes/todo.txt", "category": "file_task", "actions": [{"type": "WRITE", "params": {"path": "~/notes/todo.txt", "content": ""}, "destructive": false}]}
+{"intent": "write an email to my boss about the project update", "category": "email_task", "actions": []}
+{"intent": "send a message to john about the meeting tomorrow", "category": "email_task", "actions": []}
+{"intent": "show me what processes are using the most memory", "category": "system_task", "actions": []}
+{"intent": "what is the current CPU temperature", "category": "system_task", "actions": []}
+{"intent": "search Google for Python async tutorials", "category": "web_task", "actions": []}
+{"intent": "write a blog post about machine learning for beginners", "category": "writing_task", "actions": []}
+{"intent": "draft a cover letter for a software engineer position", "category": "writing_task", "actions": []}
