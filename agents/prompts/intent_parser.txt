@@ -49,6 +49,9 @@ RULES:
    and a low confidence score — never return an error message or non-JSON text.
 10. NEVER repeat the same action type more than once (e.g., two QUERY actions or two READ actions in
     a row is wrong). Each action must serve a distinct purpose.
+11. ORDERING: DISCOVERY (QUERY or READ) must always come BEFORE MUTATION (DELETE, MOVE, COPY, WRITE).
+    For multi-step operations: first discover/find the targets, then act on them.
+    Example: [QUERY, DELETE] — NOT [DELETE, QUERY]. [QUERY, MOVE] — NOT [MOVE, QUERY].
 
 ACTION TYPE MAPPING (use the most specific type — do not substitute QUERY for these):
 - find / list / search / show → QUERY
