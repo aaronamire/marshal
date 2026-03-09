@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Leaves OS Phase 0 eval harness.
+Leaves OS eval harness (Phase 1).
 
 Checks three distinct correctness levels for each test case:
   1. Schema validity   — output passes jsonschema (table stakes)
@@ -15,11 +15,18 @@ Usage:
   python3 tests/eval_suite.py --no-gbnf --no-layer1  # pure baseline
   python3 tests/eval_suite.py --fast                 # skip inter-case cooldown
   python3 tests/eval_suite.py --timeout 30
+  python3 tests/eval_suite.py --phase phase0         # run Phase 0 cases only (12)
+  python3 tests/eval_suite.py --phase phase1         # run all 30 cases
 
-Phase 0 passes when:
+Phase 0 gate (12 cases):
   schema_validity    >= 95%
   action_type_ok     >= 80%
   action_ordering    >= 80%
+
+Phase 1 gate (30 cases, Qwen2.5-3B target):
+  schema_validity    >= 95%
+  action_type_ok     >= 85%
+  action_ordering    >= 85%
 """
 from __future__ import annotations
 
@@ -139,7 +146,7 @@ CASES: list[Case] = [
         expected_sequence=["QUERY", "MOVE"],  # order matters: find first, then move
     ),
 
-    # --- NOT_IMPLEMENTED: unimplemented categories ---
+    # --- NOT_IMPLEMENTED: unimplemented categories (Phase 0 set) ---
     Case(
         label="email (not impl)",
         intent="write an email to my boss about the project update",
@@ -154,7 +161,141 @@ CASES: list[Case] = [
         expected_action_types=[],
         expect_not_implemented=True,
     ),
+
+    # -------------------------------------------------------------------------
+    # Phase 1 cases (18 new — total 30 when combined with Phase 0 set above)
+    # -------------------------------------------------------------------------
+
+    # --- Additional READ ---
+    Case(
+        label="open config file",
+        intent="open ~/dev/leaves-os/config.py",
+        expected_category="file_task",
+        expected_action_types=["READ"],
+    ),
+    Case(
+        label="read meeting notes",
+        intent="what's in ~/Documents/meeting-notes.txt",
+        expected_category="file_task",
+        expected_action_types=["READ"],
+    ),
+
+    # --- Additional QUERY ---
+    Case(
+        label="count downloads",
+        intent="how many files are in ~/Downloads",
+        expected_category="file_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="find hidden files",
+        intent="show me all hidden files in my home directory",
+        expected_category="file_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="find log files",
+        intent="find all log files in /var/log",
+        expected_category="file_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="recent downloads",
+        intent="list all files modified in the last hour in ~/Downloads",
+        expected_category="file_task",
+        expected_action_types=["QUERY"],
+    ),
+
+    # --- Additional MOVE ---
+    Case(
+        label="move screenshot",
+        intent="move ~/Desktop/screenshot.png to ~/Pictures",
+        expected_category="file_task",
+        expected_action_types=["MOVE"],
+    ),
+    Case(
+        label="rename draft",
+        intent="rename ~/project/draft.md to ~/project/README.md",
+        expected_category="file_task",
+        expected_action_types=["MOVE"],
+    ),
+
+    # --- Additional COPY ---
+    Case(
+        label="backup config",
+        intent="copy ~/config.py to ~/config.py.bak",
+        expected_category="file_task",
+        expected_action_types=["COPY"],
+    ),
+    Case(
+        label="backup directory",
+        intent="copy my ~/Documents folder to ~/backup/Documents",
+        expected_category="file_task",
+        expected_action_types=["COPY"],
+    ),
+
+    # --- Additional DELETE ---
+    Case(
+        label="delete single file",
+        intent="remove the file ~/Downloads/setup.exe",
+        expected_category="file_task",
+        expected_action_types=["DELETE"],
+    ),
+
+    # --- WRITE ---
+    Case(
+        label="create file",
+        intent="create a new file at ~/notes/todo.txt",
+        expected_category="file_task",
+        expected_action_types=["WRITE"],
+    ),
+
+    # --- Multi-action: QUERY → READ ---
+    Case(
+        label="find-then-read",
+        intent="find the largest file in ~/Documents and show its contents",
+        expected_category="file_task",
+        expected_action_types=["QUERY", "READ"],
+        min_actions=2,
+        expected_sequence=["QUERY", "READ"],
+    ),
+
+    # --- Multi-action: QUERY → COPY ---
+    Case(
+        label="find-then-copy",
+        intent="find all Python files in ~/dev and copy them to ~/backup",
+        expected_category="file_task",
+        expected_action_types=["QUERY", "COPY"],
+        min_actions=2,
+        expected_sequence=["QUERY", "COPY"],
+    ),
+
+    # --- NOT_IMPLEMENTED: 3 additional categories (Phase 1 set) ---
+    Case(
+        label="web search (not impl)",
+        intent="search Google for Python async tutorials",
+        expected_category="web_task",
+        expected_action_types=[],
+        expect_not_implemented=True,
+    ),
+    Case(
+        label="writing (not impl)",
+        intent="write a blog post about machine learning for beginners",
+        expected_category="writing_task",
+        expected_action_types=[],
+        expect_not_implemented=True,
+    ),
+    Case(
+        label="cpu temp (not impl)",
+        intent="what is the current CPU temperature",
+        expected_category="system_task",
+        expected_action_types=[],
+        expect_not_implemented=True,
+    ),
 ]
+
+# Phase 0 uses the first 12 cases; Phase 1 uses all 30.
+_PHASE0_CASE_COUNT = 12
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +480,8 @@ def print_result(r: Result, _case: Case, verbose: bool) -> None:
             print(f"         {cat}  [{types}]  conf={conf:.0%}")
 
 
-def print_summary(results: list[Result], cases: list[Case], config_label: str) -> int:
+def print_summary(results: list[Result], cases: list[Case], config_label: str,
+                  phase: str = "phase1") -> int:
     print(f"\n{'='*60}")
     print(f"Results — {config_label}")
     print(f"{'='*60}")
@@ -371,24 +513,38 @@ def print_summary(results: list[Result], cases: list[Case], config_label: str) -
         print(f"\n  Not-implemented intents ({len(not_impl)} cases):")
         print(f"    Correctly rejected: {pct(not_impl_pass, len(not_impl))}")
 
-    # Phase 0 gate
     schema_pct   = 100 * schema_pass   // n_reg if n_reg else 0
     action_pct   = 100 * action_pass   // n_reg if n_reg else 0
     ordering_pct = 100 * ordering_pass // n_reg if n_reg else 0
-    schema_gate   = schema_pct   >= 95
-    action_gate   = action_pct   >= 80
-    ordering_gate = ordering_pct >= 80
 
-    print(f"\n  Phase 0 gate:")
+    # Phase 0 gate (12 cases, lower thresholds)
+    if phase == "phase0":
+        schema_gate   = schema_pct   >= 95
+        action_gate   = action_pct   >= 80
+        ordering_gate = ordering_pct >= 80
+        gate_label = "Phase 0 gate"
+        pass_label = "PHASE 0 COMPLETE"
+    else:
+        # Phase 1 gate: higher thresholds, 30-case suite
+        schema_gate   = schema_pct   >= 95
+        action_gate   = action_pct   >= 85
+        ordering_gate = ordering_pct >= 85
+        gate_label = "Phase 1 gate"
+        pass_label = "PHASE 1 GATE PASSED"
+
+    a_thr = 80 if phase == "phase0" else 85
+    o_thr = 80 if phase == "phase0" else 85
+
+    print(f"\n  {gate_label}:")
     print(f"    schema_validity >= 95%  : {'PASS' if schema_gate   else 'FAIL'} ({schema_pct}%)")
-    print(f"    action_type_ok  >= 80%  : {'PASS' if action_gate   else 'FAIL'} ({action_pct}%)")
-    print(f"    action_ordering >= 80%  : {'PASS' if ordering_gate else 'FAIL'} ({ordering_pct}%)")
+    print(f"    action_type_ok  >= {a_thr}%  : {'PASS' if action_gate   else 'FAIL'} ({action_pct}%)")
+    print(f"    action_ordering >= {o_thr}%  : {'PASS' if ordering_gate else 'FAIL'} ({ordering_pct}%)")
 
     if schema_gate and action_gate and ordering_gate:
-        print(f"\n  *** PHASE 0 COMPLETE — eval harness passed ***")
+        print(f"\n  *** {pass_label} ***")
         return 0
     else:
-        print(f"\n  Phase 0 not complete yet.")
+        print(f"\n  Gate not passed yet.")
         return 1
 
 
@@ -412,6 +568,10 @@ def main() -> int:
                         help="Show category/action details for each result")
     parser.add_argument("--case", type=str, default=None,
                         help="Run only cases whose label contains this string")
+    parser.add_argument("--phase", type=str, default="phase1",
+                        choices=["phase0", "phase1"],
+                        help="phase0: run first 12 cases, gate at 80%%; "
+                             "phase1: run all 30 cases, gate at 85%% (default)")
     args = parser.parse_args()
 
     use_gbnf = not args.no_gbnf
@@ -443,7 +603,7 @@ def main() -> int:
         print("ERROR: Inference server not running. Start with: bash scripts/start-inference.sh")
         return 1
 
-    cases = CASES
+    cases = CASES[:_PHASE0_CASE_COUNT] if args.phase == "phase0" else CASES
     if args.case:
         cases = [c for c in CASES if args.case.lower() in c.label.lower()]
         if not cases:
@@ -463,7 +623,7 @@ def main() -> int:
         if cooldown_s > 0 and i < len(cases) - 1:
             time.sleep(cooldown_s)
 
-    return print_summary(results, cases, config_label)
+    return print_summary(results, cases, config_label, phase=args.phase)
 
 
 if __name__ == "__main__":
