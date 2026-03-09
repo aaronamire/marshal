@@ -29,10 +29,24 @@ INFERENCE_MAX_TOKENS = 512
 INFERENCE_STOP_TOKENS = ["<|eot_id|>", "<|end_of_text|>"]
 
 # ---------------------------------------------------------------------------
+# Model family — controls prompt format selection in intent_parser.py
+# ---------------------------------------------------------------------------
+# "llama3"  → Llama 3 instruct format (<|begin_of_text|> / <|eot_id|>)
+# "chatml"  → ChatML format (<|im_start|> / <|im_end|>)
+MODEL_FAMILY: str = "llama3"
+
+# ---------------------------------------------------------------------------
 # Intent parsing
 # ---------------------------------------------------------------------------
 MIN_CONFIDENCE_THRESHOLD = 0.60
 MAX_INTENT_LENGTH = 1000   # characters
+
+# Layer 2 routing thresholds (Phase 1)
+LAYER2_CONFIDENCE_THRESHOLD = 0.75  # below this → escalate to Layer 2.5 / remote
+LAYER2_MAX_RETRIES = 2              # retry LLM parse before escalating
+
+# Eval harness
+INTER_CASE_COOLDOWN_SECONDS = 15    # thermal recovery between eval cases (--fast skips)
 
 # ---------------------------------------------------------------------------
 # Agent / tool retry policy
