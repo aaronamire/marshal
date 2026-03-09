@@ -3,7 +3,10 @@
 # CPU-only — no GPU flags. i5-7200U / Intel HD 620.
 
 LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
-MODEL="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+# Phase 1: Qwen2.5-3B-Instruct Q4_K_M (ChatML format, ~1.88GB)
+# Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — fallback
+MODEL="$(dirname "$0")/../models/qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL_FALLBACK="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 PORT=8080
 HOST="127.0.0.1"
 THREADS=2  # Physical cores only — DO NOT use 4 (logical) on Kaby Lake HT
@@ -16,14 +19,23 @@ if [ ! -f "$LLAMA_SERVER" ]; then
 fi
 
 if [ ! -f "$MODEL" ]; then
-    echo "ERROR: Model not found at $MODEL"
-    echo "Download with:"
-    echo "  source .os/bin/activate && python3 -c \""
-    echo "  from huggingface_hub import hf_hub_download; import os"
-    echo "  hf_hub_download(repo_id='bartowski/Llama-3.2-1B-Instruct-GGUF',"
-    echo "    filename='Llama-3.2-1B-Instruct-Q4_K_M.gguf',"
-    echo "    local_dir=os.path.expanduser('~/leaves-models'))\""
-    exit 1
+    if [ -f "$MODEL_FALLBACK" ]; then
+        echo "WARNING: Qwen2.5-3B not found at $MODEL"
+        echo "         Falling back to Phase 0 model: $MODEL_FALLBACK"
+        echo "         Set MODEL_FAMILY=llama3 in config.py for correct prompt format."
+        MODEL="$MODEL_FALLBACK"
+    else
+        echo "ERROR: No model found."
+        echo "  Qwen2.5-3B (Phase 1): $MODEL"
+        echo "  Llama-3.2-1B (Phase 0): $MODEL_FALLBACK"
+        echo ""
+        echo "Download Qwen2.5-3B:"
+        echo "  source .os/bin/activate && python3 -c \""
+        echo "  from huggingface_hub import hf_hub_download"
+        echo "  hf_hub_download(repo_id='Qwen/Qwen2.5-3B-Instruct-GGUF',"
+        echo "    filename='qwen2.5-3b-instruct-q4_k_m.gguf', local_dir='models/')\""
+        exit 1
+    fi
 fi
 
 # Kill any existing server on this port
