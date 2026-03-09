@@ -73,6 +73,7 @@ class IntentParser:
         # --- Layer 1: instant classification (3-8ms) ---
         # Fires the callback so UI can update before Layer 2 runs.
         # Any failure is silently swallowed — never blocks Layer 2.
+        IMPLEMENTED_CATEGORIES = {"file_task"}
         if self._classifier is not None:
             try:
                 l1 = self._classifier.classify(user_text)
@@ -81,6 +82,20 @@ class IntentParser:
                         self._on_classified(l1)
                     except Exception:
                         pass
+                # Fast-path: if L1 is confident the category is not implemented,
+                # skip the LLM call entirely (~18-51s saved per request).
+                if l1.is_confident and l1.category not in IMPLEMENTED_CATEGORIES:
+                    raise LeavesError(
+                        LeavesErrorCode.NOT_IMPLEMENTED,
+                        detail=(
+                            f"Category '{l1.category}' is not yet implemented in Phase 1. "
+                            f"Only file_task is supported. Email, web, system, and writing "
+                            f"agents are planned for Phase 2+. "
+                            f"(L1 confidence: {l1.confidence:.0%})"
+                        ),
+                    )
+            except LeavesError:
+                raise
             except Exception:
                 pass
 
