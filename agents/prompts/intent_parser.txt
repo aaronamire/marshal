@@ -47,6 +47,8 @@ RULES:
 8. Expand ~ in paths to the literal string "~" (do not expand to /home/username).
 9. If you cannot parse the intent with confidence >= 0.4, still return valid JSON with your best guess
    and a low confidence score — never return an error message or non-JSON text.
+10. NEVER repeat the same action type more than once (e.g., two QUERY actions or two READ actions in
+    a row is wrong). Each action must serve a distinct purpose.
 
 ACTION TYPE MAPPING (use the most specific type — do not substitute QUERY for these):
 - find / list / search / show → QUERY

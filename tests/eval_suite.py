@@ -29,6 +29,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.intent_parser import IntentParser
+from agents.validators import validate_action_ordering
 from errors import LeavesError, LeavesErrorCode
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,11 @@ class Case:
 
     # Multi-action: minimum number of actions expected
     min_actions: int = 1
+
+    # Optional: exact action type sequence (e.g. ["QUERY", "MOVE"]).
+    # When set, actual action types must match this list IN ORDER.
+    # This catches [MOVE+QUERY+MOVE+QUERY] passing when [QUERY+MOVE] is needed.
+    expected_sequence: Optional[list[str]] = None
 
 
 CASES: list[Case] = [
@@ -104,12 +110,16 @@ CASES: list[Case] = [
         intent="delete all .tmp files in my home directory",
         expected_category="file_task",
         expected_action_types=["DELETE"],
+        expected_sequence=["QUERY", "DELETE"],  # find first, then delete
+        min_actions=2,
     ),
     Case(
         label="delete by pattern",
         intent="delete all log files in /var/log older than 7 days",
         expected_category="file_task",
         expected_action_types=["DELETE"],
+        expected_sequence=["QUERY", "DELETE"],
+        min_actions=2,
     ),
 
     # --- Multi-action (QUERY then MOVE) ---
@@ -119,6 +129,7 @@ CASES: list[Case] = [
         expected_category="file_task",
         expected_action_types=["QUERY", "MOVE"],
         min_actions=2,
+        expected_sequence=["QUERY", "MOVE"],  # order matters: find first, then move
     ),
 
     # --- NOT_IMPLEMENTED: unimplemented categories ---
@@ -150,10 +161,12 @@ class Result:
     passed_schema: bool = False
     passed_category: bool = False
     passed_action_type: bool = False
+    passed_ordering: bool = True    # False if action sequence is wrong
     passed_not_impl: bool = False   # for expect_not_implemented cases
     is_not_impl_case: bool = False
     latency_ms: float = 0.0
     error: str = ""
+    ordering_error: str = ""
     goal_spec: Optional[dict] = None
 
 
@@ -183,7 +196,7 @@ def evaluate(case: Case, parser: IntentParser, timeout_s: int) -> Result:
         else:
             result.passed_category = True
 
-        # 3. Action type correctness
+        # 3. Action type correctness (presence)
         if not case.expected_action_types:
             # No action type expectation — schema pass counts
             result.passed_action_type = True
@@ -196,6 +209,29 @@ def evaluate(case: Case, parser: IntentParser, timeout_s: int) -> Result:
             # Also check min_actions
             if len(gs.get("actions", [])) < case.min_actions:
                 result.passed_action_type = False
+
+        # 4. Action ordering (sequence correctness)
+        if case.expected_sequence:
+            actual_seq = [a.get("type") for a in gs.get("actions", [])]
+            # actual_seq must START with expected_sequence (extra trailing actions ok)
+            if actual_seq[:len(case.expected_sequence)] != case.expected_sequence:
+                result.passed_ordering = False
+                result.ordering_error = (
+                    f"expected sequence {case.expected_sequence}, "
+                    f"got {actual_seq}"
+                )
+        # Run semantic ordering validator regardless of expected_sequence
+        ordering_result = validate_action_ordering(gs)
+        if not ordering_result.valid:
+            # Hard errors (DAG violations) always fail ordering
+            hard_codes = {"DEPENDENCY_CYCLE", "FORWARD_DEPENDENCY",
+                          "DANGLING_DEPENDENCY", "DUPLICATE_ACTION_ID"}
+            hard = [e for e in ordering_result.errors if e.code in hard_codes]
+            if hard:
+                result.passed_ordering = False
+                result.ordering_error = "; ".join(
+                    f"[{e.code}] {e.message}" for e in hard
+                )
 
         # NOT_IMPLEMENTED cases that parsed are failing
         if case.expect_not_implemented:
@@ -225,17 +261,19 @@ def evaluate(case: Case, parser: IntentParser, timeout_s: int) -> Result:
 # Reporting
 # ---------------------------------------------------------------------------
 
-def print_result(r: Result, case: Case, verbose: bool) -> None:
+def print_result(r: Result, _case: Case, verbose: bool) -> None:
     if r.is_not_impl_case:
         ok = "PASS" if r.passed_not_impl else "FAIL"
         tag = "not-impl"
     else:
-        all_pass = r.passed_schema and r.passed_category and r.passed_action_type
+        all_pass = (r.passed_schema and r.passed_category
+                    and r.passed_action_type and r.passed_ordering)
         ok = "PASS" if all_pass else "FAIL"
         checks = []
         if not r.passed_schema:     checks.append("schema")
         if not r.passed_category:   checks.append("category")
         if not r.passed_action_type: checks.append("action_type")
+        if not r.passed_ordering:   checks.append("ordering")
         tag = ",".join(checks) if checks else "ok"
 
     lat = f"{r.latency_ms:.0f}ms"
@@ -243,12 +281,15 @@ def print_result(r: Result, case: Case, verbose: bool) -> None:
 
     if r.error:
         print(f"         error: {r.error}")
-    elif verbose and r.goal_spec:
-        actions = r.goal_spec.get("actions", [])
-        types = " + ".join(a.get("type", "?") for a in actions)
-        cat = r.goal_spec.get("category", "?")
-        conf = r.goal_spec.get("metadata", {}).get("confidence", 0)
-        print(f"         {cat}  [{types}]  conf={conf:.0%}")
+    else:
+        if r.ordering_error:
+            print(f"         ordering: {r.ordering_error}")
+        if verbose and r.goal_spec:
+            actions = r.goal_spec.get("actions", [])
+            types = " + ".join(a.get("type", "?") for a in actions)
+            cat = r.goal_spec.get("category", "?")
+            conf = r.goal_spec.get("metadata", {}).get("confidence", 0)
+            print(f"         {cat}  [{types}]  conf={conf:.0%}")
 
 
 def print_summary(results: list[Result], cases: list[Case], use_gbnf: bool) -> int:
@@ -262,11 +303,14 @@ def print_summary(results: list[Result], cases: list[Case], use_gbnf: bool) -> i
     not_impl = [(r, c) for r, c in zip(results, cases) if c.expect_not_implemented]
 
     n_reg = len(regular)
-    schema_pass     = sum(1 for r, _ in regular if r.passed_schema)
-    category_pass   = sum(1 for r, _ in regular if r.passed_category)
-    action_pass     = sum(1 for r, _ in regular if r.passed_action_type)
-    all_pass        = sum(1 for r, _ in regular if r.passed_schema and r.passed_category and r.passed_action_type)
-    not_impl_pass   = sum(1 for r, _ in not_impl if r.passed_not_impl)
+    schema_pass   = sum(1 for r, _ in regular if r.passed_schema)
+    category_pass = sum(1 for r, _ in regular if r.passed_category)
+    action_pass   = sum(1 for r, _ in regular if r.passed_action_type)
+    ordering_pass = sum(1 for r, _ in regular if r.passed_ordering)
+    all_pass      = sum(1 for r, _ in regular
+                        if r.passed_schema and r.passed_category
+                        and r.passed_action_type and r.passed_ordering)
+    not_impl_pass = sum(1 for r, _ in not_impl if r.passed_not_impl)
 
     def pct(n, d): return f"{n}/{d} ({100*n//d if d else 0}%)"
 
@@ -274,6 +318,7 @@ def print_summary(results: list[Result], cases: list[Case], use_gbnf: bool) -> i
     print(f"    Schema validity :  {pct(schema_pass, n_reg)}")
     print(f"    Category correct:  {pct(category_pass, n_reg)}")
     print(f"    Action type ok  :  {pct(action_pass, n_reg)}")
+    print(f"    Action ordering :  {pct(ordering_pass, n_reg)}")
     print(f"    All checks pass :  {pct(all_pass, n_reg)}")
 
     if not_impl:
@@ -281,16 +326,19 @@ def print_summary(results: list[Result], cases: list[Case], use_gbnf: bool) -> i
         print(f"    Correctly rejected: {pct(not_impl_pass, len(not_impl))}")
 
     # Phase 0 gate
-    schema_pct  = 100 * schema_pass  // n_reg if n_reg else 0
-    action_pct  = 100 * action_pass  // n_reg if n_reg else 0
-    schema_gate = schema_pct >= 95
-    action_gate = action_pct >= 80
+    schema_pct   = 100 * schema_pass   // n_reg if n_reg else 0
+    action_pct   = 100 * action_pass   // n_reg if n_reg else 0
+    ordering_pct = 100 * ordering_pass // n_reg if n_reg else 0
+    schema_gate   = schema_pct   >= 95
+    action_gate   = action_pct   >= 80
+    ordering_gate = ordering_pct >= 80
 
     print(f"\n  Phase 0 gate:")
-    print(f"    schema_validity >= 95%  : {'PASS' if schema_gate else 'FAIL'} ({schema_pct}%)")
-    print(f"    action_type_ok  >= 80%  : {'PASS' if action_gate else 'FAIL'} ({action_pct}%)")
+    print(f"    schema_validity >= 95%  : {'PASS' if schema_gate   else 'FAIL'} ({schema_pct}%)")
+    print(f"    action_type_ok  >= 80%  : {'PASS' if action_gate   else 'FAIL'} ({action_pct}%)")
+    print(f"    action_ordering >= 80%  : {'PASS' if ordering_gate else 'FAIL'} ({ordering_pct}%)")
 
-    if schema_gate and action_gate:
+    if schema_gate and action_gate and ordering_gate:
         print(f"\n  *** PHASE 0 COMPLETE — eval harness passed ***")
         return 0
     else:

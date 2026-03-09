@@ -25,6 +25,7 @@ from config import (
     INFERENCE_MAX_TOKENS,
     INFERENCE_STOP_TOKENS,
 )
+from agents.validators import validate_goal_spec
 from errors import LeavesError, LeavesErrorCode
 from inference.client import InferenceClient, InferenceRequest
 
@@ -107,6 +108,7 @@ class IntentParser:
         )
         self._check_actions_present(goal_spec)
         self._validate_schema(goal_spec)
+        self._validate_semantics(goal_spec)
         self._check_confidence(goal_spec)
 
         return goal_spec
@@ -178,6 +180,13 @@ class IntentParser:
         Also injects a default authorization block when the model omits it
         (the 1B model occasionally forgets this required field).
         """
+        # Strip self-referential depends_on (act-1 depends_on act-1 is meaningless)
+        for action in goal_spec.get("actions", []):
+            aid = action.get("action_id", "")
+            deps = action.get("depends_on", [])
+            if aid and deps:
+                action["depends_on"] = [d for d in deps if d != aid]
+
         # Always overwrite intent_id with a real UUID v4
         goal_spec["intent_id"] = str(uuid.uuid4())
 
@@ -261,6 +270,35 @@ class IntentParser:
                 detail=f"Schema validation failed: {e.message}",
                 cause=e,
             )
+
+    def _validate_semantics(self, goal_spec: dict[str, Any]) -> None:
+        """
+        Run semantic validators (ordering, dependency integrity, destructive flags).
+
+        Hard errors (DAG violations) raise LeavesError.
+        Soft errors (ordering heuristics) are suppressed for now — the 1B model
+        sometimes generates extra actions that are semantically redundant but not
+        wrong enough to fail the user's request. These will become hard errors
+        once the model is upgraded in Phase 1.
+        """
+        _HARD_ERROR_CODES = frozenset({
+            "FORWARD_DEPENDENCY",   # real forward refs between different actions
+            "DANGLING_DEPENDENCY",  # depends_on non-existent action
+            "DUPLICATE_ACTION_ID",
+            # DEPENDENCY_CYCLE: excluded because the 1B model sometimes generates
+            # self-references (act-1 depends_on act-1) which are meaningless but
+            # not execution-dangerous. Those are already caught as SELF_DEPENDENCY.
+            # True multi-action cycles are rare and caught by FORWARD_DEPENDENCY.
+        })
+        result = validate_goal_spec(goal_spec)
+        if not result.valid:
+            hard = [e for e in result.errors if e.code in _HARD_ERROR_CODES]
+            if hard:
+                detail = "; ".join(f"[{e.code}] {e.message}" for e in hard)
+                raise LeavesError(
+                    LeavesErrorCode.SCHEMA_VALIDATION_FAILED,
+                    detail=f"GoalSpec semantic validation failed: {detail}",
+                )
 
     def _check_confidence(self, goal_spec: dict[str, Any]) -> None:
         confidence = goal_spec.get("metadata", {}).get("confidence", 0.0)
