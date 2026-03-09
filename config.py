@@ -25,7 +25,7 @@ TIMEOUT_HARD_SECONDS = 360
 INFERENCE_TEMPERATURE = 0.1
 # GoalSpec JSON tops out at ~300 tokens even for 3-action intents. 512 gives
 # headroom without running hot enough to throttle the i5-7200U during a full eval run.
-INFERENCE_MAX_TOKENS = 512
+INFERENCE_MAX_TOKENS = 768  # Phase 1: raised from 512 for 3-action GoalSpecs (~450 tokens)
 INFERENCE_STOP_TOKENS = ["<|eot_id|>", "<|end_of_text|>"]
 
 # ---------------------------------------------------------------------------

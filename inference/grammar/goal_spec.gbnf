@@ -11,12 +11,14 @@ goal-spec ::= "{" ws "\"intent_id\"" ws ":" ws string ws "," ws "\"natural_text\
 # Closed enum — no other value accepted
 category ::= "\"file_task\"" | "\"email_task\"" | "\"web_task\"" | "\"system_task\"" | "\"writing_task\""
 
-# EXPLICIT typed array — max 2 actions. All Phase 0 cases need at most 2:
-#   QUERY → MOVE/DELETE (2). Single-action cases (READ, QUERY, MOVE) need 1.
-# Reduced from 3 to 2: the 1B model at 7 tok/s fills the 512-token budget
-# in ~73s generating 3 actions. 2-action cap limits GoalSpec to ~350 tokens,
-# completing in ~50s at 7 tok/s — well within the 90s timeout.
-actions-array ::= "[" ws action (ws "," ws action)? ws "]"
+# EXPLICIT typed array — max 3 actions (Phase 1).
+# Phase 0 was capped at 2: the 1B model at 7 tok/s filled the 512-token budget
+# before generating 3 actions. Qwen2.5-3B generates faster (~20 tok/s min) and
+# INFERENCE_MAX_TOKENS is now 768, giving 3-action GoalSpecs headroom to close.
+# Single-action: READ, MOVE, COPY, WRITE, QUERY
+# Two-action: QUERY→DELETE, QUERY→MOVE, QUERY→COPY, QUERY→READ
+# Three-action: QUERY→QUERY→MOVE (multi-stage discover-filter-act)
+actions-array ::= "[" ws action (ws "," ws action (ws "," ws action)?)? ws "]"
 
 # Action object — field order fixed, depends_on optional
 action ::= "{" ws "\"action_id\"" ws ":" ws action-id ws "," ws "\"type\"" ws ":" ws action-type ws "," ws "\"agent\"" ws ":" ws agent-type ws "," ws "\"params\"" ws ":" ws json-object ws "," ws "\"destructive\"" ws ":" ws boolean (ws "," ws "\"depends_on\"" ws ":" ws depends-on-array)? ws "}"
