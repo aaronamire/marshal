@@ -388,7 +388,7 @@ class IntentParser:
             if hard:
                 detail = "; ".join(f"[{e.code}] {e.message}" for e in hard)
                 raise LeavesError(
-                    LeavesErrorCode.SCHEMA_VALIDATION_FAILED,
+                    LeavesErrorCode.SEMANTIC_VALIDATION_FAILED,
                     detail=f"GoalSpec semantic validation failed: {detail}",
                 )
 

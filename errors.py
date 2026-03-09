@@ -54,6 +54,10 @@ class LeavesErrorCode(enum.Enum):
     # Authorization dialog
     USER_CANCELLED = "USER_CANCELLED"
 
+    # Layer 2.5 routing (Phase 1)
+    SEMANTIC_VALIDATION_FAILED = "SEMANTIC_VALIDATION_FAILED"  # hard semantic error, escalate
+    LOW_CONFIDENCE_ESCALATION = "LOW_CONFIDENCE_ESCALATION"   # confidence below L2.5 threshold
+
     # Generic
     INTERNAL_ERROR = "INTERNAL_ERROR"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
@@ -99,6 +103,14 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
     LeavesErrorCode.DEPENDENCY_FAILED: "A required action dependency failed. Skipping.",
     LeavesErrorCode.DB_ERROR: "A database error occurred. Check logs.",
     LeavesErrorCode.USER_CANCELLED: "Operation cancelled.",
+    LeavesErrorCode.SEMANTIC_VALIDATION_FAILED: (
+        "The intent has a structural conflict (e.g., mutation before discovery). "
+        "Try being more specific about the operation order."
+    ),
+    LeavesErrorCode.LOW_CONFIDENCE_ESCALATION: (
+        "I'm not confident enough about this intent — routing to a more capable model. "
+        "Try being more specific while the escalation is in progress."
+    ),
     LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
     LeavesErrorCode.NOT_IMPLEMENTED: (
         "That type of task isn't implemented yet. "
