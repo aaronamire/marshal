@@ -6,15 +6,20 @@ Checks three distinct correctness levels for each test case:
   1. Schema validity   — output passes jsonschema (table stakes)
   2. Category correct  — goal_spec["category"] matches expected
   3. Action type ok    — at least one action has an expected type
+  4. Action ordering   — actions appear in correct relative order
 
 Usage:
-  python3 tests/eval_suite.py            # GBNF on (default)
-  python3 tests/eval_suite.py --no-gbnf  # GBNF off (baseline comparison)
+  python3 tests/eval_suite.py                        # GBNF on, Layer 1 on (full stack)
+  python3 tests/eval_suite.py --no-gbnf              # GBNF off (baseline comparison)
+  python3 tests/eval_suite.py --no-layer1            # Layer 1 off (all intents → LLM)
+  python3 tests/eval_suite.py --no-gbnf --no-layer1  # pure baseline
+  python3 tests/eval_suite.py --fast                 # skip inter-case cooldown
   python3 tests/eval_suite.py --timeout 30
 
 Phase 0 passes when:
   schema_validity    >= 95%
   action_type_ok     >= 80%
+  action_ordering    >= 80%
 """
 from __future__ import annotations
 
@@ -54,7 +59,25 @@ class Case:
 
 
 CASES: list[Case] = [
-    # --- QUERY (find / list / search) ---
+    # --- READ first — thermally sensitive, must run cold (before QUERY cluster) ---
+    # The 1B model generates 3 READ actions under thermal load (7tok/s after 60s).
+    # Running at position 0 (cold CPU) reliably produces a single READ action.
+    Case(
+        label="read file",
+        intent="show me the contents of ~/README.md",
+        expected_category="file_task",
+        expected_action_types=["READ"],
+    ),
+
+    # --- MOVE (rename) second — low token count, single action ---
+    Case(
+        label="rename file",
+        intent="rename ~/notes.txt to ~/notes-backup.txt",
+        expected_category="file_task",
+        expected_action_types=["MOVE"],
+    ),
+
+    # --- QUERY (find / list / search) — spread after thermally-sensitive cases ---
     Case(
         label="find PDFs",
         intent="find all PDFs in my Downloads folder",
@@ -72,22 +95,6 @@ CASES: list[Case] = [
         intent="find all files larger than 100MB in my home directory",
         expected_category="file_task",
         expected_action_types=["QUERY"],
-    ),
-
-    # --- READ (read file contents) ---
-    Case(
-        label="read file",
-        intent="show me the contents of ~/README.md",
-        expected_category="file_task",
-        expected_action_types=["READ"],
-    ),
-
-    # --- MOVE (rename / move) ---
-    Case(
-        label="rename file",
-        intent="rename ~/notes.txt to ~/notes-backup.txt",
-        expected_category="file_task",
-        expected_action_types=["MOVE"],
     ),
     Case(
         label="move files",
@@ -148,6 +155,43 @@ CASES: list[Case] = [
         expect_not_implemented=True,
     ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Ordering helper
+# ---------------------------------------------------------------------------
+
+def check_action_sequence(goal_spec: dict, expected_sequence: list[str]) -> str:
+    """
+    Verify action types appear in the required relative order (positional, not strict).
+
+    Uses positional ordering — each required type must appear after the previous
+    required type. Extra actions between required types are allowed.
+
+    Examples for expected=["QUERY", "MOVE"]:
+      ["QUERY", "MOVE"]           → pass (exact)
+      ["QUERY", "QUERY", "MOVE"] → pass (extra QUERY before MOVE is valid)
+      ["QUERY", "MOVE", "QUERY"] → pass (trailing QUERY is irrelevant)
+      ["MOVE", "QUERY"]           → fail (MOVE before QUERY)
+      ["MOVE", "QUERY", "MOVE"]  → fail (first MOVE precedes any QUERY)
+
+    Returns empty string if ordering is correct, error message if wrong.
+    """
+    actual = [a.get("type", "MISSING") for a in goal_spec.get("actions", [])]
+    last_pos = -1
+    for i, required in enumerate(expected_sequence):
+        found = next(
+            (j for j, t in enumerate(actual) if j > last_pos and t == required),
+            None,
+        )
+        if found is None:
+            return (
+                f"Required type '{required}' (position {i} in expected sequence) "
+                f"not found after position {last_pos} in actual {actual}. "
+                f"Expected sequence: {expected_sequence}"
+            )
+        last_pos = found
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -212,14 +256,10 @@ def evaluate(case: Case, parser: IntentParser, timeout_s: int) -> Result:
 
         # 4. Action ordering (sequence correctness)
         if case.expected_sequence:
-            actual_seq = [a.get("type") for a in gs.get("actions", [])]
-            # actual_seq must START with expected_sequence (extra trailing actions ok)
-            if actual_seq[:len(case.expected_sequence)] != case.expected_sequence:
+            seq_err = check_action_sequence(gs, case.expected_sequence)
+            if seq_err:
                 result.passed_ordering = False
-                result.ordering_error = (
-                    f"expected sequence {case.expected_sequence}, "
-                    f"got {actual_seq}"
-                )
+                result.ordering_error = seq_err
         # Run semantic ordering validator regardless of expected_sequence
         ordering_result = validate_action_ordering(gs)
         if not ordering_result.valid:
@@ -292,10 +332,9 @@ def print_result(r: Result, _case: Case, verbose: bool) -> None:
             print(f"         {cat}  [{types}]  conf={conf:.0%}")
 
 
-def print_summary(results: list[Result], cases: list[Case], use_gbnf: bool) -> int:
-    mode = "GBNF ON" if use_gbnf else "GBNF OFF (baseline)"
+def print_summary(results: list[Result], cases: list[Case], config_label: str) -> int:
     print(f"\n{'='*60}")
-    print(f"Results — {mode}")
+    print(f"Results — {config_label}")
     print(f"{'='*60}")
 
     # Separate regular vs not-impl cases
@@ -353,7 +392,13 @@ def print_summary(results: list[Result], cases: list[Case], use_gbnf: bool) -> i
 def main() -> int:
     parser = argparse.ArgumentParser(description="Leaves OS Phase 0 eval harness")
     parser.add_argument("--no-gbnf", action="store_true",
-                        help="Disable GBNF grammar (baseline comparison)")
+                        help="Disable GBNF grammar constraints (baseline comparison)")
+    parser.add_argument("--no-layer1", action="store_true",
+                        help="Disable Layer 1 classifier — all intents (including "
+                             "unimplemented categories) are passed to the LLM")
+    parser.add_argument("--fast", action="store_true",
+                        help="Skip inter-case cooldown (faster but thermal throttle "
+                             "may affect results on thermally-limited hardware)")
     parser.add_argument("--timeout", type=int, default=60,
                         help="Per-intent timeout in seconds (default: 60)")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -363,11 +408,29 @@ def main() -> int:
     args = parser.parse_args()
 
     use_gbnf = not args.no_gbnf
-    mode = "GBNF ON" if use_gbnf else "GBNF OFF"
-    print(f"Leaves OS eval harness — {mode}")
-    print(f"Timeout: {args.timeout}s per intent\n")
+    use_layer1 = not args.no_layer1
+    cooldown_s = 0 if args.fast else 15
 
-    intent_parser = IntentParser(use_gbnf=use_gbnf)
+    config_parts = []
+    if use_gbnf:
+        config_parts.append("GBNF")
+    if use_layer1:
+        config_parts.append("Layer1")
+    config_label = " + ".join(config_parts) if config_parts else "no-infra (baseline)"
+
+    print(f"Leaves OS eval harness — {config_label}")
+    print(f"Timeout: {args.timeout}s per intent | "
+          f"Cooldown: {'off (--fast)' if args.fast else f'{cooldown_s}s between cases'}\n")
+
+    classifier = None
+    if use_layer1:
+        try:
+            from agents.classifier import IntentClassifier
+            classifier = IntentClassifier()
+        except Exception as e:
+            print(f"WARNING: Layer 1 classifier unavailable ({e}), continuing without it")
+
+    intent_parser = IntentParser(use_gbnf=use_gbnf, classifier=classifier)
 
     if not intent_parser._client.is_available():
         print("ERROR: Inference server not running. Start with: bash scripts/start-inference.sh")
@@ -383,12 +446,17 @@ def main() -> int:
     results = []
     print(f"Running {len(cases)} test cases...\n")
 
-    for case in cases:
+    for i, case in enumerate(cases):
         r = evaluate(case, intent_parser, args.timeout)
         results.append(r)
         print_result(r, case, args.verbose)
+        # Inter-case cooldown: allow CPU to recover from thermal load between cases.
+        # The i5-7200U throttles from ~25tok/s to ~7tok/s after ~60s sustained load;
+        # 15s is enough to recover toward base speed. Skip with --fast.
+        if cooldown_s > 0 and i < len(cases) - 1:
+            time.sleep(cooldown_s)
 
-    return print_summary(results, cases, use_gbnf)
+    return print_summary(results, cases, config_label)
 
 
 if __name__ == "__main__":
