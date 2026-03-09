@@ -163,35 +163,42 @@ CASES: list[Case] = [
 
 def check_action_sequence(goal_spec: dict, expected_sequence: list[str]) -> str:
     """
-    Verify action types appear in the required relative order (positional, not strict).
+    Verify required action types appear in order, using FIRST OCCURRENCE of each type.
 
-    Uses positional ordering — each required type must appear after the previous
-    required type. Extra actions between required types are allowed.
+    Correct semantics: for expected=["QUERY", "MOVE"],
+      ["QUERY", "MOVE"]           → pass (first QUERY at 0, first MOVE at 1)
+      ["QUERY", "QUERY", "MOVE"] → pass (first QUERY at 0, first MOVE at 2)
+      ["QUERY", "MOVE", "QUERY"] → pass (first QUERY at 0, first MOVE at 1)
+      ["MOVE", "QUERY"]           → FAIL (first MOVE at 0, first QUERY at 1 — reversed)
+      ["MOVE", "QUERY", "MOVE"]  → FAIL (first MOVE at 0 precedes first QUERY at 1)
 
-    Examples for expected=["QUERY", "MOVE"]:
-      ["QUERY", "MOVE"]           → pass (exact)
-      ["QUERY", "QUERY", "MOVE"] → pass (extra QUERY before MOVE is valid)
-      ["QUERY", "MOVE", "QUERY"] → pass (trailing QUERY is irrelevant)
-      ["MOVE", "QUERY"]           → fail (MOVE before QUERY)
-      ["MOVE", "QUERY", "MOVE"]  → fail (first MOVE precedes any QUERY)
+    The previous "last_pos" implementation found QUERY at pos 1 and the second MOVE at
+    pos 2 for ["MOVE", "QUERY", "MOVE"], falsely passing. First-occurrence comparison
+    uses pos 0 (first MOVE) vs pos 1 (first QUERY) — correctly fails.
 
-    Returns empty string if ordering is correct, error message if wrong.
+    Returns "" if ordering is correct, error message string if wrong.
     """
     actual = [a.get("type", "MISSING") for a in goal_spec.get("actions", [])]
-    last_pos = -1
-    for i, required in enumerate(expected_sequence):
-        found = next(
-            (j for j, t in enumerate(actual) if j > last_pos and t == required),
-            None,
-        )
-        if found is None:
-            return (
-                f"Required type '{required}' (position {i} in expected sequence) "
-                f"not found after position {last_pos} in actual {actual}. "
-                f"Expected sequence: {expected_sequence}"
+
+    first_pos: dict[str, int] = {}
+    for i, t in enumerate(actual):
+        if t not in first_pos:
+            first_pos[t] = i
+
+    failures = []
+    for i in range(len(expected_sequence) - 1):
+        before = expected_sequence[i]
+        after = expected_sequence[i + 1]
+        if before not in first_pos:
+            failures.append(f"Required type '{before}' not found in {actual}")
+        elif after not in first_pos:
+            failures.append(f"Required type '{after}' not found in {actual}")
+        elif first_pos[before] >= first_pos[after]:
+            failures.append(
+                f"'{before}' (first at pos {first_pos[before]}) must precede "
+                f"'{after}' (first at pos {first_pos[after]}). Actual: {actual}"
             )
-        last_pos = found
-    return ""
+    return "; ".join(failures)
 
 
 # ---------------------------------------------------------------------------
