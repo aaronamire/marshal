@@ -33,7 +33,7 @@ INFERENCE_STOP_TOKENS = ["<|eot_id|>", "<|end_of_text|>"]
 # ---------------------------------------------------------------------------
 # "llama3"  → Llama 3 instruct format (<|begin_of_text|> / <|eot_id|>)
 # "chatml"  → ChatML format (<|im_start|> / <|im_end|>)
-MODEL_FAMILY: str = "llama3"
+MODEL_FAMILY: str = "chatml"  # Phase 1: Qwen2.5-3B uses ChatML (<|im_start|>/<|im_end|>)
 
 # ---------------------------------------------------------------------------
 # Intent parsing
