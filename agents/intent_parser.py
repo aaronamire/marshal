@@ -85,10 +85,19 @@ class IntentParser:
         self._validate_input(user_text)
 
         # --- Layer 0: sub-millisecond regex match (<0.1ms) ---
-        # Only fires for unambiguous commands with explicit paths.
-        # On match: bypasses both L1 and L2, returns a minimal GoalSpec directly.
+        # On match with is_implemented=False: raise immediately, skip L1+L2 entirely.
+        # On match with is_implemented=True: build GoalSpec directly, skip L1+L2.
         l0 = layer0_match(user_text)
         if l0.matched:
+            if not l0.is_implemented:
+                raise LeavesError(
+                    LeavesErrorCode.NOT_IMPLEMENTED,
+                    detail=(
+                        "This request type is not yet implemented in Phase 1. "
+                        "Only file operations are supported. Email, web, system, "
+                        "and writing agents are planned for Phase 2+. (L0 fast-path)"
+                    ),
+                )
             goal_spec = self._build_goal_spec_from_l0(l0, user_text)
             self._check_actions_present(goal_spec)
             self._validate_schema(goal_spec)

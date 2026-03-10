@@ -26,6 +26,7 @@ class Layer0Result:
     params: Optional[dict] = None
     confidence: float = 0.0
     latency_ms: float = 0.0
+    is_implemented: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +127,37 @@ _rule(
 
 
 # ---------------------------------------------------------------------------
+# NOT_IMPLEMENTED fast-path patterns
+# Matched inputs are flagged is_implemented=False → caller raises immediately.
+# Patterns are intentionally broad (no explicit path required).
+# ---------------------------------------------------------------------------
+
+_NOT_IMPL_RULES: list[re.Pattern] = []
+
+
+def _not_impl(pattern: str) -> None:
+    _NOT_IMPL_RULES.append(re.compile(pattern, re.IGNORECASE))
+
+
+# email — write/send/compose/draft + email/message/mail
+_not_impl(r'^\s*(?:write|send|compose|draft)\b.+\b(?:email|e-mail|message|mail)\b')
+_not_impl(r'^\s*(?:write|send|compose|draft)\b.+\bto\b')  # "draft a message to my team"
+
+# system — processes/cpu/ram/memory/battery/wifi/brightness/volume
+_not_impl(r'\b(?:processes?|cpu|ram|memory|battery|wifi|wi-fi|brightness|volume)\b')
+_not_impl(r'\b(?:show|check|monitor|display)\b.+\b(?:usage|status|info|level)\b')
+
+# web — search the web / open url / browse / download from http
+_not_impl(r'\bsearch\s+(?:the\s+)?web\b')
+_not_impl(r'\bopen\s+(?:url|http|https)\b')
+_not_impl(r'\b(?:browse|download\s+from)\s+https?://')
+
+# writing — write a document/report / summarize text
+_not_impl(r'\bwrite\s+a\s+(?:document|report|letter|essay|blog\s+post)\b')
+_not_impl(r'\bsummariz[ei]\s+(?:this|the)\s+(?:text|document|article|file)\b')
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -134,6 +166,9 @@ def match(user_text: str) -> Layer0Result:
     Try all patterns against user_text. Returns the first match.
     Returns Layer0Result(matched=False) if nothing matches.
     Typical latency: <0.05ms.
+
+    If a NOT_IMPLEMENTED pattern matches, returns matched=True, is_implemented=False.
+    The caller should raise LeavesError(NOT_IMPLEMENTED) immediately in that case.
     """
     t0 = time.monotonic()
     for pattern, action_type, destructive, extractor in _RULES:
@@ -150,6 +185,11 @@ def match(user_text: str) -> Layer0Result:
                 params={**params, "destructive": destructive},
                 confidence=0.95,
                 latency_ms=latency_ms,
+                is_implemented=True,
             )
+    for pattern in _NOT_IMPL_RULES:
+        if pattern.search(user_text):
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(matched=True, confidence=0.90, latency_ms=latency_ms, is_implemented=False)
     latency_ms = (time.monotonic() - t0) * 1000
     return Layer0Result(matched=False, latency_ms=latency_ms)

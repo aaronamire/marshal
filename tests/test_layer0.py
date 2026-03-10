@@ -173,8 +173,10 @@ class TestLayer0NoMatch:
         assert not r.matched
 
     def test_email_intent(self):
+        # Email inputs now match as NOT_IMPLEMENTED fast-path (matched=True, is_implemented=False)
         r = match("send an email to john about the meeting")
-        assert not r.matched
+        assert r.matched
+        assert not r.is_implemented
 
     def test_rename_bare_words(self):
         # Both paths must be explicit (start with ~, /, etc.)
