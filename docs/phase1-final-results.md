@@ -1,24 +1,21 @@
-# Leaves OS — Phase 1 Final Results
-Date: 2026-03-11
-Model: Qwen2.5-3B-Instruct Q4_K_M
-Threads: 2 (Kaby Lake physical cores)
-Grammar cap: 3 actions
-Layer 0: enabled
-Eval cases: 29 (24 file + 5 NOT_IMPLEMENTED)
+Phase 1 eval — 2026-03-11
+Regular intents (24 cases):
+  Schema validity:  23/24 (95%)  PASS
+  Category correct: 23/24 (95%)
+  Action type ok:   22/24 (91%)  PASS
+  Action ordering:  23/24 (95%)  PASS
+  All checks pass:  22/24 (91%)
 
-Schema validity  : 23/24 (95%) PASS
-Category correct : 23/24 (95%)
-Action type ok   : 22/24 (91%) PASS
-Action ordering  : 23/24 (95%) PASS
-NOT_IMPLEMENTED  : 5/5  (100%)
+Not-implemented (5 cases): 5/5 (100%)
 
-*** PHASE 1 GATE PASSED ***
+PHASE 1 GATE PASSED
 
 Known failures:
-- "read file": INFERENCE_TIMEOUT (90s) — thermal cold-start, same as Phase 0
-- "delete tmp files": model generated [DELETE] only, missing prior QUERY
+  - "read file" — INFERENCE_TIMEOUT (thermal cold-start)
+  - "delete tmp files" — model generated [DELETE] only, missing prior QUERY
 
-Phase 0 → Phase 1 delta:
-- find-then-move: FAIL → PASS (Qwen2.5-3B fixed ordering)
-- action_ordering: 80% → 95%
-- action_type_ok: 90% → 91%
+Post-eval fixes applied:
+  - L0 NOT_IMPLEMENTED fast-path for email/system/web/writing
+  - NOT_IMPLEMENTED regex false positive on "write X to ~/path" corrected
+
+RAG: deferred — disk quota prevented lancedb install; fails gracefully
