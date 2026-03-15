@@ -182,7 +182,11 @@ class TestLayer0NoMatch:
         # Both paths must be explicit (start with ~, /, etc.)
         r = match("rename draft to final")
         assert not r.matched
-
+        
+    def test_write_to_path_not_impl(self):
+        r = match("write the output to ~/report.txt")
+        # Should NOT be caught by NOT_IMPLEMENTED — this is a file operation
+        assert not r.matched or r.is_implemented
 
 class TestLayer0Latency:
 
