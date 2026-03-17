@@ -5,7 +5,7 @@
 LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
 # Phase 1: Qwen2.5-3B-Instruct Q4_K_M (ChatML format, ~1.88GB)
 # Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — fallback
-MODEL="$(dirname "$0")/../models/qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL="$(dirname "$0")/../models/goalspec_qwen25_3b_q4km.gguf"
 MODEL_FALLBACK="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 PORT=8080
 HOST="127.0.0.1"

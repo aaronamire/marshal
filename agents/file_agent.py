@@ -24,6 +24,7 @@ from errors import LeavesError, LeavesErrorCode
 
 MAX_READ_BYTES = 65_536  # 64 KiB — don't slurp huge files into memory
 MAX_LIST_RESULTS = 500   # cap on fs_list results
+MAX_BULK_OPS = 200       # cap on bulk move/copy/delete operations
 
 
 class FileAgent(BaseAgent):
@@ -49,12 +50,12 @@ class FileAgent(BaseAgent):
         params = action.get("params", {})
 
         dispatch = {
-            "QUERY": lambda: self.fs_list(action_id, **params),
-            "READ":  lambda: self.fs_read_text(action_id, **params),
-            "WRITE": lambda: self.fs_write(action_id, **params),
+            "QUERY":  lambda: self.fs_list(action_id, **params),
+            "READ":   lambda: self.fs_read_text(action_id, **params),
+            "WRITE":  lambda: self.fs_write(action_id, **params),
             "DELETE": lambda: self.fs_delete(action_id, **params),
-            "MOVE":  lambda: self.fs_move(action_id, **params),
-            "COPY":  lambda: self.fs_copy(action_id, **params),
+            "MOVE":   lambda: self.fs_move(action_id, **params),
+            "COPY":   lambda: self.fs_copy(action_id, **params),
         }
 
         handler = dispatch.get(action_type)
@@ -78,8 +79,10 @@ class FileAgent(BaseAgent):
         **_: Any,
     ) -> dict:
         resolved = self._authorize(path)
-        row_id = self._audit_start(action_id, "QUERY", {"path": path, "pattern": pattern, "recursive": recursive})
-
+        row_id = self._audit_start(
+            action_id, "QUERY",
+            {"path": path, "pattern": pattern, "recursive": recursive},
+        )
         try:
             results = self._do_list(resolved, pattern, recursive)
             result = {"count": len(results), "files": results, "path": str(resolved)}
@@ -100,7 +103,6 @@ class FileAgent(BaseAgent):
     ) -> dict:
         resolved = self._authorize(path)
         row_id = self._audit_start(action_id, "READ", {"path": path})
-
         try:
             if not resolved.exists():
                 raise LeavesError(LeavesErrorCode.PATH_DOES_NOT_EXIST, detail=str(resolved))
@@ -136,13 +138,14 @@ class FileAgent(BaseAgent):
     ) -> dict:
         resolved = self._authorize(path)
         row_id = self._audit_start(action_id, "READ", {"path": path})
-
         try:
             if not resolved.exists():
                 raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved))
             if not resolved.is_file():
-                raise LeavesError(LeavesErrorCode.FILE_READ_ERROR, detail=f"{resolved} is not a file")
-
+                raise LeavesError(
+                    LeavesErrorCode.FILE_READ_ERROR,
+                    detail=f"{resolved} is not a file",
+                )
             capped = min(max_bytes, MAX_READ_BYTES)
             with resolved.open("rb") as f:
                 raw = f.read(capped)
@@ -176,7 +179,6 @@ class FileAgent(BaseAgent):
     ) -> dict:
         resolved = self._authorize(path)
         row_id = self._audit_start(action_id, "WRITE", {"path": path, "overwrite": overwrite})
-
         try:
             if resolved.exists() and not overwrite:
                 raise LeavesError(
@@ -203,23 +205,77 @@ class FileAgent(BaseAgent):
         self,
         action_id: str,
         path: str,
+        pattern: Optional[str] = None,
+        recursive: bool = False,
         **_: Any,
     ) -> dict:
-        resolved = self._authorize(path)
-        row_id = self._audit_start(action_id, "DELETE", {"path": path})
+        """
+        Delete a single file (no pattern) or all files matching a glob
+        pattern within a directory (with pattern).
 
+        Never deletes directories — only files.
+        With pattern: deletes all matching files up to MAX_BULK_OPS.
+        """
+        resolved = self._authorize(path)
+        row_id = self._audit_start(
+            action_id, "DELETE",
+            {"path": path, "pattern": pattern, "recursive": recursive},
+        )
         try:
+            # --- Bulk delete: pattern provided ---
+            if pattern:
+                if not resolved.exists():
+                    raise LeavesError(
+                        LeavesErrorCode.PATH_DOES_NOT_EXIST,
+                        detail=str(resolved),
+                    )
+                if not resolved.is_dir():
+                    raise LeavesError(
+                        LeavesErrorCode.FILE_DELETE_ERROR,
+                        detail=f"{resolved} is not a directory — cannot use pattern on a file",
+                    )
+                glob_fn = resolved.rglob if recursive else resolved.glob
+                targets = [
+                    p for p in glob_fn(pattern)
+                    if p.is_file()
+                ][:MAX_BULK_OPS]
+
+                deleted = []
+                errors = []
+                for target in targets:
+                    try:
+                        target.unlink()
+                        deleted.append(str(target))
+                    except Exception as e:
+                        errors.append({"path": str(target), "error": str(e)})
+
+                result = {
+                    "path": str(resolved),
+                    "pattern": pattern,
+                    "deleted_count": len(deleted),
+                    "deleted": deleted,
+                    "errors": errors,
+                }
+                self._audit_end(row_id, result)
+                return result
+
+            # --- Single file delete ---
             if not resolved.exists():
                 raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved))
             if resolved.is_dir():
                 raise LeavesError(
                     LeavesErrorCode.FILE_DELETE_ERROR,
-                    detail=f"{resolved} is a directory. FileAgent only deletes files, not directories.",
+                    detail=(
+                        f"{resolved} is a directory. "
+                        "FileAgent only deletes files, not directories. "
+                        "Use pattern='*' to delete files within a directory."
+                    ),
                 )
             resolved.unlink()
             result = {"path": str(resolved), "deleted": True}
             self._audit_end(row_id, result)
             return result
+
         except LeavesError:
             raise
         except PermissionError as e:
@@ -234,21 +290,78 @@ class FileAgent(BaseAgent):
     def fs_move(
         self,
         action_id: str,
-        src: str,
-        dst: str,
+        source: str,
+        destination: str,
+        pattern: Optional[str] = None,
+        recursive: bool = False,
         **_: Any,
     ) -> dict:
-        resolved_src = self._authorize(src)
-        resolved_dst = self._authorize(dst)
-        row_id = self._audit_start(action_id, "MOVE", {"src": src, "dst": dst})
+        """
+        Move a single file/directory (no pattern) or all files matching
+        a glob pattern from source directory to destination directory.
 
+        Parameter names are 'source'/'destination' to match GoalSpec schema.
+        """
+        resolved_src = self._authorize(source)
+        resolved_dst = self._authorize(destination)
+        row_id = self._audit_start(
+            action_id, "MOVE",
+            {"source": source, "destination": destination, "pattern": pattern},
+        )
         try:
+            # --- Bulk move: pattern provided ---
+            if pattern:
+                if not resolved_src.exists():
+                    raise LeavesError(
+                        LeavesErrorCode.PATH_DOES_NOT_EXIST,
+                        detail=str(resolved_src),
+                    )
+                if not resolved_src.is_dir():
+                    raise LeavesError(
+                        LeavesErrorCode.FILE_MOVE_ERROR,
+                        detail=f"{resolved_src} is not a directory — cannot use pattern on a file",
+                    )
+                resolved_dst.mkdir(parents=True, exist_ok=True)
+                glob_fn = resolved_src.rglob if recursive else resolved_src.glob
+                targets = [
+                    p for p in glob_fn(pattern)
+                    if p.is_file()
+                ][:MAX_BULK_OPS]
+
+                moved = []
+                errors = []
+                for target in targets:
+                    try:
+                        dst_path = resolved_dst / target.name
+                        shutil.move(str(target), str(dst_path))
+                        moved.append({"from": str(target), "to": str(dst_path)})
+                    except Exception as e:
+                        errors.append({"path": str(target), "error": str(e)})
+
+                result = {
+                    "source": str(resolved_src),
+                    "destination": str(resolved_dst),
+                    "pattern": pattern,
+                    "moved_count": len(moved),
+                    "moved": moved,
+                    "errors": errors,
+                }
+                self._audit_end(row_id, result)
+                return result
+
+            # --- Single file/dir move ---
             if not resolved_src.exists():
                 raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved_src))
+            resolved_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(resolved_src), str(resolved_dst))
-            result = {"src": str(resolved_src), "dst": str(resolved_dst), "moved": True}
+            result = {
+                "source": str(resolved_src),
+                "destination": str(resolved_dst),
+                "moved": True,
+            }
             self._audit_end(row_id, result)
             return result
+
         except LeavesError:
             raise
         except PermissionError as e:
@@ -263,21 +376,83 @@ class FileAgent(BaseAgent):
     def fs_copy(
         self,
         action_id: str,
-        src: str,
-        dst: str,
+        source: str,
+        destination: str,
+        pattern: Optional[str] = None,
+        recursive: bool = False,
         **_: Any,
     ) -> dict:
-        resolved_src = self._authorize(src)
-        resolved_dst = self._authorize(dst)
-        row_id = self._audit_start(action_id, "COPY", {"src": src, "dst": dst})
+        """
+        Copy a single file (no pattern) or all files matching a glob
+        pattern from source directory to destination directory.
 
+        Parameter names are 'source'/'destination' to match GoalSpec schema.
+        """
+        resolved_src = self._authorize(source)
+        resolved_dst = self._authorize(destination)
+        row_id = self._audit_start(
+            action_id, "COPY",
+            {"source": source, "destination": destination, "pattern": pattern},
+        )
         try:
+            # --- Bulk copy: pattern provided ---
+            if pattern:
+                if not resolved_src.exists():
+                    raise LeavesError(
+                        LeavesErrorCode.PATH_DOES_NOT_EXIST,
+                        detail=str(resolved_src),
+                    )
+                if not resolved_src.is_dir():
+                    raise LeavesError(
+                        LeavesErrorCode.FILE_MOVE_ERROR,
+                        detail=f"{resolved_src} is not a directory — cannot use pattern on a file",
+                    )
+                resolved_dst.mkdir(parents=True, exist_ok=True)
+                glob_fn = resolved_src.rglob if recursive else resolved_src.glob
+                targets = [
+                    p for p in glob_fn(pattern)
+                    if p.is_file()
+                ][:MAX_BULK_OPS]
+
+                copied = []
+                errors = []
+                for target in targets:
+                    try:
+                        dst_path = resolved_dst / target.name
+                        shutil.copy2(str(target), str(dst_path))
+                        copied.append({"from": str(target), "to": str(dst_path)})
+                    except Exception as e:
+                        errors.append({"path": str(target), "error": str(e)})
+
+                result = {
+                    "source": str(resolved_src),
+                    "destination": str(resolved_dst),
+                    "pattern": pattern,
+                    "copied_count": len(copied),
+                    "copied": copied,
+                    "errors": errors,
+                }
+                self._audit_end(row_id, result)
+                return result
+
+            # --- Single file copy ---
             if not resolved_src.exists():
                 raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved_src))
+            if not resolved_src.is_file():
+                raise LeavesError(
+                    LeavesErrorCode.FILE_MOVE_ERROR,
+                    detail=f"{resolved_src} is not a file. Use pattern to copy files from a directory.",
+                )
+            resolved_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(resolved_src), str(resolved_dst))
-            result = {"src": str(resolved_src), "dst": str(resolved_dst), "copied": True}
+            result = {
+                "source": str(resolved_src),
+                "destination": str(resolved_dst),
+                "copied": True,
+            }
             self._audit_end(row_id, result)
             return result
+
         except LeavesError:
             raise
         except PermissionError as e:
@@ -285,7 +460,7 @@ class FileAgent(BaseAgent):
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
+            err = LeavesError(LeavesErrorCode.FILE_MOVE_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -370,7 +545,7 @@ class FileAgent(BaseAgent):
                 agent=self.AGENT_TYPE,
                 params=params,
             )
-        except LeavesError:
+        except Exception:
             return None  # DB failure is non-fatal for the operation itself
 
     def _audit_end(
@@ -389,5 +564,5 @@ class FileAgent(BaseAgent):
                 error_code=error.code.value if error else None,
                 error_detail=error.detail if error else None,
             )
-        except LeavesError:
+        except Exception:
             pass  # DB failure during audit logging is non-fatal
