@@ -59,3 +59,5 @@ exec "$LLAMA_SERVER" \
     --mlock \
     --no-mmap \
     --log-disable
+    --spec-type ngram-simple \
+    --draft-max 8
