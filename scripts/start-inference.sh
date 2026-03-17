@@ -3,10 +3,12 @@
 # CPU-only — no GPU flags. i5-7200U / Intel HD 620.
 
 LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
-# Phase 1: Qwen2.5-3B-Instruct Q4_K_M (ChatML format, ~1.88GB)
-# Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — fallback
+# Phase 2: Fine-tuned GoalSpec model Q4_K_M (ChatML format, ~1.8GB)
+# Phase 1: Qwen2.5-3B-Instruct Q4_K_M (ChatML format, ~1.88GB) — fallback
+# Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — last resort
 MODEL="$(dirname "$0")/../models/goalspec_qwen25_3b_q4km.gguf"
-MODEL_FALLBACK="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+MODEL_FALLBACK_P1="$(dirname "$0")/../models/qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL_FALLBACK_P0="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 PORT=8080
 HOST="127.0.0.1"
 THREADS=2  # Physical cores only — DO NOT use 4 (logical) on Kaby Lake HT
@@ -19,17 +21,22 @@ if [ ! -f "$LLAMA_SERVER" ]; then
 fi
 
 if [ ! -f "$MODEL" ]; then
-    if [ -f "$MODEL_FALLBACK" ]; then
-        echo "WARNING: Qwen2.5-3B not found at $MODEL"
-        echo "         Falling back to Phase 0 model: $MODEL_FALLBACK"
+    if [ -f "$MODEL_FALLBACK_P1" ]; then
+        echo "WARNING: Fine-tuned model not found at $MODEL"
+        echo "         Falling back to Phase 1 base model: $MODEL_FALLBACK_P1"
+        MODEL="$MODEL_FALLBACK_P1"
+    elif [ -f "$MODEL_FALLBACK_P0" ]; then
+        echo "WARNING: Qwen2.5-3B not found. Falling back to Phase 0 model."
         echo "         Set MODEL_FAMILY=llama3 in config.py for correct prompt format."
-        MODEL="$MODEL_FALLBACK"
+        MODEL="$MODEL_FALLBACK_P0"
     else
         echo "ERROR: No model found."
-        echo "  Qwen2.5-3B (Phase 1): $MODEL"
-        echo "  Llama-3.2-1B (Phase 0): $MODEL_FALLBACK"
+        echo "  Fine-tuned (Phase 2): $MODEL"
+        echo "  Qwen2.5-3B (Phase 1): $MODEL_FALLBACK_P1"
+        echo "  Llama-3.2-1B (Phase 0): $MODEL_FALLBACK_P0"
         echo ""
-        echo "Download Qwen2.5-3B:"
+        echo "Download fine-tuned model from Google Drive or run Colab notebook."
+        echo "Or download Qwen2.5-3B base:"
         echo "  source .os/bin/activate && python3 -c \""
         echo "  from huggingface_hub import hf_hub_download"
         echo "  hf_hub_download(repo_id='Qwen/Qwen2.5-3B-Instruct-GGUF',"
@@ -58,6 +65,6 @@ exec "$LLAMA_SERVER" \
     --ctx-size 4096 \
     --mlock \
     --no-mmap \
-    --log-disable
+    --log-disable \
     --spec-type ngram-simple \
     --draft-max 8

@@ -86,7 +86,6 @@ class RagStore:
     def _load_impl(cls, rebuild: bool) -> "RagStore":
         import lancedb
         from rank_bm25 import BM25Okapi
-        from sentence_transformers import SentenceTransformer
 
         examples = cls._read_seed()
         texts = [ex["intent"] for ex in examples]
@@ -96,12 +95,17 @@ class RagStore:
         # Build or open LanceDB table
         db = lancedb.connect(str(_DB_PATH))
         if rebuild or _TABLE_NAME not in db.table_names():
-            model = SentenceTransformer(_EMBED_MODEL)
+            # Load model once — reuse for both building index and later retrieval
+            model = cls._get_or_load_model()
             embeddings = model.encode(texts, show_progress_bar=False).tolist()
             data = [
-                {"id": i, "intent": ex["intent"], "vector": emb,
-                 "category": ex["category"],
-                 "actions_json": json.dumps(ex.get("actions", []))}
+                {
+                    "id": i,
+                    "intent": ex["intent"],
+                    "vector": emb,
+                    "category": ex["category"],
+                    "actions_json": json.dumps(ex.get("actions", [])),
+                }
                 for i, (ex, emb) in enumerate(zip(examples, embeddings))
             ]
             if _TABLE_NAME in db.table_names():
@@ -109,15 +113,21 @@ class RagStore:
             table = db.create_table(_TABLE_NAME, data=data)
         else:
             table = db.open_table(_TABLE_NAME)
+            # Ensure model is cached for retrieval — no-op if already loaded
+            cls._get_or_load_model()
 
-        # Store model lazily so we only load it once
-        cls._embed_model = SentenceTransformer(_EMBED_MODEL) if rebuild else cls._get_or_load_model()
         return cls(table, bm25, examples)
 
     @classmethod
     def _get_or_load_model(cls) -> object:
+        """
+        Load the embedding model exactly once per process.
+        Caches at class level — subsequent calls return the cached instance.
+        This is the single source of truth for model instantiation.
+        """
         from sentence_transformers import SentenceTransformer
         if not hasattr(cls, "_embed_model") or cls._embed_model is None:
+            logger.debug("Loading embedding model: %s", _EMBED_MODEL)
             cls._embed_model = SentenceTransformer(_EMBED_MODEL)
         return cls._embed_model
 
@@ -146,11 +156,12 @@ class RagStore:
         try:
             model = self._get_or_load_model()
             q_vec = model.encode([query], show_progress_bar=False)[0].tolist()
-            dense_rows = (
-                self._table.search(q_vec).limit(n).to_list()
-            )
-            dense_ranked = [(row["id"], self._corpus[row["id"]]) for row in dense_rows
-                            if row["id"] < len(self._corpus)]
+            dense_rows = self._table.search(q_vec).limit(n).to_list()
+            dense_ranked = [
+                (row["id"], self._corpus[row["id"]])
+                for row in dense_rows
+                if row["id"] < len(self._corpus)
+            ]
         except Exception as e:
             logger.debug("Dense retrieval failed: %s", e)
             dense_ranked = []
