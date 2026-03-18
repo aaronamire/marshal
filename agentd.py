@@ -153,6 +153,53 @@ class AgentCoordinator:
 _SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
 
 
+async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
+    """
+    Spawn agents/sandboxed_runner.py as a fresh subprocess.
+
+    The subprocess applies Landlock to itself before importing project code,
+    restricting its FS access to the intent's authorized resources.
+    Communication is JSON over stdin/stdout.
+    """
+    runner  = pathlib.Path(__file__).parent / "agents" / "sandboxed_runner.py"
+    payload = json.dumps({"goal_spec": goal_spec, "from_state": from_state}).encode() + b"\n"
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, str(runner),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(payload), timeout=120.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise LeavesError(LeavesErrorCode.INFERENCE_TIMEOUT, detail="sandboxed runner timed out")
+
+    if proc.returncode != 0:
+        err_text = _stderr.decode(errors="replace").strip()
+        raise LeavesError(
+            LeavesErrorCode.INTERNAL_ERROR,
+            detail=f"runner exited {proc.returncode}: {err_text[:300]}",
+        )
+
+    try:
+        resp = json.loads(stdout.split(b"\n")[0])
+    except Exception as exc:
+        raise LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=f"runner output not JSON: {exc}")
+
+    if resp.get("ok"):
+        return resp["results"], resp["summary"]
+
+    code_str = resp.get("code", "INTERNAL_ERROR")
+    try:
+        code = LeavesErrorCode[code_str]
+    except KeyError:
+        code = LeavesErrorCode.INTERNAL_ERROR
+    raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
+
+
 async def _handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -171,32 +218,17 @@ async def _handle_client(
             return
 
         # --- execute GoalSpec ---
-        goal_spec = msg["goal_spec"]
+        goal_spec      = msg["goal_spec"]
         from_state_str = msg.get("from_state", "PARSING")
 
-        from agents.state_machine import IntentLifecycle, IntentState
-        intent_id = goal_spec["intent_id"]
-        lifecycle = IntentLifecycle(intent_id=intent_id)
-        # Walk to the correct pre-execution state.
-        lifecycle.transition(IntentState.PARSING)
-        if from_state_str == "AWAITING_AUTH":
-            lifecycle.transition(IntentState.AWAITING_AUTH)
-
-        loop = asyncio.get_event_loop()
         try:
-            def _execute_in_thread():
-                # Connection created in the same thread that will use it.
-                from db.audit import get_db
-                db = get_db()
-                return AgentCoordinator(db).execute(goal_spec, lifecycle)
-
-            results, summary = await loop.run_in_executor(None, _execute_in_thread)
+            results, summary = await _run_sandboxed(goal_spec, from_state_str)
             response: dict = {"ok": True, "results": results, "summary": summary}
         except LeavesError as e:
             response = {
-                "ok": False,
-                "code": e.code.value,
-                "error": e.user_message,
+                "ok":     False,
+                "code":   e.code.value,
+                "error":  e.user_message,
                 "detail": e.detail,
             }
 
