@@ -152,17 +152,6 @@ class AgentCoordinator:
 
 _SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
 
-# Lazily-opened db connection — one per daemon process lifetime.
-_daemon_db_conn = None
-
-
-def _daemon_db():
-    global _daemon_db_conn
-    if _daemon_db_conn is None:
-        from db.audit import get_db
-        _daemon_db_conn = get_db()
-    return _daemon_db_conn
-
 
 async def _handle_client(
     reader: asyncio.StreamReader,
@@ -193,9 +182,15 @@ async def _handle_client(
         if from_state_str == "AWAITING_AUTH":
             lifecycle.transition(IntentState.AWAITING_AUTH)
 
-        coordinator = AgentCoordinator(_daemon_db())
+        loop = asyncio.get_event_loop()
         try:
-            results, summary = coordinator.execute(goal_spec, lifecycle)
+            def _execute_in_thread():
+                # Connection created in the same thread that will use it.
+                from db.audit import get_db
+                db = get_db()
+                return AgentCoordinator(db).execute(goal_spec, lifecycle)
+
+            results, summary = await loop.run_in_executor(None, _execute_in_thread)
             response: dict = {"ok": True, "results": results, "summary": summary}
         except LeavesError as e:
             response = {
