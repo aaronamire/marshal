@@ -127,6 +127,7 @@ def apply_landlock(goal_spec: dict) -> None:
     Grants:
       - Per-intent resources: READ_WRITE for destructive actions, READ_ONLY otherwise
       - ~/.leaves/: READ_WRITE (SQLite audit log writes)
+      - /home, ~/: READ_DIR only — allows traversal to reach ~/... paths
       - project root, /usr, /lib, /lib64, /proc: READ_ONLY (Python runtime)
 
     On any failure (unsupported kernel, ENOSYS, …) logs to stderr and continues
@@ -159,12 +160,28 @@ def _do_apply(goal_spec: dict) -> None:
         raise OSError(ctypes.get_errno(), "landlock_create_ruleset failed")
 
     try:
-        # Per-intent paths
+        # Per-intent paths.
+        # Landlock PATH_BENEATH rules work correctly for directory inodes.
+        # For file paths, add the parent directory — Landlock's "beneath" check
+        # walks the directory tree and file-level rules don't participate correctly
+        # in ABI v1. The Python-level _authorize() still enforces the precise
+        # file-level boundary; Landlock provides the coarse kernel-enforced layer.
         for path in resource_paths:
-            _ll_add_path_rule(ruleset_fd, path, resource_access)
+            if path.exists() and path.is_file():
+                _ll_add_path_rule(ruleset_fd, path.parent, resource_access)
+            else:
+                _ll_add_path_rule(ruleset_fd, path, resource_access)
 
         # Always read-write: audit db
         _ll_add_path_rule(ruleset_fd, leaves_dir, _FS_READ_WRITE)
+
+        # Allow traversal through /home and ~/
+        # Landlock requires every directory in the path to have at least READ_DIR
+        # or open() is blocked before reaching the target. READ_DIR alone grants
+        # traversal/listing but NOT file content reads — so ~/other_file.txt
+        # remains unreadable unless it has its own explicit rule.
+        _ll_add_path_rule(ruleset_fd, pathlib.Path.home().parent, _ACCESS_READ_DIR)
+        _ll_add_path_rule(ruleset_fd, pathlib.Path.home(), _ACCESS_READ_DIR)
 
         # Always read-only: Python runtime
         for path in (
