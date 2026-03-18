@@ -1,9 +1,9 @@
 """
-Leaves OS Agent Daemon — Phase 1 (library module, not yet a daemon process).
+Leaves OS Agent Daemon.
 
-Phase 0: orchestration was inlined in leaves.py.
-Phase 1: extracted here as AgentCoordinator — clean module with a minimal interface.
-Phase 2: this becomes a standalone daemon process with a Unix socket.
+Phase 1: AgentCoordinator as a library module (imported by leaves.py).
+Phase 2: Unix socket daemon — run `python3 agentd.py` to start.
+         leaves.py connects via ~/.leaves/agentd.sock (newline-delimited JSON).
 Phase 3: cgroup integration and per-intent subprocess isolation.
 
 Public interface (callers use ONLY this):
@@ -12,6 +12,10 @@ Public interface (callers use ONLY this):
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import pathlib
+import sys
 from typing import Any
 
 from agents.file_agent import FileAgent
@@ -140,3 +144,100 @@ class AgentCoordinator:
             )
 
         return results, summary
+
+
+# ---------------------------------------------------------------------------
+# Unix socket daemon  (only active when run as __main__)
+# ---------------------------------------------------------------------------
+
+_SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
+
+# Lazily-opened db connection — one per daemon process lifetime.
+_daemon_db_conn = None
+
+
+def _daemon_db():
+    global _daemon_db_conn
+    if _daemon_db_conn is None:
+        from db.audit import get_db
+        _daemon_db_conn = get_db()
+    return _daemon_db_conn
+
+
+async def _handle_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    try:
+        line = await reader.readline()
+        if not line:
+            return
+
+        msg = json.loads(line)
+
+        # --- ping ---
+        if msg.get("_ping"):
+            writer.write(json.dumps({"_pong": True}).encode() + b"\n")
+            await writer.drain()
+            return
+
+        # --- execute GoalSpec ---
+        goal_spec = msg["goal_spec"]
+        from_state_str = msg.get("from_state", "PARSING")
+
+        from agents.state_machine import IntentLifecycle, IntentState
+        intent_id = goal_spec["intent_id"]
+        lifecycle = IntentLifecycle(intent_id=intent_id)
+        # Walk to the correct pre-execution state.
+        lifecycle.transition(IntentState.PARSING)
+        if from_state_str == "AWAITING_AUTH":
+            lifecycle.transition(IntentState.AWAITING_AUTH)
+
+        coordinator = AgentCoordinator(_daemon_db())
+        try:
+            results, summary = coordinator.execute(goal_spec, lifecycle)
+            response: dict = {"ok": True, "results": results, "summary": summary}
+        except LeavesError as e:
+            response = {
+                "ok": False,
+                "code": e.code.value,
+                "error": e.user_message,
+                "detail": e.detail,
+            }
+
+    except Exception as exc:
+        response = {"ok": False, "code": "INTERNAL_ERROR", "error": str(exc), "detail": None}
+
+    try:
+        writer.write(json.dumps(response).encode() + b"\n")
+        await writer.drain()
+    except Exception:
+        pass
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _run_server() -> None:
+    _SOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if _SOCK_PATH.exists():
+        _SOCK_PATH.unlink()
+
+    server = await asyncio.start_unix_server(_handle_client, path=str(_SOCK_PATH))
+    print(f"agentd listening on {_SOCK_PATH}", flush=True)
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        if _SOCK_PATH.exists():
+            _SOCK_PATH.unlink()
+
+
+if __name__ == "__main__":
+    # Ensure the project root is on sys.path so relative imports work when
+    # agentd.py is spawned as a subprocess from any working directory.
+    _project_root = str(pathlib.Path(__file__).parent.resolve())
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+
+    asyncio.run(_run_server())

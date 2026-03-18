@@ -10,6 +10,11 @@ Orchestration delegated to agentd.AgentCoordinator.
 """
 from __future__ import annotations
 
+import json
+import pathlib
+import socket as _socket
+import subprocess
+import sys
 import time
 from datetime import datetime
 from typing import Any
@@ -33,9 +38,71 @@ from db.audit import (
     complete_intent, log_error, get_recent_intents,
     get_intent_transitions, get_intent_actions,
 )
-from errors import LeavesError
+from errors import LeavesError, LeavesErrorCode
 
 console = Console()
+
+# ---------------------------------------------------------------------------
+# agentd socket client
+# ---------------------------------------------------------------------------
+
+_AGENTD_SOCK = pathlib.Path.home() / ".leaves" / "agentd.sock"
+
+
+def _ensure_agentd() -> bool:
+    """Return True if agentd socket is available, spawning the daemon if needed."""
+    if _AGENTD_SOCK.exists():
+        return True
+    # Spawn agentd as a background process.
+    agentd_path = pathlib.Path(__file__).with_name("agentd.py")
+    subprocess.Popen(
+        [sys.executable, str(agentd_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # Wait up to 2 seconds for the socket to appear.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if _AGENTD_SOCK.exists():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _send_goalspec(goal_spec: dict, from_state: str) -> tuple[dict, str]:
+    """
+    Send a GoalSpec to agentd and return (results, summary).
+
+    Raises LeavesError if the daemon reports an execution failure.
+    Raises OSError / other exceptions on communication failure (caller falls back).
+    """
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.settimeout(120.0)
+    s.connect(str(_AGENTD_SOCK))
+    try:
+        payload = json.dumps({"goal_spec": goal_spec, "from_state": from_state})
+        s.sendall(payload.encode() + b"\n")
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        s.close()
+
+    resp = json.loads(buf.split(b"\n")[0])
+    if resp.get("ok"):
+        return resp["results"], resp["summary"]
+
+    # Daemon reported an execution failure — re-raise as LeavesError.
+    code_str = resp.get("code", "INTERNAL_ERROR")
+    try:
+        code = LeavesErrorCode[code_str]
+    except KeyError:
+        code = LeavesErrorCode.INTERNAL_ERROR
+    raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
+
 
 # Module-level singletons — initialized once in main()
 _db = None
@@ -231,10 +298,24 @@ def handle_intent(user_text: str) -> None:
         # No auth needed — log PARSING → EXECUTING (coordinator sees PARSING state)
         pass
 
-    # --- EXECUTING (via AgentCoordinator) ---
-    coordinator = AgentCoordinator(db)
+    # --- EXECUTING (via agentd socket; in-process fallback) ---
+    from_state_str = lifecycle.state.value
     try:
-        results, summary = coordinator.execute(goal_spec, lifecycle)
+        if _ensure_agentd():
+            try:
+                results, summary = _send_goalspec(goal_spec, from_state_str)
+                # Daemon advanced its own lifecycle to EXECUTING; mirror that here
+                # so subsequent transitions (→DONE / →FAILED) remain valid.
+                lifecycle.transition(IntentState.EXECUTING)
+            except LeavesError:
+                lifecycle.transition(IntentState.EXECUTING)
+                raise
+            except Exception:
+                _show_warning("agentd socket error — running in-process.")
+                results, summary = AgentCoordinator(db).execute(goal_spec, lifecycle)
+        else:
+            _show_warning("agentd unavailable — running in-process.")
+            results, summary = AgentCoordinator(db).execute(goal_spec, lifecycle)
     except LeavesError as e:
         _show_error(e.user_message)
         log_state_transition(db, intent_id, "EXECUTING", "FAILED")
