@@ -155,11 +155,10 @@ CASES: list[Case] = [
         expect_not_implemented=True,
     ),
     Case(
-        label="system (not impl)",
+        label="system processes",
         intent="show me what processes are using the most memory",
         expected_category="system_task",
-        expected_action_types=[],
-        expect_not_implemented=True,
+        expected_action_types=["QUERY"],
     ),
 
     # -------------------------------------------------------------------------
@@ -286,11 +285,10 @@ CASES: list[Case] = [
         expect_not_implemented=True,
     ),
     Case(
-        label="cpu temp (not impl)",
+        label="cpu temp",
         intent="what is the current CPU temperature",
         expected_category="system_task",
-        expected_action_types=[],
-        expect_not_implemented=True,
+        expected_action_types=["QUERY"],
     ),
 ]
 

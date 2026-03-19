@@ -143,9 +143,8 @@ def _not_impl(pattern: str) -> None:
 _not_impl(r'^\s*(?:write|send|compose|draft)\b.+\b(?:email|e-mail|message|mail)\b')
 _not_impl(r'^\s*(?:send|compose|draft)\b.+\bto\s+(?!~|/|\.)[\w]')  # "to <person>" not "to ~/path"
 
-# system — processes/cpu/ram/memory/battery/wifi/brightness/volume
-_not_impl(r'\b(?:processes?|cpu|ram|memory|battery|wifi|wi-fi|brightness|volume)\b')
-_not_impl(r'\b(?:show|check|monitor|display)\b.+\b(?:usage|status|info|level)\b')
+# system — hardware controls not handled by SystemAgent
+_not_impl(r'\b(?:battery|wifi|wi-fi|brightness|volume)\b')
 
 # web — search the web / open url / browse / download from http
 _not_impl(r'\bsearch\s+(?:the\s+)?web\b')

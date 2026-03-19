@@ -1,0 +1,47 @@
+{
+  "agent_id": "dev.leaves.system-agent",
+  "version": "0.1.0",
+  "display_name": "System Agent",
+  "description": "Read-only system information: CPU, memory, disk, processes, and uptime.",
+  "handles_categories": ["system_task"],
+  "handles_action_types": ["QUERY"],
+  "tools": [
+    {
+      "name": "sys_cpu",
+      "description": "CPU usage percent, frequency (MHz), core count, and temperature.",
+      "params": {},
+      "destructive": false
+    },
+    {
+      "name": "sys_memory",
+      "description": "RAM total, used, available (GB) and percent used.",
+      "params": {},
+      "destructive": false
+    },
+    {
+      "name": "sys_disk",
+      "description": "Disk total, used, free (GB) and percent for a given path (default: home).",
+      "params": {
+        "path": {"type": "string", "description": "Mount point or directory (default: ~)", "default": "~"}
+      },
+      "destructive": false
+    },
+    {
+      "name": "sys_processes",
+      "description": "Top N processes by CPU usage: pid, name, cpu_percent, memory_mb, status.",
+      "params": {
+        "top_n": {"type": "integer", "description": "Number of processes to return", "default": 10}
+      },
+      "destructive": false
+    },
+    {
+      "name": "sys_uptime",
+      "description": "System uptime in seconds and boot time as ISO-8601 UTC string.",
+      "params": {},
+      "destructive": false
+    }
+  ],
+  "authorized_roots": [],
+  "phase": 1,
+  "status": "active"
+}

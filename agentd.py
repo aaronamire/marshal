@@ -19,15 +19,16 @@ import sys
 from typing import Any
 
 from agents.file_agent import FileAgent
+from agents.system_agent import SystemAgent
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
 from db.audit import log_error, log_state_transition
 from errors import LeavesError, LeavesErrorCode
 
 # Map agent type strings -> agent classes
-# Phase 1: file only. Phase 2+: expand this map.
 _AGENT_MAP: dict[str, type] = {
     "file": FileAgent,
+    "system": SystemAgent,
 }
 
 
