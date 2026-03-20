@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pathlib
+import signal
 import sys
 from typing import Any
 
@@ -153,6 +155,10 @@ class AgentCoordinator:
 
 _SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
 
+# cgroup v2 resource limits — initialized in _run_server()
+_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/leaves")
+_CGROUP_AVAILABLE = False
+
 
 async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
     """
@@ -161,9 +167,16 @@ async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
     The subprocess applies Landlock to itself before importing project code,
     restricting its FS access to the intent's authorized resources.
     Communication is JSON over stdin/stdout.
+
+    If cgroup v2 is available, the subprocess is placed in a per-intent
+    cgroup with memory, CPU, and PID limits.
     """
-    runner  = pathlib.Path(__file__).parent / "agents" / "sandboxed_runner.py"
-    payload = json.dumps({"goal_spec": goal_spec, "from_state": from_state}).encode() + b"\n"
+    runner = pathlib.Path(__file__).parent / "agents" / "sandboxed_runner.py"
+    payload = json.dumps({"goal_spec": goal_spec,
+                          "from_state": from_state}).encode() + b"\n"
+    intent_id = goal_spec.get("intent_id", "unknown")[:8]
+    cgroup_path = _CGROUP_ROOT / f"intent-{intent_id}"
+    cgroup_applied = False
 
     proc = await asyncio.create_subprocess_exec(
         sys.executable, str(runner),
@@ -171,12 +184,46 @@ async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+    # Apply cgroup limits after spawn (must have PID)
+    if _CGROUP_AVAILABLE:
+        try:
+            cgroup_path.mkdir(parents=False, exist_ok=True)
+            (cgroup_path / "memory.max").write_text("536870912")    # 512MB
+            (cgroup_path / "memory.swap.max").write_text("0")       # no swap
+            (cgroup_path / "cpu.max").write_text("50000 100000")    # 50% 1 core
+            (cgroup_path / "pids.max").write_text("32")             # no fork bombs
+            (cgroup_path / "cgroup.procs").write_text(str(proc.pid))
+            cgroup_applied = True
+        except (PermissionError, FileNotFoundError, OSError) as e:
+            print(f"agentd: cgroup setup failed: {e}", flush=True)
+
     try:
-        stdout, _stderr = await asyncio.wait_for(proc.communicate(payload), timeout=120.0)
+        stdout, _stderr = await asyncio.wait_for(
+            proc.communicate(payload), timeout=120.0)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        raise LeavesError(LeavesErrorCode.INFERENCE_TIMEOUT, detail="sandboxed runner timed out")
+        raise LeavesError(LeavesErrorCode.INFERENCE_TIMEOUT,
+                          detail="sandboxed runner timed out")
+    finally:
+        # cgroup cleanup — must happen AFTER process exits
+        if cgroup_applied and cgroup_path.exists():
+            try:
+                # Kill any lingering processes
+                procs_file = cgroup_path / "cgroup.procs"
+                if procs_file.exists():
+                    pids = procs_file.read_text().strip().split()
+                    for pid_str in pids:
+                        if pid_str.strip():
+                            try:
+                                os.kill(int(pid_str), signal.SIGKILL)
+                            except (ProcessLookupError, ValueError):
+                                pass
+                    await asyncio.sleep(0.05)
+                cgroup_path.rmdir()
+            except (FileNotFoundError, OSError):
+                pass  # already cleaned up
 
     if proc.returncode != 0:
         err_text = _stderr.decode(errors="replace").strip()
@@ -188,7 +235,8 @@ async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
     try:
         resp = json.loads(stdout.split(b"\n")[0])
     except Exception as exc:
-        raise LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=f"runner output not JSON: {exc}")
+        raise LeavesError(LeavesErrorCode.INTERNAL_ERROR,
+                          detail=f"runner output not JSON: {exc}")
 
     if resp.get("ok"):
         return resp["results"], resp["summary"]
@@ -247,6 +295,19 @@ async def _handle_client(
 
 
 async def _run_server() -> None:
+    global _CGROUP_AVAILABLE
+
+    # One-time cgroup v2 parent setup
+    try:
+        if pathlib.Path("/sys/fs/cgroup/cgroup.controllers").exists():
+            _CGROUP_ROOT.mkdir(parents=False, exist_ok=True)
+            _CGROUP_AVAILABLE = True
+            print("agentd: cgroup v2 resource limits enabled", flush=True)
+        else:
+            print("agentd: cgroup v2 not mounted — limits disabled", flush=True)
+    except PermissionError:
+        print("agentd: no cgroup write permission — limits disabled", flush=True)
+
     _SOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     if _SOCK_PATH.exists():
         _SOCK_PATH.unlink()
