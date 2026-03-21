@@ -45,7 +45,15 @@ if [ ! -f "$MODEL" ]; then
     fi
 fi
 
-# Kill any existing server on this port
+# If the systemd service is running, just restart it and exit
+if systemctl --user is-active --quiet leaves-inference.service 2>/dev/null; then
+    echo "systemd service already active — restarting..."
+    systemctl --user restart leaves-inference.service
+    echo "Done. Use: journalctl --user -u leaves-inference -f"
+    exit 0
+fi
+
+# Kill any existing server on this port (no systemd)
 EXISTING=$(lsof -t -i:$PORT 2>/dev/null)
 if [ -n "$EXISTING" ]; then
     echo "Killing existing process on port $PORT (PID $EXISTING)..."

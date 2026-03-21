@@ -8,6 +8,7 @@ instructs the model to treat as untrusted data.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -107,7 +108,7 @@ class IntentParser:
         # --- Layer 1: instant classification (3-8ms) ---
         # Fires the callback so UI can update before Layer 2 runs.
         # Any failure is silently swallowed — never blocks Layer 2.
-        IMPLEMENTED_CATEGORIES = {"file_task", "system_task"}
+        IMPLEMENTED_CATEGORIES = {"file_task"}
         if self._classifier is not None:
             try:
                 l1 = self._classifier.classify(user_text)
@@ -163,6 +164,7 @@ class IntentParser:
         self._check_actions_present(goal_spec)
         self._validate_schema(goal_spec)
         self._validate_semantics(goal_spec)
+        self._check_intent_action_coherence(user_text, goal_spec)
         self._check_confidence(goal_spec)
 
         return goal_spec
@@ -424,6 +426,48 @@ class IntentParser:
                 raise LeavesError(
                     LeavesErrorCode.SEMANTIC_VALIDATION_FAILED,
                     detail=f"GoalSpec semantic validation failed: {detail}",
+                )
+
+    # Regex patterns for intent-action coherence check
+    _READ_INTENT = re.compile(
+        r'\b(find|search|list|show|where|look|locate|what|how\s+many|'
+        r'count|check|display|get|see|view|which|any)\b',
+        re.IGNORECASE,
+    )
+    _WRITE_INTENT = re.compile(
+        r'\b(move|delete|remove|rm|rename|copy|cp|organize|sort|clean|'
+        r'archive|backup|transfer|put|send|mv)\b',
+        re.IGNORECASE,
+    )
+    _DESTRUCTIVE_ACTIONS = frozenset({"MOVE", "DELETE", "RENAME"})
+
+    def _check_intent_action_coherence(
+        self, user_text: str, goal_spec: dict[str, Any]
+    ) -> None:
+        """
+        Safety guard: block GoalSpecs where the model generated destructive
+        actions for read-only user intents.
+
+        The 1B model sometimes confuses "find all PDFs" with MOVE, causing
+        data loss. This check catches that class of error.
+        """
+        has_read = bool(self._READ_INTENT.search(user_text))
+        has_write = bool(self._WRITE_INTENT.search(user_text))
+
+        if has_read and not has_write:
+            bad = [
+                a for a in goal_spec.get("actions", [])
+                if a.get("type") in self._DESTRUCTIVE_ACTIONS
+            ]
+            if bad:
+                types = [a["type"] for a in bad]
+                raise LeavesError(
+                    LeavesErrorCode.SEMANTIC_VALIDATION_FAILED,
+                    detail=(
+                        f"Safety: user intent is read-only but model generated "
+                        f"destructive action(s): {types}. Refusing to execute. "
+                        f"If you meant to {types[0].lower()}, say so explicitly."
+                    ),
                 )
 
     def _check_confidence(self, goal_spec: dict[str, Any]) -> None:
