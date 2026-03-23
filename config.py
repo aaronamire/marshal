@@ -76,7 +76,7 @@ LEAVES_WARNING_COLOR = "#FFDC00"
 LEAVES_DIM_COLOR = "#AAAAAA"
 
 APP_NAME = "Leaves OS"
-APP_VERSION = "0.2.0-phase1"
+APP_VERSION = "0.3.0-phase2"
 
 # ---------------------------------------------------------------------------
 # Authorized path roots (relative to home — expanded at runtime)

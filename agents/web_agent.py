@@ -11,10 +11,8 @@ Dispatch: action type QUERY → routed by params["query_type"]:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from agents.base_agent import BaseAgent
-from db.audit import log_action_started, log_action_completed
 from errors import LeavesError, LeavesErrorCode
 
 
@@ -177,38 +175,4 @@ class WebAgent(BaseAgent):
         except Exception as e:
             return {"error": str(e), "url": url}
 
-    # ------------------------------------------------------------------
-    # Audit helpers (same pattern as SystemAgent)
-    # ------------------------------------------------------------------
-
-    def _audit_start(self, action_id: str, action_type: str, params: dict) -> Optional[int]:
-        try:
-            return log_action_started(
-                self._db,
-                intent_id=self.intent_id,
-                action_id=action_id,
-                action_type=action_type,
-                agent=self.AGENT_TYPE,
-                params=params,
-            )
-        except Exception:
-            return None
-
-    def _audit_end(
-        self,
-        row_id: Optional[int],
-        result: Optional[dict] = None,
-        error: Optional[LeavesError] = None,
-    ) -> None:
-        if row_id is None:
-            return
-        try:
-            log_action_completed(
-                self._db,
-                row_id=row_id,
-                result=result,
-                error_code=error.code.value if error else None,
-                error_detail=error.detail if error else None,
-            )
-        except Exception:
-            pass
+    # _audit_start / _audit_end inherited from BaseAgent

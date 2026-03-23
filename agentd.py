@@ -82,7 +82,7 @@ class AgentCoordinator:
                 err = LeavesError(
                     LeavesErrorCode.AGENT_NOT_AVAILABLE,
                     detail=(
-                        f"Phase 1 supports: {list(_AGENT_MAP.keys())}. "
+                        f"Available agents: {list(_AGENT_MAP.keys())}. "
                         f"Got: '{agent_type}'"
                     ),
                 )

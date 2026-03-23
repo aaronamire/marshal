@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Leaves OS Phase 1 — Main CLI entry point.
+Leaves OS — Main CLI entry point.
 
-Two-stage pipeline:
+Three-layer intent pipeline:
+  Layer 0 (<0.1ms): regex matcher → unambiguous commands skip LLM entirely
   Layer 1 (3-8ms):  sklearn classifier → instant category feedback
   Layer 2 (26s+):   Llama GoalSpec generation → full execution plan
 
@@ -122,7 +123,7 @@ def _get_db():
 
 def _banner() -> None:
     title = Text(f" {APP_NAME} ", style=f"bold {LEAVES_PRIMARY_COLOR}")
-    subtitle = Text(f"v{APP_VERSION} · Phase 1", style=LEAVES_DIM_COLOR)
+    subtitle = Text(f"v{APP_VERSION}", style=LEAVES_DIM_COLOR)
     console.print(Panel(
         f"{title}\n{subtitle}",
         border_style=LEAVES_PRIMARY_COLOR,
@@ -180,6 +181,201 @@ def _fmt_time(ts: float) -> str:
     if not ts:
         return ""
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _fmt_uptime(seconds: float) -> str:
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    mins = int((seconds % 3600) // 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    parts.append(f"{mins}m")
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# System result renderers
+# ---------------------------------------------------------------------------
+
+def _render_cpu(result: dict) -> None:
+    usage = result.get("usage_percent", 0)
+    freq = result.get("freq_mhz")
+    cores = result.get("cores")
+    temp = result.get("temp_celsius")
+
+    lines = [f"  Usage: [white]{usage}%[/white]"]
+    if freq:
+        lines.append(f"  Frequency: [white]{freq:.0f} MHz[/white]")
+    if cores:
+        lines.append(f"  Cores: [white]{cores}[/white]")
+    if temp is not None:
+        color = LEAVES_SUCCESS_COLOR if temp < 70 else LEAVES_WARNING_COLOR if temp < 85 else LEAVES_ERROR_COLOR
+        lines.append(f"  Temperature: [{color}]{temp}°C[/{color}]")
+    console.print(Panel("\n".join(lines), title="CPU", border_style=LEAVES_PRIMARY_COLOR))
+
+
+def _render_memory(result: dict) -> None:
+    pct = result.get("percent", 0)
+    total = result.get("total_gb", 0)
+    used = result.get("used_gb", 0)
+    avail = result.get("available_gb", 0)
+
+    color = LEAVES_SUCCESS_COLOR if pct < 70 else LEAVES_WARNING_COLOR if pct < 90 else LEAVES_ERROR_COLOR
+    console.print(Panel(
+        f"  Used: [{color}]{used:.1f} GB / {total:.1f} GB ({pct}%)[/{color}]\n"
+        f"  Available: [white]{avail:.1f} GB[/white]",
+        title="Memory", border_style=LEAVES_PRIMARY_COLOR,
+    ))
+
+
+def _render_disk(result: dict) -> None:
+    pct = result.get("percent", 0)
+    total = result.get("total_gb", 0)
+    used = result.get("used_gb", 0)
+    free = result.get("free_gb", 0)
+    path = result.get("path", "/")
+
+    color = LEAVES_SUCCESS_COLOR if pct < 70 else LEAVES_WARNING_COLOR if pct < 90 else LEAVES_ERROR_COLOR
+    console.print(Panel(
+        f"  Used: [{color}]{used:.1f} GB / {total:.1f} GB ({pct}%)[/{color}]\n"
+        f"  Free: [white]{free:.1f} GB[/white]",
+        title=f"Disk ({path})", border_style=LEAVES_PRIMARY_COLOR,
+    ))
+
+
+def _render_processes(result: dict) -> None:
+    procs = result.get("processes", [])
+    if not procs:
+        console.print(f"[{LEAVES_DIM_COLOR}]No processes found.[/{LEAVES_DIM_COLOR}]")
+        return
+
+    table = Table(
+        title=f"Top {len(procs)} Processes",
+        box=box.SIMPLE_HEAD,
+        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+    )
+    table.add_column("PID", style=LEAVES_DIM_COLOR, justify="right")
+    table.add_column("Name", style="white")
+    table.add_column("CPU%", justify="right")
+    table.add_column("Memory", justify="right", style=LEAVES_DIM_COLOR)
+    table.add_column("Status", style=LEAVES_DIM_COLOR)
+
+    for p in procs:
+        cpu = p.get("cpu_percent", 0)
+        cpu_color = LEAVES_ERROR_COLOR if cpu > 50 else LEAVES_WARNING_COLOR if cpu > 20 else "white"
+        table.add_row(
+            str(p["pid"]),
+            p["name"],
+            f"[{cpu_color}]{cpu}[/{cpu_color}]",
+            f"{p.get('memory_mb', 0):.0f} MB",
+            p.get("status", ""),
+        )
+    console.print(table)
+
+
+def _render_uptime(result: dict) -> None:
+    secs = result.get("uptime_seconds", 0)
+    boot = result.get("boot_time_iso", "")
+    console.print(
+        f"  [{LEAVES_PRIMARY_COLOR}]Uptime:[/{LEAVES_PRIMARY_COLOR}] "
+        f"[white]{_fmt_uptime(secs)}[/white]  "
+        f"[{LEAVES_DIM_COLOR}](booted {boot})[/{LEAVES_DIM_COLOR}]"
+    )
+
+
+def _render_system_result(result: dict) -> None:
+    """Route system agent results to the appropriate renderer."""
+    if "usage_percent" in result and "freq_mhz" in result:
+        _render_cpu(result)
+    elif "total_gb" in result and "available_gb" in result:
+        _render_memory(result)
+    elif "total_gb" in result and "free_gb" in result:
+        _render_disk(result)
+    elif "processes" in result:
+        _render_processes(result)
+    elif "uptime_seconds" in result:
+        _render_uptime(result)
+    elif "launched" in result:
+        prog = result["launched"]
+        pid = result.get("pid", "?")
+        console.print(
+            f"  [{LEAVES_SUCCESS_COLOR}]Launched[/{LEAVES_SUCCESS_COLOR}] "
+            f"[white]{prog}[/white] [{LEAVES_DIM_COLOR}](PID {pid})[/{LEAVES_DIM_COLOR}]"
+        )
+    elif "terminated" in result:
+        target = result.get("target", "?")
+        count = result.get("count", 0)
+        for info in result.get("terminated", []):
+            sig = info.get("signal", "?")
+            console.print(
+                f"  [{LEAVES_WARNING_COLOR}]Terminated[/{LEAVES_WARNING_COLOR}] "
+                f"[white]{info.get('name', target)}[/white] "
+                f"[{LEAVES_DIM_COLOR}](PID {info.get('pid', '?')}, {sig})[/{LEAVES_DIM_COLOR}]"
+            )
+    else:
+        console.print(f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}")
+
+
+# ---------------------------------------------------------------------------
+# Web result renderers
+# ---------------------------------------------------------------------------
+
+def _render_web_search(result: dict) -> None:
+    query = result.get("query", "")
+    results_list = result.get("results", [])
+    err = result.get("error")
+
+    if err:
+        _show_error(f"Web search failed: {err}")
+        return
+
+    if not results_list:
+        console.print(f"[{LEAVES_DIM_COLOR}]No results for '{query}'[/{LEAVES_DIM_COLOR}]")
+        return
+
+    console.print(f"  [{LEAVES_PRIMARY_COLOR}]Search:[/{LEAVES_PRIMARY_COLOR}] {query}")
+    for i, r in enumerate(results_list, 1):
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        snippet = r.get("snippet", "")
+        console.print(f"  [{LEAVES_DIM_COLOR}]{i}.[/{LEAVES_DIM_COLOR}] [bold white]{title}[/bold white]")
+        if url:
+            console.print(f"     [{LEAVES_DIM_COLOR}]{url}[/{LEAVES_DIM_COLOR}]")
+        if snippet:
+            console.print(f"     {snippet[:200]}")
+
+
+def _render_web_fetch(result: dict) -> None:
+    url = result.get("url", "")
+    title = result.get("title", "")
+    content = result.get("content", "")
+    err = result.get("error")
+
+    if err:
+        _show_error(f"Fetch failed: {err}")
+        return
+
+    header = title or url
+    console.print(Panel(
+        content[:3000],
+        title=header,
+        border_style=LEAVES_PRIMARY_COLOR,
+    ))
+
+
+def _render_web_result(result: dict) -> None:
+    """Route web agent results to the appropriate renderer."""
+    if "results" in result:
+        _render_web_search(result)
+    elif "content" in result and "url" in result:
+        _render_web_fetch(result)
+    elif "error" in result:
+        _show_error(result["error"])
+    else:
+        console.print(f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -329,15 +525,27 @@ def handle_intent(user_text: str) -> None:
     for action in goal_spec.get("actions", []):
         action_id = action.get("action_id", "unknown")
         result = results.get(action_id, {})
+        agent = action.get("agent", "")
 
         if isinstance(result, dict) and "error" in result:
             _show_error(result["error"])
             continue
 
-        atype = action.get("type", "").upper()
-        if atype in ("QUERY", "READ") and isinstance(result, dict) and "files" in result:
+        if not isinstance(result, dict):
+            if result:
+                console.print(
+                    f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}"
+                )
+            continue
+
+        # Route to agent-specific renderer
+        if agent == "system":
+            _render_system_result(result)
+        elif agent == "web":
+            _render_web_result(result)
+        elif "files" in result:
             _render_file_list(result)
-        elif atype == "READ" and isinstance(result, dict) and "content" in result:
+        elif "content" in result and "path" in result:
             console.print(Panel(
                 result["content"][:2000],
                 title=result.get("path", ""),
@@ -461,8 +669,11 @@ def cmd_help() -> None:
         "  [white]quit[/white] / [white]exit[/white]          — exit\n\n"
         "[bold]Examples:[/bold]\n"
         "  find all PDFs in my Downloads folder\n"
-        "  list Python files in ~/dev\n"
-        "  show me files modified today in ~",
+        "  how much disk space do I have left\n"
+        "  open firefox\n"
+        "  close vlc\n"
+        "  search the web for Python tutorials\n"
+        "  move ~/Desktop/screenshot.png to ~/Pictures",
         title="Leaves OS Help",
         border_style=LEAVES_PRIMARY_COLOR,
     ))

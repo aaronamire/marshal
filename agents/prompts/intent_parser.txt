@@ -65,8 +65,19 @@ CATEGORY GUIDE:
 - file_task: anything about files, folders, directories, documents, finding/moving/deleting/reading files
 - email_task: composing, reading, sending, searching email
 - web_task: browsing, searching the web, fetching URLs
-- system_task: processes, system info, installed apps, resource usage
+- system_task: system info (CPU, memory, disk, processes, uptime), launching apps, closing/killing apps
 - writing_task: drafting documents, summaries, notes (no file system ops)
+
+SYSTEM AGENT RULES:
+- For system info queries: agent="system", type="QUERY", params.query_type = one of: cpu, memory, disk, processes, uptime
+- For launching apps: agent="system", type="WRITE", params.program = program name (e.g. "firefox")
+- For closing/killing apps: agent="system", type="DELETE", params.target = program name or PID. DELETE is destructive=true.
+- System QUERY actions are never destructive.
+
+WEB AGENT RULES:
+- For web searches: agent="web", type="QUERY", params.query_type="search", params.query="<search terms>"
+- For fetching a URL: agent="web", type="QUERY", params.query_type="fetch", params.url="<url>"
+- Web QUERY actions are never destructive.
 
 EXAMPLE:
 User intent: "find all PDFs in my Downloads folder"
@@ -208,6 +219,110 @@ Correct output:
     "resources": ["~/Downloads", "~/archive/pdfs"],
     "preview_required": true,
     "reversible": false
+  },
+  "metadata": {
+    "confidence": 0.95
+  }
+}
+
+EXAMPLE 6 (system query):
+User intent: "how much memory is being used"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "how much memory is being used",
+  "category": "system_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "QUERY",
+      "agent": "system",
+      "params": {"query_type": "memory"},
+      "destructive": false
+    }
+  ],
+  "authorization": {
+    "resources": [],
+    "preview_required": false,
+    "reversible": true
+  },
+  "metadata": {
+    "confidence": 0.97
+  }
+}
+
+EXAMPLE 7 (launch app):
+User intent: "open firefox"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "open firefox",
+  "category": "system_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "WRITE",
+      "agent": "system",
+      "params": {"program": "firefox"},
+      "destructive": false
+    }
+  ],
+  "authorization": {
+    "resources": [],
+    "preview_required": false,
+    "reversible": true
+  },
+  "metadata": {
+    "confidence": 0.96
+  }
+}
+
+EXAMPLE 8 (terminate app):
+User intent: "close firefox"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "close firefox",
+  "category": "system_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "DELETE",
+      "agent": "system",
+      "params": {"target": "firefox"},
+      "destructive": true
+    }
+  ],
+  "authorization": {
+    "resources": [],
+    "preview_required": true,
+    "reversible": false
+  },
+  "metadata": {
+    "confidence": 0.95
+  }
+}
+
+EXAMPLE 9 (web search):
+User intent: "search the web for Python async tutorials"
+Correct output:
+{
+  "intent_id": "PLACEHOLDER",
+  "natural_text": "search the web for Python async tutorials",
+  "category": "web_task",
+  "actions": [
+    {
+      "action_id": "act-1",
+      "type": "QUERY",
+      "agent": "web",
+      "params": {"query_type": "search", "query": "Python async tutorials"},
+      "destructive": false
+    }
+  ],
+  "authorization": {
+    "resources": [],
+    "preview_required": false,
+    "reversible": true
   },
   "metadata": {
     "confidence": 0.95

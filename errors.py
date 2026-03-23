@@ -114,8 +114,8 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
     LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
     LeavesErrorCode.NOT_IMPLEMENTED: (
         "That type of task isn't implemented yet. "
-        "Phase 1 supports file operations only. "
-        "Email, web, system, and writing tasks are coming in Phase 2."
+        "Supported: file operations, system info, web search, app launch/close. "
+        "Email and writing tasks are coming in a future release."
     ),
 }
 

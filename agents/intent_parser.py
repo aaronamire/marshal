@@ -94,9 +94,10 @@ class IntentParser:
                 raise LeavesError(
                     LeavesErrorCode.NOT_IMPLEMENTED,
                     detail=(
-                        "This request type is not yet implemented in Phase 1. "
-                        "Only file operations are supported. Email, web, system, "
-                        "and writing agents are planned for Phase 2+. (L0 fast-path)"
+                        "This request type is not yet implemented. "
+                        "File, system, and web operations are supported. "
+                        "Email and writing agents are planned for a future phase. "
+                        "(L0 fast-path)"
                     ),
                 )
             goal_spec = self._build_goal_spec_from_l0(l0, user_text)
@@ -108,7 +109,7 @@ class IntentParser:
         # --- Layer 1: instant classification (3-8ms) ---
         # Fires the callback so UI can update before Layer 2 runs.
         # Any failure is silently swallowed — never blocks Layer 2.
-        IMPLEMENTED_CATEGORIES = {"file_task"}
+        IMPLEMENTED_CATEGORIES = {"file_task", "system_task", "web_task"}
         if self._classifier is not None:
             try:
                 l1 = self._classifier.classify(user_text)
@@ -123,9 +124,9 @@ class IntentParser:
                     raise LeavesError(
                         LeavesErrorCode.NOT_IMPLEMENTED,
                         detail=(
-                            f"Category '{l1.category}' is not yet implemented in Phase 1. "
-                            f"Only file_task is supported. Email, web, system, and writing "
-                            f"agents are planned for Phase 2+. "
+                            f"Category '{l1.category}' is not yet implemented. "
+                            f"Supported: file_task, system_task, web_task. "
+                            f"Email and writing agents are planned for a future phase. "
                             f"(L1 confidence: {l1.confidence:.0%})"
                         ),
                     )
@@ -369,9 +370,9 @@ class IntentParser:
             raise LeavesError(
                 LeavesErrorCode.NOT_IMPLEMENTED,
                 detail=(
-                    f"Category '{category}' is not yet implemented in Phase 1. "
-                    f"Only file_task is supported. Email, web, system, and writing "
-                    f"agents are planned for Phase 2+."
+                    f"Category '{category}' is not yet implemented. "
+                    f"Supported: file_task, system_task, web_task. "
+                    f"Email and writing agents are planned for a future phase."
                 ),
             )
 
@@ -383,9 +384,9 @@ class IntentParser:
             raise LeavesError(
                 LeavesErrorCode.NOT_IMPLEMENTED,
                 detail=(
-                    f"All actions require agent(s) not implemented in Phase 1: "
+                    f"All actions require agent(s) not yet implemented: "
                     f"{list({a.get('agent') for a in unimplemented})}. "
-                    f"Only the 'file' agent is available."
+                    f"Available agents: file, system, web."
                 ),
             )
 

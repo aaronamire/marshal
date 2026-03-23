@@ -1,10 +1,10 @@
 {
   "agent_id": "dev.leaves.system-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "System Agent",
-  "description": "Read-only system information: CPU, memory, disk, processes, and uptime.",
+  "description": "System information, app launch, and app terminate. CPU, memory, disk, processes, uptime, open/close programs.",
   "handles_categories": ["system_task"],
-  "handles_action_types": ["QUERY"],
+  "handles_action_types": ["QUERY", "WRITE", "DELETE"],
   "tools": [
     {
       "name": "sys_cpu",
@@ -39,9 +39,25 @@
       "description": "System uptime in seconds and boot time as ISO-8601 UTC string.",
       "params": {},
       "destructive": false
+    },
+    {
+      "name": "launch",
+      "description": "Launch a program by name (must be in PATH). Detaches from terminal.",
+      "params": {
+        "program": {"type": "string", "description": "Program name, e.g. 'firefox', 'nautilus'"}
+      },
+      "destructive": false
+    },
+    {
+      "name": "terminate",
+      "description": "Terminate a running program by name or PID. SIGTERM then SIGKILL. Only kills user-owned processes.",
+      "params": {
+        "target": {"type": "string", "description": "Process name or PID"}
+      },
+      "destructive": true
     }
   ],
   "authorized_roots": [],
-  "phase": 1,
+  "phase": 2,
   "status": "active"
 }

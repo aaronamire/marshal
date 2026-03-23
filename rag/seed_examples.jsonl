@@ -25,8 +25,35 @@
 {"intent": "create a new file at ~/notes/todo.txt", "category": "file_task", "actions": [{"type": "WRITE", "params": {"path": "~/notes/todo.txt", "content": ""}, "destructive": false}]}
 {"intent": "write an email to my boss about the project update", "category": "email_task", "actions": []}
 {"intent": "send a message to john about the meeting tomorrow", "category": "email_task", "actions": []}
-{"intent": "show me what processes are using the most memory", "category": "system_task", "actions": []}
-{"intent": "what is the current CPU temperature", "category": "system_task", "actions": []}
-{"intent": "search Google for Python async tutorials", "category": "web_task", "actions": []}
+{"intent": "show me what processes are using the most memory", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "processes", "top_n": 10}, "destructive": false}]}
+{"intent": "what is the current CPU temperature", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "cpu"}, "destructive": false}]}
+{"intent": "how much RAM is being used right now", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "memory"}, "destructive": false}]}
+{"intent": "how much disk space do I have left", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "disk"}, "destructive": false}]}
+{"intent": "how long has my computer been running", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "uptime"}, "destructive": false}]}
+{"intent": "what is using so much CPU", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "processes", "top_n": 5}, "destructive": false}]}
+{"intent": "check my disk usage", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "disk"}, "destructive": false}]}
+{"intent": "is my computer running out of memory", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "memory"}, "destructive": false}]}
+{"intent": "show system uptime", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "uptime"}, "destructive": false}]}
+{"intent": "how many cores does my CPU have", "category": "system_task", "actions": [{"type": "QUERY", "params": {"query_type": "cpu"}, "destructive": false}]}
+{"intent": "open firefox", "category": "system_task", "actions": [{"type": "WRITE", "params": {"program": "firefox"}, "destructive": false}]}
+{"intent": "launch the file manager", "category": "system_task", "actions": [{"type": "WRITE", "params": {"program": "nautilus"}, "destructive": false}]}
+{"intent": "start gimp", "category": "system_task", "actions": [{"type": "WRITE", "params": {"program": "gimp"}, "destructive": false}]}
+{"intent": "open the terminal", "category": "system_task", "actions": [{"type": "WRITE", "params": {"program": "alacritty"}, "destructive": false}]}
+{"intent": "run htop", "category": "system_task", "actions": [{"type": "WRITE", "params": {"program": "htop"}, "destructive": false}]}
+{"intent": "close firefox", "category": "system_task", "actions": [{"type": "DELETE", "params": {"target": "firefox"}, "destructive": true}]}
+{"intent": "kill the process using port 8080", "category": "system_task", "actions": [{"type": "DELETE", "params": {"target": "8080"}, "destructive": true}]}
+{"intent": "terminate vlc", "category": "system_task", "actions": [{"type": "DELETE", "params": {"target": "vlc"}, "destructive": true}]}
+{"intent": "stop the music player", "category": "system_task", "actions": [{"type": "DELETE", "params": {"target": "spotify"}, "destructive": true}]}
+{"intent": "search the web for Python async tutorials", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "Python async tutorials"}, "destructive": false}]}
+{"intent": "search for latest Linux kernel news", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "latest Linux kernel news"}, "destructive": false}]}
+{"intent": "look up how to install Arch Linux", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "how to install Arch Linux"}, "destructive": false}]}
+{"intent": "search for rust vs go comparison", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "rust vs go comparison"}, "destructive": false}]}
+{"intent": "fetch the contents of https://example.com", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "fetch", "url": "https://example.com"}, "destructive": false}]}
+{"intent": "get the page at https://news.ycombinator.com", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "fetch", "url": "https://news.ycombinator.com"}, "destructive": false}]}
+{"intent": "what does wikipedia say about Wayland", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "Wayland display protocol Wikipedia"}, "destructive": false}]}
+{"intent": "search for best mechanical keyboards 2026", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "best mechanical keyboards 2026"}, "destructive": false}]}
+{"intent": "look up the weather in San Francisco", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "weather San Francisco"}, "destructive": false}]}
+{"intent": "find documentation for FastAPI", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "FastAPI documentation"}, "destructive": false}]}
+{"intent": "search for how to use psutil in Python", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "how to use psutil Python"}, "destructive": false}]}
 {"intent": "write a blog post about machine learning for beginners", "category": "writing_task", "actions": []}
 {"intent": "draft a cover letter for a software engineer position", "category": "writing_task", "actions": []}

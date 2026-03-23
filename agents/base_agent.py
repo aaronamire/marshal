@@ -1,9 +1,14 @@
 """
 Abstract base class for all Leaves OS agents.
-Phase 0: Only FileAgent is implemented.
-Phase 1+: EmailAgent, WebAgent, SystemAgent.
+Implemented: FileAgent, SystemAgent, WebAgent.
 """
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import Optional
+
+from db.audit import log_action_started, log_action_completed
+from errors import LeavesError
 
 
 class BaseAgent(ABC):
@@ -28,3 +33,39 @@ class BaseAgent(ABC):
         Returns result dict. Raises LeavesError on failure.
         """
         ...
+
+    # ------------------------------------------------------------------
+    # Audit helpers (shared by all agents)
+    # ------------------------------------------------------------------
+
+    def _audit_start(self, action_id: str, action_type: str, params: dict) -> Optional[int]:
+        try:
+            return log_action_started(
+                self._db,
+                intent_id=self.intent_id,
+                action_id=action_id,
+                action_type=action_type,
+                agent=self.AGENT_TYPE,
+                params=params,
+            )
+        except Exception:
+            return None  # DB failure is non-fatal for the operation itself
+
+    def _audit_end(
+        self,
+        row_id: Optional[int],
+        result: Optional[dict] = None,
+        error: Optional[LeavesError] = None,
+    ) -> None:
+        if row_id is None:
+            return
+        try:
+            log_action_completed(
+                self._db,
+                row_id=row_id,
+                result=result,
+                error_code=error.code.value if error else None,
+                error_detail=error.detail if error else None,
+            )
+        except Exception:
+            pass  # DB failure during audit logging is non-fatal

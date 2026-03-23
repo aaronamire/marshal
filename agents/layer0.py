@@ -166,6 +166,37 @@ _sys_rule(r'\bhow\s+long\s+.*\b(?:running|on|up)\b', "uptime")
 
 
 # ---------------------------------------------------------------------------
+# App launch / terminate rules (agent="system", category="system_task")
+# Launch: WRITE, params.program. Terminate: DELETE, params.target (destructive).
+# Conservative: only matches explicit "open/launch/start/run <app>" patterns.
+# ---------------------------------------------------------------------------
+
+_APP_LAUNCH_RULES: list = []
+_APP_TERMINATE_RULES: list = []
+
+# Common app name: single word, no path chars, lowercase
+_APP_NAME = r'(\w[\w\-\.]*)'
+
+
+def _launch_rule(pattern: str) -> None:
+    _APP_LAUNCH_RULES.append(re.compile(pattern, re.IGNORECASE))
+
+
+def _terminate_rule(pattern: str) -> None:
+    _APP_TERMINATE_RULES.append(re.compile(pattern, re.IGNORECASE))
+
+
+# Launch patterns: "open firefox", "launch gimp", "start htop", "run vlc"
+_launch_rule(r'^\s*(?:open|launch|start|run)\s+' + _APP_NAME + r'\s*$')
+
+# Terminate patterns: "close firefox", "kill firefox", "quit vlc", "terminate gimp"
+_terminate_rule(r'^\s*(?:close|kill|quit|terminate|stop)\s+' + _APP_NAME + r'\s*$')
+
+# "kill PID 1234" or "kill 1234"
+_terminate_rule(r'^\s*kill\s+(?:pid\s+)?(\d+)\s*$')
+
+
+# ---------------------------------------------------------------------------
 # NOT_IMPLEMENTED fast-path patterns
 # Matched inputs are flagged is_implemented=False → caller raises immediately.
 # Patterns are intentionally broad (no explicit path required).
@@ -236,6 +267,38 @@ def match(user_text: str) -> Layer0Result:
                 matched=True,
                 action_type="QUERY",
                 params={**params, "destructive": False},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="system",
+                category="system_task",
+            )
+    # App launch — "open firefox", "launch gimp"
+    for pattern in _APP_LAUNCH_RULES:
+        m = pattern.match(user_text)
+        if m:
+            program = m.group(1).strip()
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type="WRITE",
+                params={"program": program, "destructive": False},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="system",
+                category="system_task",
+            )
+    # App terminate — "close firefox", "kill 1234"
+    for pattern in _APP_TERMINATE_RULES:
+        m = pattern.match(user_text)
+        if m:
+            target = m.group(1).strip()
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type="DELETE",
+                params={"target": target, "destructive": True},
                 confidence=0.95,
                 latency_ms=latency_ms,
                 is_implemented=True,

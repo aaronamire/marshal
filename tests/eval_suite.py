@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Leaves OS eval harness (Phase 1).
+Leaves OS eval harness (Phase 2).
 
 Checks three distinct correctness levels for each test case:
   1. Schema validity   — output passes jsonschema (table stakes)
@@ -16,7 +16,8 @@ Usage:
   python3 tests/eval_suite.py --fast                 # skip inter-case cooldown
   python3 tests/eval_suite.py --timeout 30
   python3 tests/eval_suite.py --phase phase0         # run Phase 0 cases only (12)
-  python3 tests/eval_suite.py --phase phase1         # run all 30 cases
+  python3 tests/eval_suite.py --phase phase1         # run Phase 1 cases (30)
+  python3 tests/eval_suite.py --phase phase2         # run all cases (Phase 2)
 
 Phase 0 gate (12 cases):
   schema_validity    >= 95%
@@ -27,6 +28,11 @@ Phase 1 gate (30 cases, Qwen2.5-3B target):
   schema_validity    >= 95%
   action_type_ok     >= 85%
   action_ordering    >= 85%
+
+Phase 2 gate (37+ cases, file + system + web):
+  schema_validity    >= 95%
+  action_type_ok     >= 90%
+  action_ordering    >= 90%
 """
 from __future__ import annotations
 
@@ -269,14 +275,7 @@ CASES: list[Case] = [
         expected_sequence=["QUERY", "COPY"],
     ),
 
-    # --- NOT_IMPLEMENTED: 3 additional categories (Phase 1 set) ---
-    Case(
-        label="web search (not impl)",
-        intent="search Google for Python async tutorials",
-        expected_category="web_task",
-        expected_action_types=[],
-        expect_not_implemented=True,
-    ),
+    # --- NOT_IMPLEMENTED: categories still not implemented ---
     Case(
         label="writing (not impl)",
         intent="write a blog post about machine learning for beginners",
@@ -284,16 +283,91 @@ CASES: list[Case] = [
         expected_action_types=[],
         expect_not_implemented=True,
     ),
+
+    # --- System agent (L0 fast-path) ---
     Case(
         label="cpu temp",
         intent="what is the current CPU temperature",
         expected_category="system_task",
         expected_action_types=["QUERY"],
     ),
+    Case(
+        label="disk usage",
+        intent="how much disk space do I have left",
+        expected_category="system_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="memory usage",
+        intent="how much RAM is being used right now",
+        expected_category="system_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="uptime",
+        intent="how long has my computer been running",
+        expected_category="system_task",
+        expected_action_types=["QUERY"],
+    ),
+
+    # --- Web agent ---
+    Case(
+        label="web search",
+        intent="search the web for Python async tutorials",
+        expected_category="web_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="web search news",
+        intent="search for latest Linux kernel news",
+        expected_category="web_task",
+        expected_action_types=["QUERY"],
+    ),
+    Case(
+        label="web fetch",
+        intent="fetch the contents of https://example.com",
+        expected_category="web_task",
+        expected_action_types=["QUERY"],
+    ),
+
+    # --- App launch (system agent, WRITE action, L0 fast-path) ---
+    Case(
+        label="launch firefox",
+        intent="open firefox",
+        expected_category="system_task",
+        expected_action_types=["WRITE"],
+    ),
+    Case(
+        label="launch gimp",
+        intent="launch gimp",
+        expected_category="system_task",
+        expected_action_types=["WRITE"],
+    ),
+    Case(
+        label="start htop",
+        intent="run htop",
+        expected_category="system_task",
+        expected_action_types=["WRITE"],
+    ),
+
+    # --- App terminate (system agent, DELETE action, L0 fast-path) ---
+    Case(
+        label="close firefox",
+        intent="close firefox",
+        expected_category="system_task",
+        expected_action_types=["DELETE"],
+    ),
+    Case(
+        label="kill vlc",
+        intent="kill vlc",
+        expected_category="system_task",
+        expected_action_types=["DELETE"],
+    ),
 ]
 
-# Phase 0 uses the first 12 cases; Phase 1 uses all 30.
+# Phase 0 uses the first 12 cases; Phase 1 uses 30; Phase 2 uses all.
 _PHASE0_CASE_COUNT = 12
+_PHASE1_CASE_COUNT = 30
 
 
 # ---------------------------------------------------------------------------
@@ -515,28 +589,28 @@ def print_summary(results: list[Result], cases: list[Case], config_label: str,
     action_pct   = 100 * action_pass   // n_reg if n_reg else 0
     ordering_pct = 100 * ordering_pass // n_reg if n_reg else 0
 
-    # Phase 0 gate (12 cases, lower thresholds)
+    # Phase gates: progressively higher thresholds
     if phase == "phase0":
-        schema_gate   = schema_pct   >= 95
-        action_gate   = action_pct   >= 80
-        ordering_gate = ordering_pct >= 80
+        schema_thr, action_thr, ordering_thr = 95, 80, 80
         gate_label = "Phase 0 gate"
         pass_label = "PHASE 0 COMPLETE"
-    else:
-        # Phase 1 gate: higher thresholds, 30-case suite
-        schema_gate   = schema_pct   >= 95
-        action_gate   = action_pct   >= 85
-        ordering_gate = ordering_pct >= 85
+    elif phase == "phase1":
+        schema_thr, action_thr, ordering_thr = 95, 85, 85
         gate_label = "Phase 1 gate"
         pass_label = "PHASE 1 GATE PASSED"
+    else:
+        schema_thr, action_thr, ordering_thr = 95, 90, 90
+        gate_label = "Phase 2 gate"
+        pass_label = "PHASE 2 GATE PASSED"
 
-    a_thr = 80 if phase == "phase0" else 85
-    o_thr = 80 if phase == "phase0" else 85
+    schema_gate   = schema_pct   >= schema_thr
+    action_gate   = action_pct   >= action_thr
+    ordering_gate = ordering_pct >= ordering_thr
 
     print(f"\n  {gate_label}:")
-    print(f"    schema_validity >= 95%  : {'PASS' if schema_gate   else 'FAIL'} ({schema_pct}%)")
-    print(f"    action_type_ok  >= {a_thr}%  : {'PASS' if action_gate   else 'FAIL'} ({action_pct}%)")
-    print(f"    action_ordering >= {o_thr}%  : {'PASS' if ordering_gate else 'FAIL'} ({ordering_pct}%)")
+    print(f"    schema_validity >= {schema_thr}%  : {'PASS' if schema_gate   else 'FAIL'} ({schema_pct}%)")
+    print(f"    action_type_ok  >= {action_thr}%  : {'PASS' if action_gate   else 'FAIL'} ({action_pct}%)")
+    print(f"    action_ordering >= {ordering_thr}%  : {'PASS' if ordering_gate else 'FAIL'} ({ordering_pct}%)")
 
     if schema_gate and action_gate and ordering_gate:
         print(f"\n  *** {pass_label} ***")
@@ -566,10 +640,11 @@ def main() -> int:
                         help="Show category/action details for each result")
     parser.add_argument("--case", type=str, default=None,
                         help="Run only cases whose label contains this string")
-    parser.add_argument("--phase", type=str, default="phase1",
-                        choices=["phase0", "phase1"],
-                        help="phase0: run first 12 cases, gate at 80%%; "
-                             "phase1: run all 30 cases, gate at 85%% (default)")
+    parser.add_argument("--phase", type=str, default="phase2",
+                        choices=["phase0", "phase1", "phase2"],
+                        help="phase0: first 12 cases, gate at 80%%; "
+                             "phase1: 30 cases, gate at 85%%; "
+                             "phase2: all cases, gate at 90%% (default)")
     args = parser.parse_args()
 
     use_gbnf = not args.no_gbnf
@@ -601,7 +676,12 @@ def main() -> int:
         print("ERROR: Inference server not running. Start with: bash scripts/start-inference.sh")
         return 1
 
-    cases = CASES[:_PHASE0_CASE_COUNT] if args.phase == "phase0" else CASES
+    if args.phase == "phase0":
+        cases = CASES[:_PHASE0_CASE_COUNT]
+    elif args.phase == "phase1":
+        cases = CASES[:_PHASE1_CASE_COUNT]
+    else:
+        cases = CASES
     if args.case:
         cases = [c for c in CASES if args.case.lower() in c.label.lower()]
         if not cases:

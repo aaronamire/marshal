@@ -1,27 +1,39 @@
 """
-System agent — read-only system information queries.
+System agent — system information, app launch, and app terminate.
 
-All tools are non-destructive: they only read kernel/hardware counters.
-No state is modified; no files are written.
-
-Dispatch: action type QUERY → routed by params["query_type"]:
-  "cpu"       → sys_cpu()
-  "memory"    → sys_memory()
-  "disk"      → sys_disk()
-  "processes" → sys_processes(top_n)
-  "uptime"    → sys_uptime()
+Dispatch by action type:
+  QUERY  → routed by params["query_type"]:
+    "cpu"       → sys_cpu()
+    "memory"    → sys_memory()
+    "disk"      → sys_disk()
+    "processes" → sys_processes(top_n)
+    "uptime"    → sys_uptime()
+  WRITE  → launch a program (params["program"])
+  DELETE → terminate a program by name or PID (params["target"])
 """
 from __future__ import annotations
 
 import datetime
+import os
+import shutil
+import subprocess
 import time
-from typing import Any, Optional
+from typing import Optional
 
 import psutil
 
 from agents.base_agent import BaseAgent
-from db.audit import log_action_started, log_action_completed
 from errors import LeavesError, LeavesErrorCode
+
+# Programs that must never be terminated via the agent.
+_PROTECTED_PROCESSES = frozenset({
+    "systemd", "init", "sshd", "login", "dbus-daemon",
+    "pipewire", "pulseaudio", "Xorg", "Xwayland",
+    "leaves-compositor", "agentd", "python3",
+})
+
+# Max processes to kill in a single terminate action (safety cap).
+_MAX_TERMINATE = 5
 
 
 class SystemAgent(BaseAgent):
@@ -36,12 +48,23 @@ class SystemAgent(BaseAgent):
         action_id = action.get("action_id", "unknown")
         params = action.get("params", {})
 
-        if action_type != "QUERY":
+        if action_type == "QUERY":
+            return self._handle_query(action_id, params)
+        elif action_type == "WRITE":
+            return self._handle_launch(action_id, params)
+        elif action_type == "DELETE":
+            return self._handle_terminate(action_id, params)
+        else:
             raise LeavesError(
                 LeavesErrorCode.NOT_IMPLEMENTED,
-                detail=f"SystemAgent only handles QUERY actions, got '{action_type}'",
+                detail=f"SystemAgent handles QUERY/WRITE/DELETE, got '{action_type}'",
             )
 
+    # ------------------------------------------------------------------
+    # QUERY dispatch
+    # ------------------------------------------------------------------
+
+    def _handle_query(self, action_id: str, params: dict) -> dict:
         query_type = params.get("query_type", "")
         top_n = params.get("top_n", 10)
 
@@ -55,7 +78,6 @@ class SystemAgent(BaseAgent):
 
         handler = dispatch.get(query_type)
         if handler is None:
-            # Unknown query_type — try cpu as default for vague system queries
             handler = dispatch["cpu"]
 
         row_id = self._audit_start(action_id, "QUERY", params)
@@ -71,7 +93,184 @@ class SystemAgent(BaseAgent):
             raise err
 
     # ------------------------------------------------------------------
-    # Tool methods
+    # WRITE — launch a program
+    # ------------------------------------------------------------------
+
+    def _handle_launch(self, action_id: str, params: dict) -> dict:
+        program = params.get("program", "").strip()
+        if not program:
+            raise LeavesError(
+                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                detail="No program specified for launch",
+            )
+
+        # Resolve the program to a real path (validates it exists in PATH)
+        exe = shutil.which(program)
+        if exe is None:
+            raise LeavesError(
+                LeavesErrorCode.FILE_NOT_FOUND,
+                detail=f"Program '{program}' not found in PATH",
+            )
+
+        row_id = self._audit_start(action_id, "WRITE", params)
+        try:
+            # Launch detached from our process group so it outlives us.
+            # stdout/stderr to devnull — GUI apps don't need a terminal.
+            proc = subprocess.Popen(
+                [exe],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            result = {
+                "launched": program,
+                "pid": proc.pid,
+                "path": exe,
+            }
+            self._audit_end(row_id, result)
+            return result
+        except OSError as e:
+            err = LeavesError(
+                LeavesErrorCode.INTERNAL_ERROR,
+                detail=f"Failed to launch '{program}': {e}",
+                cause=e,
+            )
+            self._audit_end(row_id, error=err)
+            raise err
+
+    # ------------------------------------------------------------------
+    # DELETE — terminate a program by name or PID
+    # ------------------------------------------------------------------
+
+    def _handle_terminate(self, action_id: str, params: dict) -> dict:
+        target = params.get("target", "").strip()
+        if not target:
+            raise LeavesError(
+                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                detail="No target specified for terminate",
+            )
+
+        row_id = self._audit_start(action_id, "DELETE", params)
+        try:
+            result = self._terminate(target)
+            self._audit_end(row_id, result)
+            return result
+        except LeavesError:
+            raise
+        except Exception as e:
+            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            self._audit_end(row_id, error=err)
+            raise err
+
+    def _terminate(self, target: str) -> dict:
+        """Terminate by PID (if numeric) or by process name."""
+        # Try as PID first
+        if target.isdigit():
+            return self._terminate_pid(int(target))
+
+        # By name — find matching processes owned by current user
+        uid = os.getuid()
+        matches = []
+        for p in psutil.process_iter(["pid", "name", "uids"]):
+            try:
+                info = p.info
+                if info["name"] and info["name"].lower() == target.lower():
+                    # Only kill our own processes
+                    if info["uids"] and info["uids"].real == uid:
+                        matches.append(p)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        if not matches:
+            raise LeavesError(
+                LeavesErrorCode.FILE_NOT_FOUND,
+                detail=f"No running process named '{target}' owned by current user",
+            )
+
+        # Safety: refuse to kill protected system processes
+        if target.lower() in {n.lower() for n in _PROTECTED_PROCESSES}:
+            raise LeavesError(
+                LeavesErrorCode.PERMISSION_DENIED,
+                detail=f"'{target}' is a protected system process and cannot be terminated",
+            )
+
+        # Cap the number of processes we'll kill
+        if len(matches) > _MAX_TERMINATE:
+            raise LeavesError(
+                LeavesErrorCode.PERMISSION_DENIED,
+                detail=(
+                    f"Found {len(matches)} processes named '{target}' — "
+                    f"refusing to kill more than {_MAX_TERMINATE} at once"
+                ),
+            )
+
+        terminated = []
+        for p in matches:
+            terminated.append(self._kill_process(p))
+
+        return {
+            "target": target,
+            "terminated": terminated,
+            "count": len(terminated),
+        }
+
+    def _terminate_pid(self, pid: int) -> dict:
+        """Terminate a single process by PID."""
+        try:
+            p = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            raise LeavesError(
+                LeavesErrorCode.FILE_NOT_FOUND,
+                detail=f"No process with PID {pid}",
+            )
+
+        # Only kill our own processes
+        try:
+            if p.uids().real != os.getuid():
+                raise LeavesError(
+                    LeavesErrorCode.PERMISSION_DENIED,
+                    detail=f"PID {pid} ({p.name()}) is not owned by current user",
+                )
+        except psutil.AccessDenied:
+            raise LeavesError(
+                LeavesErrorCode.PERMISSION_DENIED,
+                detail=f"Cannot access PID {pid} — not owned by current user",
+            )
+
+        name = p.name()
+        if name.lower() in {n.lower() for n in _PROTECTED_PROCESSES}:
+            raise LeavesError(
+                LeavesErrorCode.PERMISSION_DENIED,
+                detail=f"PID {pid} ({name}) is a protected system process",
+            )
+
+        info = self._kill_process(p)
+        return {
+            "target": str(pid),
+            "terminated": [info],
+            "count": 1,
+        }
+
+    @staticmethod
+    def _kill_process(proc: psutil.Process) -> dict:
+        """SIGTERM, wait 3s, then SIGKILL if still alive."""
+        pid = proc.pid
+        name = proc.name()
+        try:
+            proc.terminate()  # SIGTERM
+            try:
+                proc.wait(timeout=3)
+                return {"pid": pid, "name": name, "signal": "SIGTERM"}
+            except psutil.TimeoutExpired:
+                proc.kill()  # SIGKILL
+                proc.wait(timeout=2)
+                return {"pid": pid, "name": name, "signal": "SIGKILL"}
+        except psutil.NoSuchProcess:
+            return {"pid": pid, "name": name, "signal": "already_exited"}
+
+    # ------------------------------------------------------------------
+    # Query tool methods
     # ------------------------------------------------------------------
 
     def sys_cpu(self) -> dict:
@@ -83,14 +282,13 @@ class SystemAgent(BaseAgent):
         try:
             sensors = psutil.sensors_temperatures()
             if sensors:
-                # Try common sensor names in order of preference
                 for key in ("coretemp", "k10temp", "cpu_thermal", "acpitz"):
                     entries = sensors.get(key, [])
                     if entries:
                         temp = round(entries[0].current, 1)
                         break
         except (AttributeError, Exception):
-            pass  # sensors_temperatures() not available on all platforms
+            pass
 
         return {
             "usage_percent": round(usage, 1),
@@ -153,38 +351,4 @@ class SystemAgent(BaseAgent):
             "boot_time_iso": boot_iso,
         }
 
-    # ------------------------------------------------------------------
-    # Audit helpers (same pattern as FileAgent)
-    # ------------------------------------------------------------------
-
-    def _audit_start(self, action_id: str, action_type: str, params: dict) -> Optional[int]:
-        try:
-            return log_action_started(
-                self._db,
-                intent_id=self.intent_id,
-                action_id=action_id,
-                action_type=action_type,
-                agent=self.AGENT_TYPE,
-                params=params,
-            )
-        except Exception:
-            return None
-
-    def _audit_end(
-        self,
-        row_id: Optional[int],
-        result: Optional[dict] = None,
-        error: Optional[LeavesError] = None,
-    ) -> None:
-        if row_id is None:
-            return
-        try:
-            log_action_completed(
-                self._db,
-                row_id=row_id,
-                result=result,
-                error_code=error.code.value if error else None,
-                error_detail=error.detail if error else None,
-            )
-        except Exception:
-            pass
+    # _audit_start / _audit_end inherited from BaseAgent
