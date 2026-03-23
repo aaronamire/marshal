@@ -187,7 +187,7 @@ class IntentParser:
         action = {
             "action_id": "act-1",
             "type": l0.action_type,
-            "agent": "file",
+            "agent": l0.agent,
             "params": params,
             "destructive": destructive,
         }
@@ -202,7 +202,7 @@ class IntentParser:
         goal_spec = {
             "intent_id": str(uuid.uuid4()),
             "natural_text": user_text,
-            "category": "file_task",
+            "category": l0.category,
             "actions": [action],
             "authorization": {
                 "resources": resources,
@@ -350,8 +350,8 @@ class IntentParser:
     def _check_actions_present(self, goal_spec: dict[str, Any]) -> None:
         """Raise NOT_IMPLEMENTED for unimplemented categories; INFERENCE_BAD_RESPONSE
         when the model returns empty actions for a supported category."""
-        IMPLEMENTED_CATEGORIES = {"file_task", "system_task"}
-        IMPLEMENTED_AGENTS = {"file", "system"}
+        IMPLEMENTED_CATEGORIES = {"file_task", "system_task", "web_task"}
+        IMPLEMENTED_AGENTS = {"file", "system", "web"}
         actions = goal_spec.get("actions", [])
         category = goal_spec.get("category", "")
 

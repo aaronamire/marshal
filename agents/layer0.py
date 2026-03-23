@@ -27,6 +27,8 @@ class Layer0Result:
     confidence: float = 0.0
     latency_ms: float = 0.0
     is_implemented: bool = True
+    agent: str = "file"
+    category: str = "file_task"
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +129,43 @@ _rule(
 
 
 # ---------------------------------------------------------------------------
+# System query rules (agent="system", category="system_task")
+# These bypass L1+L2 entirely — the SystemAgent uses psutil, no LLM needed.
+# ---------------------------------------------------------------------------
+
+_SYSTEM_RULES: list = []
+# Each entry: (compiled_pattern, query_type, param_extractor_or_None)
+
+
+def _sys_rule(pattern: str, query_type: str, extractor=None) -> None:
+    _SYSTEM_RULES.append(
+        (re.compile(pattern, re.IGNORECASE), query_type, extractor))
+
+
+# memory / RAM
+_sys_rule(r'\b(?:ram|memory)\b', "memory")
+_sys_rule(r'\bhow\s+much\s+(?:ram|memory)\b', "memory")
+
+# CPU
+_sys_rule(r'\bcpu\s*(?:usage|load|temp|temperature|info)?\b', "cpu")
+_sys_rule(r'\bprocessor\b', "cpu")
+
+# disk / storage
+_sys_rule(r'\bdisk\s*(?:usage|space|info)?\b', "disk")
+_sys_rule(r'\bstorage\s*(?:usage|space|left)?\b', "disk")
+_sys_rule(r'\bhow\s+much\s+(?:disk|storage|space)\b', "disk")
+
+# processes
+_sys_rule(r'\b(?:running\s+)?processes\b', "processes")
+_sys_rule(r'\btop\s+processes\b', "processes")
+_sys_rule(r'\bwhat(?:\'s|\s+is)\s+(?:running|using)\b', "processes")
+
+# uptime
+_sys_rule(r'\buptime\b', "uptime")
+_sys_rule(r'\bhow\s+long\s+.*\b(?:running|on|up)\b', "uptime")
+
+
+# ---------------------------------------------------------------------------
 # NOT_IMPLEMENTED fast-path patterns
 # Matched inputs are flagged is_implemented=False → caller raises immediately.
 # Patterns are intentionally broad (no explicit path required).
@@ -146,10 +185,7 @@ _not_impl(r'^\s*(?:send|compose|draft)\b.+\bto\s+(?!~|/|\.)[\w]')  # "to <person
 # system — hardware controls not handled by SystemAgent
 _not_impl(r'\b(?:battery|wifi|wi-fi|brightness|volume)\b')
 
-# web — search the web / open url / browse / download from http
-_not_impl(r'\bsearch\s+(?:the\s+)?web\b')
-_not_impl(r'\bopen\s+(?:url|http|https)\b')
-_not_impl(r'\b(?:browse|download\s+from)\s+https?://')
+# web — now implemented by WebAgent (NOT_IMPL patterns removed)
 
 # writing — write a document/report / summarize text
 _not_impl(r'\bwrite\s+a\s+(?:document|report|letter|essay|blog\s+post)\b')
@@ -185,6 +221,26 @@ def match(user_text: str) -> Layer0Result:
                 confidence=0.95,
                 latency_ms=latency_ms,
                 is_implemented=True,
+            )
+    # System queries — .search() not .match(), since keywords appear mid-sentence
+    for pattern, query_type, extractor in _SYSTEM_RULES:
+        if pattern.search(user_text):
+            params = {"query_type": query_type}
+            if extractor:
+                try:
+                    params.update(extractor(pattern.search(user_text)))
+                except Exception:
+                    pass
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type="QUERY",
+                params={**params, "destructive": False},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="system",
+                category="system_task",
             )
     for pattern in _NOT_IMPL_RULES:
         if pattern.search(user_text):

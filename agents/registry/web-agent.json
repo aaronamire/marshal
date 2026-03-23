@@ -1,0 +1,10 @@
+{
+  "agent_id": "dev.leaves.web-agent",
+  "version": "0.1.0",
+  "handles": ["web_task"],
+  "tools": ["web_search", "web_fetch"],
+  "required_caps": ["CAP_NET"],
+  "description": "Web search and page fetch via DuckDuckGo",
+  "max_memory_mb": 256,
+  "timeout_seconds": 30
+}

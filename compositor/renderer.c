@@ -807,7 +807,7 @@ static void draw_auth_overlay(struct leaves_renderer *r,
 		scope_layout = create_layout(cr, r->font_overlay_mono, 0);
 		char scope_text[600];
 		snprintf(scope_text, sizeof(scope_text),
-			"scope: %s", intent->resources);
+			"\xe2\x9a\x91  Sandboxed to: %s", intent->resources);
 		pango_layout_set_text(scope_layout, scope_text, -1);
 		pango_layout_set_width(scope_layout, content_w * PANGO_SCALE);
 		pango_layout_set_wrap(scope_layout, PANGO_WRAP_WORD_CHAR);
@@ -869,7 +869,7 @@ static void draw_auth_overlay(struct leaves_renderer *r,
 	/* Scope block */
 	if (scope_layout) {
 		cairo_move_to(cr, cx, cy);
-		set_color(cr, ACCENT_AMBER);
+		set_color(cr, ACCENT_GREEN);
 		pango_cairo_show_layout(cr, scope_layout);
 		cy += slh + SPACE_L;
 	}

@@ -108,11 +108,13 @@ class TestNotImplementedFastPath:
         assert not mock_client.complete.called, "LLM must not be called for email_task"
 
     def test_system_fast_path_skips_llm(self, parser_with_mock_llm):
+        """System queries are handled by Layer 0 regex → SystemAgent.
+        The LLM must never be called."""
         parser, mock_client = parser_with_mock_llm
-        from errors import LeavesError, LeavesErrorCode
-        with pytest.raises(LeavesError) as exc_info:
-            parser.parse("how much RAM is my computer using")
-        assert exc_info.value.code == LeavesErrorCode.NOT_IMPLEMENTED
+        result = parser.parse("how much RAM is my computer using")
+        assert result["category"] == "system_task"
+        assert result["actions"][0]["agent"] == "system"
+        assert result["actions"][0]["params"]["query_type"] == "memory"
         assert not mock_client.complete.called, "LLM must not be called for system_task"
 
     def test_file_task_reaches_llm(self, parser_with_mock_llm):

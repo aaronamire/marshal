@@ -28,6 +28,7 @@ struct leaves_output {
 	struct leaves_server *server;
 	struct wlr_output *wlr_output;
 	struct wl_listener frame;
+	struct wl_listener request_state;
 	struct wl_listener destroy;
 };
 
@@ -176,9 +177,22 @@ static void output_frame(struct wl_listener *listener, void *data) {
 	wlr_texture_destroy(texture);
 }
 
+/* Accept resize/fullscreen requests from the parent compositor (Hyprland).
+ * Without this, the wayland backend ignores configure events and the
+ * window stays at its initial size. */
+static void output_request_state(struct wl_listener *listener, void *data) {
+	struct leaves_output *output =
+		wl_container_of(listener, output, request_state);
+	const struct wlr_output_event_request_state *event = data;
+	wlr_output_commit_state(output->wlr_output, event->state);
+	output->server->needs_redraw = true;
+	schedule_frame(output->server);
+}
+
 static void output_destroy(struct wl_listener *listener, void *data) {
 	struct leaves_output *output = wl_container_of(listener, output, destroy);
 	wl_list_remove(&output->frame.link);
+	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->link);
 	free(output);
@@ -317,6 +331,10 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 
 	output->frame.notify = output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
+
+	output->request_state.notify = output_request_state;
+	wl_signal_add(&wlr_output->events.request_state,
+		&output->request_state);
 
 	output->destroy.notify = output_destroy;
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
