@@ -1,10 +1,24 @@
-# Core — no torch, no CUDA, no GPU packages
+# Core
 requests>=2.31.0
 jsonschema>=4.21.0
 pydantic>=2.5.0
-sqlalchemy>=2.0.0
 rich>=13.7.0
+psutil>=5.9.0
 
-# Lightweight JSON validation only
-# sentence-transformers removed — we use llama.cpp for inference
-# torch removed — not needed on CPU-only Intel HD 620
+# Web agent
+beautifulsoup4>=4.12.0
+duckduckgo-search>=4.0
+
+# HTTP API
+fastapi>=0.109.0
+uvicorn>=0.27.0
+httpx>=0.26.0
+
+# Layer 1 classifier
+scikit-learn>=1.4.0
+joblib>=1.3.0
+
+# RAG pipeline (optional — degrades gracefully)
+lancedb>=0.4.0
+rank-bm25>=0.2.2
+sentence-transformers>=2.3.0

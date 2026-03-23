@@ -70,8 +70,8 @@ CATEGORY GUIDE:
 
 SYSTEM AGENT RULES:
 - For system info queries: agent="system", type="QUERY", params.query_type = one of: cpu, memory, disk, processes, uptime
-- For launching apps: agent="system", type="WRITE", params.program = program name (e.g. "firefox")
-- For closing/killing apps: agent="system", type="DELETE", params.target = program name or PID. DELETE is destructive=true.
+- For launching apps: agent="system", type="WRITE", params.program = program name (e.g. "firefox"). Set authorization.preview_required=true (user must confirm before launching).
+- For closing/killing apps: agent="system", type="DELETE", params.target = program name or PID. DELETE is destructive=true, preview_required=true.
 - System QUERY actions are never destructive.
 
 WEB AGENT RULES:

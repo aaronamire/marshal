@@ -207,7 +207,7 @@ class IntentParser:
             "actions": [action],
             "authorization": {
                 "resources": resources,
-                "preview_required": has_destructive,
+                "preview_required": l0.preview_required if l0.preview_required is not None else has_destructive,
                 "reversible": not has_destructive,
             },
             "metadata": {

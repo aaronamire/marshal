@@ -183,13 +183,14 @@ def _do_apply(goal_spec: dict) -> None:
         _ll_add_path_rule(ruleset_fd, pathlib.Path.home().parent, _ACCESS_READ_DIR)
         _ll_add_path_rule(ruleset_fd, pathlib.Path.home(), _ACCESS_READ_DIR)
 
-        # Always read-only: Python runtime
+        # Always read-only: Python runtime + system config
         for path in (
             project_root,
             pathlib.Path("/usr"),
             pathlib.Path("/lib"),
             pathlib.Path("/lib64"),
             pathlib.Path("/proc"),
+            pathlib.Path("/etc"),   # DNS resolution + SSL certs
         ):
             _ll_add_path_rule(ruleset_fd, path, _FS_READ_ONLY)
 

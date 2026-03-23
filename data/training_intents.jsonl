@@ -179,6 +179,26 @@
 {"text": "show me memory usage over time", "label": "system_task"}
 {"text": "list all cron jobs", "label": "system_task"}
 {"text": "what version of Python is installed", "label": "system_task"}
+{"text": "open firefox", "label": "system_task"}
+{"text": "launch gimp", "label": "system_task"}
+{"text": "start htop", "label": "system_task"}
+{"text": "run vlc", "label": "system_task"}
+{"text": "open the file manager", "label": "system_task"}
+{"text": "launch a terminal", "label": "system_task"}
+{"text": "start libreoffice", "label": "system_task"}
+{"text": "open nautilus", "label": "system_task"}
+{"text": "run alacritty", "label": "system_task"}
+{"text": "launch the text editor", "label": "system_task"}
+{"text": "open spotify", "label": "system_task"}
+{"text": "start blender", "label": "system_task"}
+{"text": "close firefox", "label": "system_task"}
+{"text": "kill vlc", "label": "system_task"}
+{"text": "quit spotify", "label": "system_task"}
+{"text": "terminate gimp", "label": "system_task"}
+{"text": "stop the music player", "label": "system_task"}
+{"text": "close all instances of chrome", "label": "system_task"}
+{"text": "kill process 1234", "label": "system_task"}
+{"text": "kill the process using port 3000", "label": "system_task"}
 {"text": "write a summary of my project", "label": "writing_task"}
 {"text": "draft an email to my team", "label": "writing_task"}
 {"text": "create a README for this project", "label": "writing_task"}
