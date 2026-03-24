@@ -20,7 +20,7 @@ SCHEMA_FILE = ROOT / "agents" / "schema" / "goal_spec.json"
 OUTPUT_FILE = ROOT / "data" / "goalspec_training_pairs.jsonl"
 
 MODEL = "claude-haiku-4-5-20251001"
-TARGET = 1500
+TARGET = 2500  # ~1500 file + ~500 system + ~400 web + ~100 writing/email
 # Dummy UUID v4 injected before schema validation (intent_id is never LLM-generated)
 DUMMY_UUID = "00000000-0000-4000-8000-000000000001"
 
@@ -34,7 +34,7 @@ MULTI_ACTION_COMBOS = [
 ]
 
 SYSTEM_PROMPT = """\
-You generate training data for an AI file assistant called Leaves OS.
+You generate training data for an AI assistant called Leaves OS.
 For each request, output a JSON array of GoalSpec objects — no markdown, no explanation.
 
 GOALSPEC SCHEMA (do NOT include "intent_id"):
@@ -58,28 +58,47 @@ GOALSPEC SCHEMA (do NOT include "intent_id"):
   }
 }
 
-ACTION RULES:
-  QUERY    → search/list/find files. agent=file. destructive=false.
+FILE AGENT RULES (category=file_task, agent=file):
+  QUERY    → search/list/find files. destructive=false.
              params: {path, pattern?, search_type}
              search_type: "glob" | "size" | "modified" | "count" | "content"
-  READ     → read file contents. agent=file. destructive=false.
+  READ     → read file contents. destructive=false.
              params: {path}
-  WRITE    → create/overwrite file. agent=file. destructive=false (new) or true (overwrite).
+  WRITE    → create/overwrite file. destructive=false (new) or true (overwrite).
              params: {path, content}
-  DELETE   → remove files. agent=file. destructive=true. preview_required=true. reversible=false.
+  DELETE   → remove files. destructive=true. preview_required=true. reversible=false.
              params: {path} or {path, pattern}
-  MOVE     → move or rename. agent=file. destructive=true. reversible=true.
+  MOVE     → move or rename. destructive=true. reversible=true.
              params: {source, destination} or {source, pattern, destination}
-  COPY     → copy files. agent=file. destructive=false.
+  COPY     → copy files. destructive=false.
              params: {source, destination} or {source, pattern, destination}
+
+SYSTEM AGENT RULES (category=system_task, agent=system):
+  QUERY    → system info. destructive=false. preview_required=false.
+             params: {query_type} where query_type = "cpu" | "memory" | "disk" | "processes" | "uptime"
+             resources: ["~"]
+  WRITE    → launch a program. destructive=false. preview_required=true. reversible=true.
+             params: {program: "<program_name>"}
+             resources: ["~"]
+  DELETE   → terminate a program by name or PID. destructive=true. preview_required=true. reversible=false.
+             params: {target: "<program_name_or_pid>"}
+             resources: ["~"]
+
+WEB AGENT RULES (category=web_task, agent=web):
+  QUERY    → web search or URL fetch. destructive=false. preview_required=false.
+             For search: params: {query_type: "search", query: "<search terms>"}
+             For fetch:  params: {query_type: "fetch", url: "<url>"}
+             resources: ["~"]
+
+WRITING/EMAIL AGENT RULES (category=writing_task or email_task):
   SUMMARIZE→ summarize content. agent=writing. destructive=false.
              params: {path} or {source}
   COMPOSE  → draft text. agent=writing or email. destructive=false.
              params: {topic, format?}
 
 AUTHORIZATION RULES:
-  preview_required=true  → any action is DELETE or MOVE
-  preview_required=false → all actions are non-destructive
+  preview_required=true  → any action is DELETE or MOVE, or system WRITE (launch)
+  preview_required=false → all actions are non-destructive queries
   reversible=false       → any action is DELETE
   reversible=true        → no DELETE actions
 
@@ -93,6 +112,9 @@ VARIETY GUIDELINES:
   - Phrase intents naturally: imperatives, questions, colloquial requests
   - Vary specificity: single files, patterns (*.log), entire directories
   - Include temporal variants: "older than 7 days", "modified last hour", "from yesterday"
+  - For system: vary programs (firefox, gimp, vlc, htop, nautilus, alacritty, libreoffice, etc.)
+  - For web: vary search topics, use real-looking URLs, mix search and fetch queries
+  - For terminate: mix by-name ("close firefox") and by-PID ("kill 1234") variants
 """
 
 
@@ -222,6 +244,75 @@ def prompt_action_type(action_type: str, n: int) -> str:
     )
 
 
+def prompt_system_query(query_type: str, n: int) -> str:
+    descs = {
+        "cpu": "CPU usage, frequency, temperature, core count",
+        "memory": "RAM usage, available memory, swap",
+        "disk": "disk space, storage usage, free space",
+        "processes": "running processes, top processes, what's using CPU/memory",
+        "uptime": "system uptime, how long the computer has been running, boot time",
+    }
+    desc = descs.get(query_type, query_type)
+    return (
+        f"Generate {n} diverse GoalSpec examples for system information queries.\n"
+        f"Focus on: {desc}.\n"
+        f"category=system_task, agent=system, type=QUERY, params.query_type=\"{query_type}\".\n"
+        f"Vary phrasing: imperatives ('show me'), questions ('how much'), casual ('what's my').\n"
+        f"All should be destructive=false, preview_required=false, reversible=true.\n\n"
+        f"Return a JSON array of {n} GoalSpec objects."
+    )
+
+
+def prompt_system_launch(n: int) -> str:
+    return (
+        f"Generate {n} diverse GoalSpec examples for launching applications.\n"
+        f"category=system_task, agent=system, type=WRITE, params.program=\"<name>\".\n"
+        f"Vary programs: firefox, gimp, vlc, htop, nautilus, alacritty, libreoffice, blender,\n"
+        f"  spotify, code, thunar, gedit, inkscape, thunderbird, steam, discord, obs.\n"
+        f"Vary phrasing: 'open firefox', 'launch gimp', 'start htop', 'run vlc',\n"
+        f"  'can you open...', 'I want to open...', 'fire up...', 'bring up...'.\n"
+        f"All should be destructive=false, preview_required=true, reversible=true.\n\n"
+        f"Return a JSON array of {n} GoalSpec objects."
+    )
+
+
+def prompt_system_terminate(n: int) -> str:
+    return (
+        f"Generate {n} diverse GoalSpec examples for terminating/closing applications.\n"
+        f"category=system_task, agent=system, type=DELETE, params.target=\"<name_or_pid>\".\n"
+        f"Mix by-name: 'close firefox', 'kill vlc', 'quit spotify', 'terminate gimp'\n"
+        f"and by-PID: 'kill process 1234', 'kill pid 5678', 'terminate process 42'.\n"
+        f"Vary phrasing: 'close', 'kill', 'quit', 'terminate', 'stop', 'shut down'.\n"
+        f"All should be destructive=true, preview_required=true, reversible=false.\n\n"
+        f"Return a JSON array of {n} GoalSpec objects."
+    )
+
+
+def prompt_web_search(n: int) -> str:
+    return (
+        f"Generate {n} diverse GoalSpec examples for web searches.\n"
+        f"category=web_task, agent=web, type=QUERY, params.query_type=\"search\", params.query=\"<terms>\".\n"
+        f"Vary topics: programming, news, recipes, products, documentation, tutorials, weather,\n"
+        f"  travel, science, health, entertainment, sports, technology.\n"
+        f"Vary phrasing: 'search for', 'look up', 'find info about', 'google', 'what is',\n"
+        f"  'search the web for', 'find articles about', 'look online for'.\n"
+        f"All should be destructive=false, preview_required=false, reversible=true.\n\n"
+        f"Return a JSON array of {n} GoalSpec objects."
+    )
+
+
+def prompt_web_fetch(n: int) -> str:
+    return (
+        f"Generate {n} diverse GoalSpec examples for fetching/reading web pages.\n"
+        f"category=web_task, agent=web, type=QUERY, params.query_type=\"fetch\", params.url=\"<url>\".\n"
+        f"Use realistic URLs: github.com repos, docs sites, news articles, Wikipedia pages,\n"
+        f"  Stack Overflow, MDN, PyPI, official docs, blog posts.\n"
+        f"Vary phrasing: 'fetch', 'open', 'read', 'go to', 'visit', 'show me', 'get the page'.\n"
+        f"All should be destructive=false, preview_required=false, reversible=true.\n\n"
+        f"Return a JSON array of {n} GoalSpec objects."
+    )
+
+
 def prompt_multi_action(a1: str, a2: str, n: int) -> str:
     descs = {
         ("QUERY", "DELETE"): "find files matching a pattern, then delete them",
@@ -337,9 +428,63 @@ def main() -> None:
         except Exception as e:
             print(f"  {a1}+{a2}: ERROR {e}", file=sys.stderr)
 
-    # Phase 4: top-up until TARGET reached
+    # Phase 4: system_task generation (~500 pairs)
+    print(f"\n[Phase 4] System task  (queries + launch + terminate, ~500 raw)")
+    # 5 query types × 40 each = ~200 query pairs
+    for query_type in ("cpu", "memory", "disk", "processes", "uptime"):
+        if len(pairs) >= TARGET:
+            break
+        try:
+            specs = call_api(client, prompt_system_query(query_type, 40))
+            total_generated += len(specs)
+            added, rejected = process_batch(specs, schema, pairs)
+            total_rejected += rejected
+            print(f"  sys/{query_type:10s}: +{added:2d} valid  {rejected:2d} rejected  → {len(pairs)} total")
+        except Exception as e:
+            print(f"  sys/{query_type}: ERROR {e}", file=sys.stderr)
+
+    # ~150 launch + ~150 terminate
+    for prompt_fn, label, count in [
+        (prompt_system_launch, "sys/launch", 80),
+        (prompt_system_terminate, "sys/terminate", 80),
+    ]:
+        if len(pairs) >= TARGET:
+            break
+        # Split into 2 batches to avoid context length issues
+        for batch_i in range(2):
+            if len(pairs) >= TARGET:
+                break
+            try:
+                specs = call_api(client, prompt_fn(count // 2))
+                total_generated += len(specs)
+                added, rejected = process_batch(specs, schema, pairs)
+                total_rejected += rejected
+                print(f"  {label}/{batch_i+1:d}:      +{added:2d} valid  {rejected:2d} rejected  → {len(pairs)} total")
+            except Exception as e:
+                print(f"  {label}: ERROR {e}", file=sys.stderr)
+
+    # Phase 5: web_task generation (~400 pairs)
+    print(f"\n[Phase 5] Web task  (search + fetch, ~400 raw)")
+    for prompt_fn, label, count in [
+        (prompt_web_search, "web/search", 80),
+        (prompt_web_search, "web/search2", 80),
+        (prompt_web_fetch, "web/fetch", 50),
+        (prompt_web_fetch, "web/fetch2", 50),
+    ]:
+        if len(pairs) >= TARGET:
+            break
+        try:
+            specs = call_api(client, prompt_fn(count))
+            total_generated += len(specs)
+            added, rejected = process_batch(specs, schema, pairs)
+            total_rejected += rejected
+            print(f"  {label:15s}: +{added:2d} valid  {rejected:2d} rejected  → {len(pairs)} total")
+        except Exception as e:
+            print(f"  {label}: ERROR {e}", file=sys.stderr)
+
+    # Phase 6: top-up until TARGET reached
     if len(pairs) < TARGET:
-        print(f"\n[Phase 4] Top-up  (need {TARGET - len(pairs)} more)")
+        print(f"\n[Phase 6] Top-up  (need {TARGET - len(pairs)} more)")
         topup_cycle = ["QUERY", "DELETE", "MOVE", "COPY", "READ", "WRITE"]
         consecutive_empty = 0
         i = 0
