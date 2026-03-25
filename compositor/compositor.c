@@ -182,6 +182,7 @@ struct leaves_server {
 	/* Timers */
 	struct wl_event_source *cursor_timer;
 	struct wl_event_source *anim_timer;
+	struct wl_event_source *briefing_retry_timer;
 
 	/* Panel dirty flag */
 	bool panel_dirty;
@@ -253,6 +254,21 @@ static int anim_timer_cb(void *data) {
 	if (feed_animate(server->feed, dt)) {
 		schedule_panel_redraw(server);
 		wl_event_source_timer_update(server->anim_timer, 16);
+	}
+	return 0;
+}
+
+/* ── Briefing retry timer ── */
+
+static int briefing_retry_cb(void *data) {
+	struct leaves_server *server = data;
+	pthread_mutex_lock(&server->feed->mutex);
+	bool empty = !server->feed->briefing.loaded;
+	pthread_mutex_unlock(&server->feed->mutex);
+	if (empty) {
+		feed_load_briefing(server->feed);
+		feed_load_watchers(server->feed);
+		schedule_panel_redraw(server);
 	}
 	return 0;
 }
@@ -990,6 +1006,11 @@ int main(int argc, char *argv[]) {
 	/* Animation timer */
 	server.anim_timer = wl_event_loop_add_timer(server.event_loop,
 		anim_timer_cb, &server);
+
+	/* Briefing retry: if indexer wasn't ready at boot, retry once after 30s */
+	server.briefing_retry_timer = wl_event_loop_add_timer(
+		server.event_loop, briefing_retry_cb, &server);
+	wl_event_source_timer_update(server.briefing_retry_timer, 30000);
 
 	/* Start backend */
 	if (!wlr_backend_start(server.backend)) {
