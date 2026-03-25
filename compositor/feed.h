@@ -8,6 +8,8 @@
 #define MAX_INTENTS 200
 #define MAX_BRIEFING_GROUPS 16
 #define MAX_BRIEFING_ITEMS 8
+#define MAX_WATCHERS 16
+#define MAX_SEARCH_HITS 10
 
 typedef enum {
 	CARD_STATE_PENDING,           /* inference in progress */
@@ -17,7 +19,15 @@ typedef enum {
 	CARD_STATE_FAILED,
 	CARD_STATE_CANCELLED,         /* user pressed N */
 	CARD_STATE_HISTORY,           /* loaded from /v1/history */
+	CARD_STATE_SEARCH_RESULT,     /* cortex search results */
 } LeavesCardState;
+
+/* ── Search hit (embedded in intent card) ── */
+
+typedef struct {
+	char title[128];
+	char path[256];
+} LeavesSearchHit;
 
 typedef struct {
 	char intent_id[64];
@@ -32,6 +42,16 @@ typedef struct {
 	bool reversible;
 	char resources[512];        /* joined resource paths */
 	char actions_summary[512];  /* "DELETE 4 files in ~/Downloads" */
+
+	/* Search results — only populated for CARD_STATE_SEARCH_RESULT */
+	LeavesSearchHit search_hits[MAX_SEARCH_HITS];
+	int search_hit_count;
+
+	/* Injection detection — populated from execution response */
+	bool injection_detected;
+	char injection_content[512];
+	bool sandbox_active;
+	char authorized_paths[512];
 
 	/* Spring animation */
 	struct spring anim_y;
@@ -72,6 +92,18 @@ typedef struct {
 	struct spring anim_opacity;
 } LeavesBriefing;
 
+/* ── Watcher data (persistent filesystem intents) ── */
+
+typedef struct {
+	char id[64];
+	char name[128];
+	char watched_path[256];
+	char pattern[64];
+	int fire_count;
+	bool active;
+	struct spring anim_opacity;
+} LeavesWatcher;
+
 struct leaves_feed {
 	LeavesIntent intents[MAX_INTENTS];
 	int count;
@@ -83,13 +115,18 @@ struct leaves_feed {
 	int confirm_card_idx;   /* which card is awaiting confirmation */
 	char api_base[256];
 	LeavesBriefing briefing;
+	LeavesWatcher watchers[MAX_WATCHERS];
+	int watcher_count;
 };
 
 struct leaves_feed *feed_create(const char *api_base);
 void feed_destroy(struct leaves_feed *feed);
 void feed_load_history(struct leaves_feed *feed);
 void feed_load_briefing(struct leaves_feed *feed);
+void feed_load_watchers(struct leaves_feed *feed);
 void feed_submit(struct leaves_feed *feed, const char *text);
+void feed_search(struct leaves_feed *feed, const char *query);
+void feed_create_watcher(struct leaves_feed *feed, const char *text);
 void feed_process_updates(struct leaves_feed *feed);
 bool feed_animate(struct leaves_feed *feed, float dt);
 void feed_confirm(struct leaves_feed *feed);

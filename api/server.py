@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import pathlib
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -253,10 +254,55 @@ class PersistRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Injection detection — scans file content in execution results
+# ---------------------------------------------------------------------------
+
+_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
+    re.compile(r"ignore\s+(all\s+)?prior\s+instructions", re.IGNORECASE),
+    re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
+    re.compile(r"you\s+are\s+now\s+in\s+(a\s+)?new\s+mode", re.IGNORECASE),
+    re.compile(r"new\s+system\s+prompt:", re.IGNORECASE),
+    re.compile(r"<\s*system\s*>", re.IGNORECASE),
+    re.compile(r"\[hidden:?\s*", re.IGNORECASE),
+    re.compile(r"IGNORE\s+ALL\s+PREVIOUS", re.IGNORECASE),
+    re.compile(r"read\s+~/\.ssh", re.IGNORECASE),
+    re.compile(r"cat\s+~/\.ssh", re.IGNORECASE),
+    re.compile(r"exfil", re.IGNORECASE),
+    re.compile(r"write\s+(its\s+)?contents?\s+to\s+/tmp", re.IGNORECASE),
+]
+
+
+def _scan_for_injections(results: dict) -> tuple[bool, str]:
+    """
+    Scan execution results for prompt injection patterns.
+    Returns (detected: bool, injection_content: str).
+    """
+    for action_id, result in results.items():
+        if not isinstance(result, dict):
+            continue
+        content = result.get("content", "")
+        if not content:
+            continue
+        for pattern in _INJECTION_PATTERNS:
+            match = pattern.search(content)
+            if match:
+                # Extract context around the match
+                start = max(0, match.start() - 20)
+                end = min(len(content), match.end() + 80)
+                snippet = content[start:end].strip()
+                return True, snippet
+    return False, ""
+
+
 def _build_result_response(
     goal_spec: dict, results: dict, summary: str, duration_ms: float
 ) -> dict:
-    return {
+    injection_detected, injection_content = _scan_for_injections(results)
+    auth = goal_spec.get("authorization", {})
+
+    resp = {
         "intent_id": goal_spec["intent_id"],
         "status": "done",
         "natural_text": goal_spec["natural_text"],
@@ -269,14 +315,22 @@ def _build_result_response(
             }
             for a in goal_spec.get("actions", [])
         ],
-        "authorization": goal_spec.get("authorization", {}),
+        "authorization": auth,
         "results": results,
         "summary": summary,
         "duration_ms": round(duration_ms, 1),
         "model_latency_ms": round(
             goal_spec.get("metadata", {}).get("parse_latency_ms", 0), 1
         ),
+        "sandbox_active": True,
+        "authorized_paths": auth.get("resources", []),
     }
+
+    if injection_detected:
+        resp["injection_detected"] = True
+        resp["injection_content"] = injection_content
+
+    return resp
 
 
 # ---------------------------------------------------------------------------

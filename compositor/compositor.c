@@ -5,6 +5,7 @@
  * The panel is a wlr_scene_buffer; app windows are wlr_scene_xdg_surface nodes.
  * wlr_scene handles compositing, damage tracking, and z-ordering.
  */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -686,7 +687,7 @@ static void cursor_motion_handler(struct wl_listener *listener, void *data) {
 	struct leaves_server *server =
 		wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
-	wlr_cursor_move(server->cursor, &event->pointer.base,
+	wlr_cursor_move(server->cursor, &event->pointer->base,
 		event->delta_x, event->delta_y);
 	process_cursor_motion(server, event->time_msec);
 }
@@ -696,7 +697,7 @@ static void cursor_motion_absolute_handler(struct wl_listener *listener,
 	struct leaves_server *server =
 		wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
-	wlr_cursor_warp_absolute(server->cursor, &event->pointer.base,
+	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base,
 		event->x, event->y);
 	process_cursor_motion(server, event->time_msec);
 }
@@ -964,13 +965,16 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.backend->events.destroy, &server.backend_destroy);
 
 	/* Feed + Input + Renderer */
-	server.feed = feed_create("http://127.0.0.1:8765");
+	const char *api_url = getenv("LEAVES_API_URL");
+	if (!api_url) api_url = "http://127.0.0.1:8765";
+	server.feed = feed_create(api_url);
 	input_init(&server.input, server.feed);
 	server.lrenderer = renderer_create();
 
-	/* Load history and briefing */
+	/* Load history, briefing, and active watchers */
 	feed_load_history(server.feed);
 	feed_load_briefing(server.feed);
+	feed_load_watchers(server.feed);
 
 	/* Wakeup pipe for HTTP thread notifications */
 	int flags = fcntl(server.feed->wakeup_pipe[0], F_GETFL);

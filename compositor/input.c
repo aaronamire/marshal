@@ -95,7 +95,21 @@ bool input_handle_key(struct leaves_input *input, uint32_t keycode,
 	case 28: /* Enter */
 		if (input->len > 0) {
 			input->buf[input->len] = '\0';
-			feed_submit(input->feed, input->buf);
+
+			/* Route by prefix */
+			if (strncmp(input->buf, "search ", 7) == 0 &&
+					input->len > 7)
+				feed_search(input->feed, input->buf + 7);
+			else if (strncmp(input->buf, "find ", 5) == 0 &&
+					input->len > 5)
+				feed_search(input->feed, input->buf + 5);
+			else if (strncmp(input->buf, "watch ", 6) == 0 &&
+					input->len > 6)
+				feed_create_watcher(input->feed,
+					input->buf + 6);
+			else
+				feed_submit(input->feed, input->buf);
+
 			input->len = 0;
 			input->cursor_pos = 0;
 			input->buf[0] = '\0';

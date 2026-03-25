@@ -254,7 +254,28 @@ static void parse_plan_response(const cJSON *obj, LeavesIntent *intent) {
 	}
 }
 
-/* ── HTTP POST helper ── */
+/* ── HTTP helpers ── */
+
+static cJSON *http_get(const char *url, long timeout) {
+	CURL *curl = curl_easy_init();
+	if (!curl) return NULL;
+
+	struct curl_buf buf = {0};
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+
+	CURLcode res = curl_easy_perform(curl);
+	curl_easy_cleanup(curl);
+
+	cJSON *result = NULL;
+	if (res == CURLE_OK && buf.data)
+		result = cJSON_Parse(buf.data);
+	free(buf.data);
+	return result;
+}
 
 static cJSON *http_post(const char *url, const char *body, long timeout) {
 	CURL *curl = curl_easy_init();
@@ -512,6 +533,9 @@ void feed_load_briefing(struct leaves_feed *feed) {
 
 	b->loaded = true;
 	spring_init(&b->anim_opacity, 0.0f, 1.0f);
+	/* Slower, more deliberate entrance for briefing */
+	b->anim_opacity.stiffness = 120.0f;
+	b->anim_opacity.damping = 18.0f;
 	pthread_mutex_unlock(&feed->mutex);
 
 	cJSON_Delete(root);
@@ -695,6 +719,50 @@ static void *submit_thread(void *arg) {
 					"%s", chain);
 			}
 
+			/* Injection detection */
+			const cJSON *inj = cJSON_GetObjectItem(result,
+				"injection_detected");
+			if (cJSON_IsTrue(inj)) {
+				intent->injection_detected = true;
+				const cJSON *ic = cJSON_GetObjectItem(result,
+					"injection_content");
+				if (cJSON_IsString(ic))
+					snprintf(intent->injection_content,
+						sizeof(intent->injection_content),
+						"%s", ic->valuestring);
+			}
+
+			const cJSON *sandbox = cJSON_GetObjectItem(result,
+				"sandbox_active");
+			if (cJSON_IsTrue(sandbox))
+				intent->sandbox_active = true;
+
+			const cJSON *paths = cJSON_GetObjectItem(result,
+				"authorized_paths");
+			if (cJSON_IsArray(paths)) {
+				char ap[512] = {0};
+				int apoff = 0;
+				const cJSON *p;
+				cJSON_ArrayForEach(p, paths) {
+					if (cJSON_IsString(p)) {
+						if (apoff > 0 && apoff <
+							(int)sizeof(ap) - 4)
+							apoff += snprintf(
+								ap + apoff,
+								sizeof(ap) - apoff,
+								", ");
+						apoff += snprintf(
+							ap + apoff,
+							sizeof(ap) - apoff,
+							"%s",
+							p->valuestring);
+					}
+				}
+				snprintf(intent->authorized_paths,
+					sizeof(intent->authorized_paths),
+					"%s", ap);
+			}
+
 			intent->state = CARD_STATE_DONE;
 		} else {
 			intent->state = CARD_STATE_FAILED;
@@ -749,6 +817,318 @@ void feed_submit(struct leaves_feed *feed, const char *text) {
 	pthread_attr_destroy(&attr);
 }
 
+/* ── Watcher loading ── */
+
+void feed_load_watchers(struct leaves_feed *feed) {
+	char url[512];
+	snprintf(url, sizeof(url), "%s/v1/intent/persistent?active_only=true",
+		feed->api_base);
+
+	cJSON *root = http_get(url, 5L);
+	if (!root) return;
+
+	if (!cJSON_IsArray(root)) {
+		cJSON_Delete(root);
+		return;
+	}
+
+	pthread_mutex_lock(&feed->mutex);
+	feed->watcher_count = 0;
+
+	const cJSON *item;
+	cJSON_ArrayForEach(item, root) {
+		if (feed->watcher_count >= MAX_WATCHERS) break;
+
+		const cJSON *trigger = cJSON_GetObjectItem(item, "trigger_type");
+		if (!cJSON_IsString(trigger) ||
+				strcmp(trigger->valuestring, "filesystem") != 0)
+			continue;
+
+		LeavesWatcher *w = &feed->watchers[feed->watcher_count];
+		memset(w, 0, sizeof(*w));
+
+		const cJSON *id = cJSON_GetObjectItem(item, "id");
+		if (cJSON_IsString(id))
+			snprintf(w->id, sizeof(w->id), "%s", id->valuestring);
+
+		const cJSON *name = cJSON_GetObjectItem(item, "name");
+		if (cJSON_IsString(name))
+			snprintf(w->name, sizeof(w->name), "%s",
+				name->valuestring);
+
+		const cJSON *fc = cJSON_GetObjectItem(item, "fire_count");
+		if (cJSON_IsNumber(fc))
+			w->fire_count = (int)fc->valuedouble;
+
+		w->active = true;
+
+		/* Parse trigger_config for path and pattern */
+		const cJSON *tc = cJSON_GetObjectItem(item, "trigger_config");
+		if (cJSON_IsObject(tc)) {
+			const cJSON *path = cJSON_GetObjectItem(tc, "path");
+			if (cJSON_IsString(path))
+				snprintf(w->watched_path,
+					sizeof(w->watched_path),
+					"%s", path->valuestring);
+			const cJSON *pat = cJSON_GetObjectItem(tc, "pattern");
+			if (cJSON_IsString(pat))
+				snprintf(w->pattern, sizeof(w->pattern),
+					"%s", pat->valuestring);
+		} else if (cJSON_IsString(tc)) {
+			/* trigger_config may be a JSON string that needs parsing */
+			cJSON *parsed = cJSON_Parse(tc->valuestring);
+			if (parsed) {
+				const cJSON *path = cJSON_GetObjectItem(parsed,
+					"path");
+				if (cJSON_IsString(path))
+					snprintf(w->watched_path,
+						sizeof(w->watched_path),
+						"%s", path->valuestring);
+				const cJSON *pat = cJSON_GetObjectItem(parsed,
+					"pattern");
+				if (cJSON_IsString(pat))
+					snprintf(w->pattern,
+						sizeof(w->pattern),
+						"%s", pat->valuestring);
+				cJSON_Delete(parsed);
+			}
+		}
+
+		spring_init(&w->anim_opacity, 0.0f, 1.0f);
+		feed->watcher_count++;
+	}
+	pthread_mutex_unlock(&feed->mutex);
+
+	cJSON_Delete(root);
+
+	char byte = 'u';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+}
+
+/* ── Search thread ── */
+
+struct search_args {
+	struct leaves_feed *feed;
+	int index;
+	char query[512];
+};
+
+static void *search_thread(void *arg) {
+	struct search_args *sa = arg;
+	struct leaves_feed *feed = sa->feed;
+
+	/* URL-encode the query (minimal: spaces → +) */
+	char encoded[512] = {0};
+	int j = 0;
+	for (int i = 0; sa->query[i] && j < (int)sizeof(encoded) - 4; i++) {
+		if (sa->query[i] == ' ')
+			encoded[j++] = '+';
+		else if (sa->query[i] == '&' || sa->query[i] == '=' ||
+				sa->query[i] == '?') {
+			snprintf(encoded + j, sizeof(encoded) - j,
+				"%%%02X", (unsigned char)sa->query[i]);
+			j += 3;
+		} else
+			encoded[j++] = sa->query[i];
+	}
+
+	char url[1024];
+	snprintf(url, sizeof(url), "%s/v1/cortex/search?q=%.480s&top_k=10",
+		feed->api_base, encoded);
+
+	cJSON *root = http_get(url, 15L);
+
+	pthread_mutex_lock(&feed->mutex);
+	LeavesIntent *intent = &feed->intents[sa->index];
+
+	if (!root) {
+		snprintf(intent->action_chain,
+			sizeof(intent->action_chain),
+			"search failed — API unreachable");
+		intent->state = CARD_STATE_FAILED;
+		pthread_mutex_unlock(&feed->mutex);
+		char byte = 'u';
+		(void)write(feed->wakeup_pipe[1], &byte, 1);
+		free(sa);
+		return NULL;
+	}
+
+	const cJSON *count = cJSON_GetObjectItem(root, "count");
+	const cJSON *results = cJSON_GetObjectItem(root, "results");
+
+	int n = 0;
+	if (cJSON_IsArray(results)) {
+		const cJSON *hit;
+		cJSON_ArrayForEach(hit, results) {
+			if (n >= MAX_SEARCH_HITS) break;
+			LeavesSearchHit *h = &intent->search_hits[n];
+			memset(h, 0, sizeof(*h));
+
+			const cJSON *title = cJSON_GetObjectItem(hit, "title");
+			if (cJSON_IsString(title))
+				snprintf(h->title, sizeof(h->title),
+					"%s", title->valuestring);
+
+			const cJSON *path = cJSON_GetObjectItem(hit,
+				"source_path");
+			if (cJSON_IsString(path))
+				snprintf(h->path, sizeof(h->path),
+					"%s", path->valuestring);
+			n++;
+		}
+	}
+	intent->search_hit_count = n;
+
+	int total = cJSON_IsNumber(count) ? (int)count->valuedouble : n;
+	snprintf(intent->action_chain, sizeof(intent->action_chain),
+		"%d result%s", total, total == 1 ? "" : "s");
+
+	intent->state = CARD_STATE_SEARCH_RESULT;
+	pthread_mutex_unlock(&feed->mutex);
+
+	cJSON_Delete(root);
+
+	char byte = 'u';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+	free(sa);
+	return NULL;
+}
+
+void feed_search(struct leaves_feed *feed, const char *query) {
+	pthread_mutex_lock(&feed->mutex);
+
+	if (feed->count >= MAX_INTENTS) {
+		memmove(&feed->intents[0], &feed->intents[1],
+			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+		feed->count = MAX_INTENTS - 1;
+	}
+
+	int idx = feed->count;
+	LeavesIntent *intent = &feed->intents[idx];
+	memset(intent, 0, sizeof(*intent));
+	snprintf(intent->natural_text, sizeof(intent->natural_text),
+		"search: %s", query);
+	intent->state = CARD_STATE_PENDING;
+
+	spring_init(&intent->anim_y, 12.0f, 0.0f);
+	spring_init(&intent->anim_opacity, 0.0f, 1.0f);
+
+	feed->count++;
+	pthread_mutex_unlock(&feed->mutex);
+
+	struct search_args *sa = calloc(1, sizeof(*sa));
+	sa->feed = feed;
+	sa->index = idx;
+	snprintf(sa->query, sizeof(sa->query), "%s", query);
+
+	pthread_t thread;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_create(&thread, &attr, search_thread, sa);
+	pthread_attr_destroy(&attr);
+}
+
+/* ── Watch creation thread ── */
+
+struct watch_args {
+	struct leaves_feed *feed;
+	int index;
+	char text[512];
+};
+
+static void *create_watcher_thread(void *arg) {
+	struct watch_args *wa = arg;
+	struct leaves_feed *feed = wa->feed;
+
+	char url[512];
+	snprintf(url, sizeof(url), "%s/v1/intent/persist", feed->api_base);
+
+	char escaped[512];
+	json_escape(wa->text, escaped, sizeof(escaped));
+	char body[1280];
+	snprintf(body, sizeof(body),
+		"{\"name\":\"%.200s\",\"text\":\"%.480s\","
+		"\"trigger_type\":\"filesystem\","
+		"\"trigger_config\":{}}",
+		escaped, escaped);
+
+	cJSON *result = http_post(url, body, 30L);
+
+	pthread_mutex_lock(&feed->mutex);
+	LeavesIntent *intent = &feed->intents[wa->index];
+
+	if (result) {
+		const cJSON *status = cJSON_GetObjectItem(result, "status");
+		if (cJSON_IsString(status) &&
+				strcmp(status->valuestring, "stored") == 0) {
+			snprintf(intent->action_chain,
+				sizeof(intent->action_chain),
+				"watcher created");
+			intent->state = CARD_STATE_DONE;
+		} else {
+			const cJSON *msg = cJSON_GetObjectItem(result,
+				"detail");
+			if (!msg) msg = cJSON_GetObjectItem(result, "message");
+			snprintf(intent->action_chain,
+				sizeof(intent->action_chain),
+				"%s", cJSON_IsString(msg) ?
+					msg->valuestring : "failed");
+			intent->state = CARD_STATE_FAILED;
+		}
+		cJSON_Delete(result);
+	} else {
+		snprintf(intent->action_chain,
+			sizeof(intent->action_chain),
+			"API unreachable");
+		intent->state = CARD_STATE_FAILED;
+	}
+	pthread_mutex_unlock(&feed->mutex);
+
+	/* Reload watchers display */
+	feed_load_watchers(feed);
+
+	char byte = 'u';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+	free(wa);
+	return NULL;
+}
+
+void feed_create_watcher(struct leaves_feed *feed, const char *text) {
+	pthread_mutex_lock(&feed->mutex);
+
+	if (feed->count >= MAX_INTENTS) {
+		memmove(&feed->intents[0], &feed->intents[1],
+			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+		feed->count = MAX_INTENTS - 1;
+	}
+
+	int idx = feed->count;
+	LeavesIntent *intent = &feed->intents[idx];
+	memset(intent, 0, sizeof(*intent));
+	snprintf(intent->natural_text, sizeof(intent->natural_text),
+		"watch: %s", text);
+	intent->state = CARD_STATE_PENDING;
+
+	spring_init(&intent->anim_y, 12.0f, 0.0f);
+	spring_init(&intent->anim_opacity, 0.0f, 1.0f);
+
+	feed->count++;
+	pthread_mutex_unlock(&feed->mutex);
+
+	struct watch_args *wa = calloc(1, sizeof(*wa));
+	wa->feed = feed;
+	wa->index = idx;
+	snprintf(wa->text, sizeof(wa->text), "%s", text);
+
+	pthread_t thread;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_create(&thread, &attr, create_watcher_thread, wa);
+	pthread_attr_destroy(&attr);
+}
+
 void feed_process_updates(struct leaves_feed *feed) {
 	/* Drain is handled by compositor.c which reads byte values */
 	(void)feed;
@@ -763,6 +1143,14 @@ bool feed_animate(struct leaves_feed *feed, float dt) {
 			!spring_settled(&feed->briefing.anim_opacity)) {
 		spring_update(&feed->briefing.anim_opacity, dt);
 		any_active = true;
+	}
+
+	/* Watcher fade-in */
+	for (int i = 0; i < feed->watcher_count; i++) {
+		if (!spring_settled(&feed->watchers[i].anim_opacity)) {
+			spring_update(&feed->watchers[i].anim_opacity, dt);
+			any_active = true;
+		}
 	}
 
 	for (int i = 0; i < feed->count; i++) {

@@ -174,6 +174,20 @@ static int measure_card_height(struct leaves_renderer *r,
 		g_object_unref(cl);
 		h += ch;
 		h += CARD_PADDING_V;
+	} else if (intent->state == CARD_STATE_SEARCH_RESULT) {
+		/* Search results: count line + hits */
+		h += SPACE_S + 1 + SPACE_S; /* separator */
+		PangoLayout *cnt = create_layout(cr, r->font_capability, 0);
+		pango_layout_set_text(cnt, intent->action_chain, -1);
+		int cw2, ch2;
+		pango_layout_get_pixel_size(cnt, &cw2, &ch2);
+		g_object_unref(cnt);
+		h += ch2 + SPACE_XS;
+		/* Each hit: title line + path line */
+		int max_hits = intent->search_hit_count;
+		if (max_hits > 5) max_hits = 5;
+		h += max_hits * 36; /* ~18px title + 18px path */
+		h += CARD_PADDING_V;
 	} else {
 		/* Completed / failed / history — full card */
 		h += SPACE_S + 1 + SPACE_S; /* separator */
@@ -185,6 +199,14 @@ static int measure_card_height(struct leaves_renderer *r,
 			pango_layout_get_pixel_size(l2, &l2w, &l2h);
 			g_object_unref(l2);
 			h += l2h + SPACE_XS;
+		}
+
+		/* Injection block height */
+		if (intent->injection_detected && intent->injection_content[0]) {
+			int inj_block_h = SPACE_S + 40 + SPACE_XS + 16 + SPACE_S;
+			if (intent->sandbox_active)
+				inj_block_h += 16 + SPACE_XS;
+			h += SPACE_XS + inj_block_h + SPACE_S;
 		}
 
 		int bottom_h = 0;
@@ -232,6 +254,10 @@ static struct color indicator_for_state(LeavesCardState state, float opacity) {
 		return c;
 	case CARD_STATE_DONE:
 		c = ACCENT_GREEN;
+		c.a = (uint8_t)(c.a * opacity);
+		return c;
+	case CARD_STATE_SEARCH_RESULT:
+		c = ACCENT_AMBER;
 		c.a = (uint8_t)(c.a * opacity);
 		return c;
 	case CARD_STATE_FAILED:
@@ -391,6 +417,89 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 		}
 		pango_cairo_show_layout(cr, layout);
 		g_object_unref(layout);
+	} else if (intent->state == CARD_STATE_SEARCH_RESULT) {
+		/* Search result card */
+
+		/* Separator */
+		text_y += SPACE_S;
+		{
+			struct color c = BORDER_SEPARATOR;
+			cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
+				c.b / 255.0, (c.a / 255.0) * opacity);
+		}
+		cairo_set_line_width(cr, 0.5);
+		cairo_move_to(cr, text_x, text_y + 0.5);
+		cairo_line_to(cr, card_x + card_w - CARD_PADDING_H,
+			text_y + 0.5);
+		cairo_stroke(cr);
+		text_y += 1 + SPACE_S;
+
+		/* Result count */
+		{
+			PangoLayout *cnt_layout = create_layout(cr,
+				r->font_capability, 0);
+			pango_layout_set_text(cnt_layout,
+				intent->action_chain, -1);
+			cairo_move_to(cr, text_x, text_y);
+			{
+				struct color c = ACCENT_AMBER;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					opacity);
+			}
+			pango_cairo_show_layout(cr, cnt_layout);
+			int cw3, ch3;
+			pango_layout_get_pixel_size(cnt_layout, &cw3, &ch3);
+			text_y += ch3 + SPACE_XS;
+			g_object_unref(cnt_layout);
+		}
+
+		/* Individual hits */
+		int max_hits = intent->search_hit_count;
+		if (max_hits > 5) max_hits = 5;
+		for (int h = 0; h < max_hits; h++) {
+			LeavesSearchHit *hit = &intent->search_hits[h];
+
+			/* Title */
+			PangoLayout *tl = create_layout(cr,
+				r->font_action_chain, 0);
+			pango_layout_set_text(tl, hit->title, -1);
+			pango_layout_set_width(tl, inner_w * PANGO_SCALE);
+			pango_layout_set_ellipsize(tl, PANGO_ELLIPSIZE_END);
+			pango_layout_set_single_paragraph_mode(tl, TRUE);
+			cairo_move_to(cr, text_x, text_y);
+			{
+				struct color c = TEXT_PRIMARY;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					(c.a / 255.0) * opacity);
+			}
+			pango_cairo_show_layout(cr, tl);
+			int tw2, th2;
+			pango_layout_get_pixel_size(tl, &tw2, &th2);
+			text_y += th2;
+			g_object_unref(tl);
+
+			/* Path */
+			PangoLayout *pl = create_layout(cr,
+				r->font_capability, 0);
+			pango_layout_set_text(pl, hit->path, -1);
+			pango_layout_set_width(pl, inner_w * PANGO_SCALE);
+			pango_layout_set_ellipsize(pl, PANGO_ELLIPSIZE_END);
+			pango_layout_set_single_paragraph_mode(pl, TRUE);
+			cairo_move_to(cr, text_x, text_y);
+			{
+				struct color c = TEXT_TERTIARY;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					(c.a / 255.0) * opacity);
+			}
+			pango_cairo_show_layout(cr, pl);
+			int pw2, ph2;
+			pango_layout_get_pixel_size(pl, &pw2, &ph2);
+			text_y += ph2 + SPACE_XS;
+			g_object_unref(pl);
+		}
 	} else {
 		/* DONE / FAILED / HISTORY — full card content */
 
@@ -460,6 +569,110 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 			pango_layout_get_pixel_size(layout, &lw, &lh);
 			text_y += lh + SPACE_XS;
 			g_object_unref(layout);
+		}
+
+		/* Injection detection block */
+		if (intent->injection_detected &&
+				intent->injection_content[0]) {
+			text_y += SPACE_XS;
+
+			/* Red background block */
+			int inj_x = text_x;
+			int inj_w = inner_w;
+
+			/* Measure injection content */
+			PangoLayout *inj_layout = create_layout(cr,
+				r->font_capability, 0);
+			pango_layout_set_text(inj_layout,
+				intent->injection_content, -1);
+			pango_layout_set_width(inj_layout,
+				(inj_w - 2 * SPACE_S) * PANGO_SCALE);
+			pango_layout_set_wrap(inj_layout, PANGO_WRAP_WORD_CHAR);
+			int iw, ih;
+			pango_layout_get_pixel_size(inj_layout, &iw, &ih);
+
+			/* Red tinted background */
+			int block_h = SPACE_S + ih + SPACE_XS + 16 + SPACE_S;
+			if (intent->sandbox_active)
+				block_h += 16 + SPACE_XS;
+			rounded_rect(cr, inj_x, text_y, inj_w, block_h,
+				CARD_RADIUS);
+			{
+				struct color c = ACCENT_RED;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					0.08 * opacity);
+			}
+			cairo_fill(cr);
+
+			/* Red left bar */
+			cairo_rectangle(cr, inj_x, text_y, 3, block_h);
+			{
+				struct color c = ACCENT_RED;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					0.8 * opacity);
+			}
+			cairo_fill(cr);
+
+			/* Injection text */
+			cairo_move_to(cr, inj_x + SPACE_S, text_y + SPACE_S);
+			{
+				struct color c = ACCENT_RED;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					0.7 * opacity);
+			}
+			pango_cairo_show_layout(cr, inj_layout);
+			g_object_unref(inj_layout);
+
+			/* BLOCKED label */
+			int label_y = text_y + SPACE_S + ih + SPACE_XS;
+			PangoLayout *bl = create_layout(cr,
+				r->font_action_chain, 0);
+			pango_layout_set_text(bl,
+				"BLOCKED: injection detected", -1);
+			cairo_move_to(cr, inj_x + SPACE_S, label_y);
+			{
+				struct color c = ACCENT_RED;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					opacity);
+			}
+			pango_cairo_show_layout(cr, bl);
+			g_object_unref(bl);
+			label_y += 16;
+
+			/* Sandbox info */
+			if (intent->sandbox_active) {
+				label_y += SPACE_XS;
+				char sandbox_text[600];
+				snprintf(sandbox_text, sizeof(sandbox_text),
+					"\xe2\x9c\x93 Landlock sandbox active — "
+					"authorized: [%s]",
+					intent->authorized_paths);
+				PangoLayout *sl = create_layout(cr,
+					r->font_capability, 0);
+				pango_layout_set_text(sl,
+					sandbox_text, -1);
+				pango_layout_set_width(sl,
+					(inj_w - 2 * SPACE_S) * PANGO_SCALE);
+				pango_layout_set_ellipsize(sl,
+					PANGO_ELLIPSIZE_END);
+				pango_layout_set_single_paragraph_mode(sl,
+					TRUE);
+				cairo_move_to(cr, inj_x + SPACE_S, label_y);
+				{
+					struct color c = ACCENT_GREEN;
+					cairo_set_source_rgba(cr,
+						c.r / 255.0, c.g / 255.0,
+						c.b / 255.0, opacity);
+				}
+				pango_cairo_show_layout(cr, sl);
+				g_object_unref(sl);
+			}
+
+			text_y += block_h + SPACE_S;
 		}
 
 		/* LINE 3: capability scope (left) + LINE 4: timing (right) */
@@ -632,6 +845,131 @@ static int draw_briefing_card(struct leaves_renderer *r,
 	return card_h;
 }
 
+/* ── Watcher cards ── */
+
+static int draw_watcher_cards(struct leaves_renderer *r,
+		struct leaves_feed *feed, int y) {
+	if (feed->watcher_count == 0) return 0;
+
+	cairo_t *cr = r->cr;
+	int card_x = CARD_MARGIN_H;
+	int card_w = r->width - 2 * CARD_MARGIN_H;
+	int inner_w = card_w - 2 * CARD_PADDING_H - CARD_INDICATOR_W - SPACE_S;
+	int total_h = 0;
+
+	for (int w = 0; w < feed->watcher_count; w++) {
+		LeavesWatcher *watcher = &feed->watchers[w];
+		float alpha = watcher->anim_opacity.pos;
+		if (alpha < 0.01f) continue;
+
+		/* Compact card: name + path on one card, ~48px tall */
+		int card_h = CARD_PADDING_V + 18 + SPACE_XS + 16 + CARD_PADDING_V;
+		int card_y = y + total_h;
+
+		/* Background */
+		cairo_save(cr);
+		rounded_rect(cr, card_x, card_y, card_w, card_h, CARD_RADIUS);
+		set_color(cr, color_with_alpha(FILL_CARD,
+			(uint8_t)(FILL_CARD.a * alpha)));
+		cairo_fill_preserve(cr);
+		set_color(cr, color_with_alpha(BORDER_CARD,
+			(uint8_t)(BORDER_CARD.a * alpha)));
+		cairo_set_line_width(cr, 1);
+		cairo_stroke(cr);
+
+		/* Green indicator bar */
+		{
+			double ix = card_x;
+			double iy = card_y;
+			double iw = CARD_INDICATOR_W;
+			double ih = card_h;
+			double ir = CARD_RADIUS;
+			cairo_new_sub_path(cr);
+			cairo_arc(cr, ix + ir, iy + ir, ir,
+				M_PI, 3 * M_PI / 2);
+			cairo_line_to(cr, ix + iw, iy);
+			cairo_line_to(cr, ix + iw, iy + ih);
+			cairo_arc(cr, ix + ir, iy + ih - ir, ir,
+				M_PI / 2, M_PI);
+			cairo_close_path(cr);
+		}
+		set_color(cr, color_with_alpha(ACCENT_GREEN,
+			(uint8_t)(ACCENT_GREEN.a * alpha)));
+		cairo_fill(cr);
+
+		int text_x = card_x + CARD_INDICATOR_W + CARD_PADDING_H;
+		int text_y = card_y + CARD_PADDING_V;
+
+		/* Pulsing green dot */
+		{
+			double t = monotonic_time_s();
+			double pulse = 0.4 + 0.6 *
+				(sin(t * M_PI / 1.2) * 0.5 + 0.5);
+			cairo_arc(cr, text_x + 5, text_y + 8, 4, 0,
+				2 * M_PI);
+			struct color gc = ACCENT_GREEN;
+			cairo_set_source_rgba(cr, gc.r / 255.0,
+				gc.g / 255.0, gc.b / 255.0,
+				pulse * alpha);
+			cairo_fill(cr);
+		}
+
+		/* Watcher name */
+		{
+			PangoLayout *nl = create_layout(cr,
+				r->font_action_chain, 0);
+			pango_layout_set_text(nl, watcher->name, -1);
+			pango_layout_set_width(nl,
+				(inner_w - 20) * PANGO_SCALE);
+			pango_layout_set_ellipsize(nl,
+				PANGO_ELLIPSIZE_END);
+			pango_layout_set_single_paragraph_mode(nl, TRUE);
+			cairo_move_to(cr, text_x + 16, text_y);
+			set_color(cr, color_with_alpha(TEXT_PRIMARY,
+				(uint8_t)(TEXT_PRIMARY.a * alpha)));
+			pango_cairo_show_layout(cr, nl);
+			int nw, nh;
+			pango_layout_get_pixel_size(nl, &nw, &nh);
+			text_y += nh + SPACE_XS;
+			g_object_unref(nl);
+		}
+
+		/* Path + pattern + fire count */
+		{
+			char detail[512];
+			if (watcher->pattern[0])
+				snprintf(detail, sizeof(detail),
+					"watching %s for %s  ·  %d fired",
+					watcher->watched_path,
+					watcher->pattern,
+					watcher->fire_count);
+			else
+				snprintf(detail, sizeof(detail),
+					"watching %s  ·  %d fired",
+					watcher->watched_path,
+					watcher->fire_count);
+
+			PangoLayout *dl = create_layout(cr,
+				r->font_capability, 0);
+			pango_layout_set_text(dl, detail, -1);
+			pango_layout_set_width(dl, inner_w * PANGO_SCALE);
+			pango_layout_set_ellipsize(dl,
+				PANGO_ELLIPSIZE_END);
+			pango_layout_set_single_paragraph_mode(dl, TRUE);
+			cairo_move_to(cr, text_x + 16, text_y);
+			set_color(cr, color_with_alpha(TEXT_TERTIARY,
+				(uint8_t)(TEXT_TERTIARY.a * alpha)));
+			pango_cairo_show_layout(cr, dl);
+			g_object_unref(dl);
+		}
+
+		cairo_restore(cr);
+		total_h += card_h + CARD_GAP;
+	}
+
+	return total_h;
+}
+
 /* ── Empty state ── */
 
 static void draw_empty_state(struct leaves_renderer *r, int top, int bottom) {
@@ -735,7 +1073,7 @@ static void draw_taskbar(struct leaves_renderer *r,
 	int lw, lh;
 
 	if (input->len == 0) {
-		pango_layout_set_text(layout, "What do you want to do?", -1);
+		pango_layout_set_text(layout, "What should we do?", -1);
 		pango_layout_get_pixel_size(layout, &lw, &lh);
 		cairo_move_to(cr, input_x, bar_y + (INPUT_HEIGHT - lh) / 2);
 		set_color(cr, TEXT_PLACEHOLDER);
@@ -1084,8 +1422,14 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 			briefing_h += CARD_GAP;
 	}
 
-	if (feed->count == 0 && !feed->briefing.loaded) {
-		draw_empty_state(r, feed_top + briefing_h, feed_bottom);
+	/* 3b. Watcher cards (below briefing, above intents) */
+	int watchers_h = draw_watcher_cards(r, feed,
+		feed_top + briefing_h);
+
+	if (feed->count == 0 && !feed->briefing.loaded
+			&& feed->watcher_count == 0) {
+		draw_empty_state(r, feed_top + briefing_h + watchers_h,
+			feed_bottom);
 	} else if (feed->count > 0) {
 		/* 4. Clip feed area */
 		cairo_save(cr);
