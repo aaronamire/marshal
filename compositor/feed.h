@@ -6,6 +6,8 @@
 #include "spring.h"
 
 #define MAX_INTENTS 200
+#define MAX_BRIEFING_GROUPS 16
+#define MAX_BRIEFING_ITEMS 8
 
 typedef enum {
 	CARD_STATE_PENDING,           /* inference in progress */
@@ -36,6 +38,40 @@ typedef struct {
 	struct spring anim_opacity;
 } LeavesIntent;
 
+/* ── Briefing data ── */
+
+typedef struct {
+	char title[128];
+	char path[256];
+} LeavesBriefingItem;
+
+typedef struct {
+	char directory[256];
+	int count;
+	LeavesBriefingItem items[MAX_BRIEFING_ITEMS];
+	int item_count;
+} LeavesBriefingGroup;
+
+typedef struct {
+	char source_type[32];
+	int count;
+	LeavesBriefingGroup groups[MAX_BRIEFING_GROUPS];
+	int group_count;
+} LeavesBriefingSection;
+
+#define MAX_BRIEFING_SECTIONS 4
+
+typedef struct {
+	char headline[256];
+	int total_changes;
+	int period_hours;
+	bool empty;
+	bool loaded;            /* true after successful fetch */
+	LeavesBriefingSection sections[MAX_BRIEFING_SECTIONS];
+	int section_count;
+	struct spring anim_opacity;
+} LeavesBriefing;
+
 struct leaves_feed {
 	LeavesIntent intents[MAX_INTENTS];
 	int count;
@@ -46,11 +82,13 @@ struct leaves_feed {
 	bool awaiting_confirm;  /* true when overlay is active */
 	int confirm_card_idx;   /* which card is awaiting confirmation */
 	char api_base[256];
+	LeavesBriefing briefing;
 };
 
 struct leaves_feed *feed_create(const char *api_base);
 void feed_destroy(struct leaves_feed *feed);
 void feed_load_history(struct leaves_feed *feed);
+void feed_load_briefing(struct leaves_feed *feed);
 void feed_submit(struct leaves_feed *feed, const char *text);
 void feed_process_updates(struct leaves_feed *feed);
 bool feed_animate(struct leaves_feed *feed, float dt);

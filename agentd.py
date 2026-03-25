@@ -25,7 +25,7 @@ from agents.system_agent import SystemAgent
 from agents.web_agent import WebAgent
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
-from db.audit import log_error, log_state_transition
+from db.audit import get_db, log_error, log_intent_created, log_state_transition, complete_intent
 from errors import LeavesError, LeavesErrorCode
 
 # Map agent type strings -> agent classes
@@ -268,6 +268,31 @@ async def _handle_client(
             await writer.drain()
             return
 
+        # --- reload watcher ---
+        if msg.get("_reload_watcher"):
+            if _watcher is not None:
+                _watcher.reload()
+            writer.write(json.dumps({"_reloaded": True}).encode() + b"\n")
+            await writer.drain()
+            return
+
+        # --- trigger re-index ---
+        if msg.get("_reindex"):
+            if _indexer is not None:
+                loop = asyncio.get_event_loop()
+                full = msg.get("full", False)
+                if full:
+                    asyncio.ensure_future(
+                        loop.run_in_executor(None, _indexer.run_once)
+                    )
+                else:
+                    asyncio.ensure_future(
+                        loop.run_in_executor(None, _indexer.run_incremental)
+                    )
+            writer.write(json.dumps({"_reindex_started": True}).encode() + b"\n")
+            await writer.drain()
+            return
+
         # --- execute GoalSpec ---
         goal_spec      = msg["goal_spec"]
         from_state_str = msg.get("from_state", "PARSING")
@@ -296,8 +321,88 @@ async def _handle_client(
         await writer.wait_closed()
 
 
+_watcher = None   # IntentWatcher instance, set in _run_server
+_indexer = None   # CortexIndexer instance, set in _run_server
+
+_INDEX_INTERVAL_SECONDS = 1800  # 30 minutes between incremental re-indexes
+
+
+async def _background_indexing(indexer) -> None:
+    """
+    Run initial full index, then incremental every 30 minutes.
+    Runs in a thread pool to avoid blocking the event loop.
+    """
+    loop = asyncio.get_event_loop()
+
+    # Initial full index
+    try:
+        print("agentd: starting initial index (background)…", flush=True)
+        stats = await loop.run_in_executor(None, indexer.run_once)
+        print(
+            f"agentd: initial index complete — "
+            f"{stats['total_scanned']} scanned, "
+            f"{stats['total_upserted']} indexed "
+            f"in {stats.get('elapsed_seconds', 0):.1f}s",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"agentd: initial index failed: {e}", flush=True)
+
+    # Periodic incremental
+    while True:
+        await asyncio.sleep(_INDEX_INTERVAL_SECONDS)
+        try:
+            stats = await loop.run_in_executor(None, indexer.run_incremental)
+            if stats["total_upserted"] > 0:
+                print(
+                    f"agentd: incremental index — {stats['total_upserted']} updated",
+                    flush=True,
+                )
+        except Exception as e:
+            print(f"agentd: incremental index failed: {e}", flush=True)
+
+
+def _fire_goalspec_sync(goal_spec: dict) -> None:
+    """
+    Execute a GoalSpec from the watcher thread (synchronous).
+
+    Runs through AgentCoordinator directly (in-process, no socket round-trip).
+    Uses its own DB connection since this runs in the watcher thread.
+    """
+    import time as _time
+
+    db = get_db()
+    intent_id = goal_spec.get("intent_id", "unknown")
+    natural_text = goal_spec.get("natural_text", "")
+
+    print(f"agentd: watcher firing intent {intent_id[:8]} — {natural_text}", flush=True)
+    t_start = _time.monotonic()
+
+    try:
+        log_intent_created(db, intent_id, natural_text, goal_spec)
+        lifecycle = IntentLifecycle(intent_id=intent_id)
+        lifecycle.transition(IntentState.PARSING)
+        log_state_transition(db, intent_id, "PENDING", "PARSING")
+
+        coordinator = AgentCoordinator(db)
+        results, summary = coordinator.execute(goal_spec, lifecycle)
+
+        lifecycle.transition(IntentState.DONE)
+        log_state_transition(db, intent_id, "EXECUTING", "DONE")
+        duration_ms = (_time.monotonic() - t_start) * 1000
+        complete_intent(db, intent_id, "DONE", summary, duration_ms=duration_ms)
+        print(f"agentd: watcher intent done in {duration_ms:.0f}ms — {summary}", flush=True)
+
+    except LeavesError as e:
+        duration_ms = (_time.monotonic() - t_start) * 1000
+        complete_intent(db, intent_id, "FAILED", e.detail, duration_ms=duration_ms)
+        print(f"agentd: watcher intent failed — {e.user_message}", flush=True)
+    except Exception as e:
+        print(f"agentd: watcher intent error — {e}", flush=True)
+
+
 async def _run_server() -> None:
-    global _CGROUP_AVAILABLE
+    global _CGROUP_AVAILABLE, _watcher
 
     # One-time cgroup v2 parent setup
     try:
@@ -314,12 +419,43 @@ async def _run_server() -> None:
     if _SOCK_PATH.exists():
         _SOCK_PATH.unlink()
 
+    # Start filesystem watcher for persistent intents
+    try:
+        from cortex.watcher import IntentWatcher
+        watcher_db = get_db()
+        _watcher = IntentWatcher(watcher_db, _fire_goalspec_sync)
+        _watcher.start()
+        print("agentd: filesystem watcher started", flush=True)
+    except Exception as e:
+        print(f"agentd: filesystem watcher failed to start: {e}", flush=True)
+        _watcher = None
+
+    # Start cortex indexer — background thread for initial + periodic indexing
+    try:
+        from cortex.indexer import CortexIndexer
+        from cortex.adapters.filesystem import FilesystemAdapter
+        indexer_db = get_db()
+        lance_path = pathlib.Path(__file__).parent / "rag" / ".lancedb"
+        _indexer = CortexIndexer(indexer_db, lance_path)
+        _indexer.register(FilesystemAdapter())
+        print("agentd: cortex indexer registered", flush=True)
+    except Exception as e:
+        print(f"agentd: cortex indexer failed to initialize: {e}", flush=True)
+        _indexer = None
+
     server = await asyncio.start_unix_server(_handle_client, path=str(_SOCK_PATH))
     print(f"agentd listening on {_SOCK_PATH}", flush=True)
+
+    # Schedule background indexing
+    if _indexer is not None:
+        asyncio.get_event_loop().create_task(_background_indexing(_indexer))
+
     try:
         async with server:
             await server.serve_forever()
     finally:
+        if _watcher is not None:
+            _watcher.stop()
         if _SOCK_PATH.exists():
             _SOCK_PATH.unlink()
 

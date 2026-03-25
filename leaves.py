@@ -39,7 +39,16 @@ from db.audit import (
     complete_intent, log_error, get_recent_intents,
     get_intent_transitions, get_intent_actions,
 )
+from cortex.briefing import BriefingGenerator
+from cortex.indexer import CortexIndexer
+from cortex.adapters.filesystem import FilesystemAdapter
+from db.intent_store import (
+    store_persistent_intent, get_active_intents, get_intent,
+    deactivate_intent, delete_intent,
+)
 from errors import LeavesError, LeavesErrorCode
+
+_LANCE_PATH = pathlib.Path(__file__).parent / "rag" / ".lancedb"
 
 console = Console()
 
@@ -662,21 +671,303 @@ def cmd_detail(intent_id_prefix: str) -> None:
 def cmd_help() -> None:
     console.print(Panel(
         "[bold]Commands:[/bold]\n\n"
-        "  [white]<natural language>[/white]  — execute an intent\n"
-        "  [white]history[/white]             — show recent intents\n"
-        "  [white]detail <id-prefix>[/white]  — show intent audit trail\n"
-        "  [white]help[/white]                — show this help\n"
-        "  [white]quit[/white] / [white]exit[/white]          — exit\n\n"
+        "  [white]<natural language>[/white]        — execute an intent\n"
+        "  [white]history[/white]                   — show recent intents\n"
+        "  [white]detail <id-prefix>[/white]        — show intent audit trail\n"
+        "  [white]search <query>[/white]             — semantic search over indexed files\n"
+        "  [white]briefing[/white]                  — show what changed recently\n"
+        "  [white]watch <text> on <path>[/white]    — create a filesystem watcher\n"
+        "  [white]watchers[/white]                  — list active watchers\n"
+        "  [white]unwatch <id-prefix>[/white]       — deactivate a watcher\n"
+        "  [white]help[/white]                      — show this help\n"
+        "  [white]quit[/white] / [white]exit[/white]                — exit\n\n"
         "[bold]Examples:[/bold]\n"
         "  find all PDFs in my Downloads folder\n"
         "  how much disk space do I have left\n"
         "  open firefox\n"
-        "  close vlc\n"
+        "  watch organize PDFs on ~/Downloads\n"
         "  search the web for Python tutorials\n"
         "  move ~/Desktop/screenshot.png to ~/Pictures",
         title="Leaves OS Help",
         border_style=LEAVES_PRIMARY_COLOR,
     ))
+
+
+# ---------------------------------------------------------------------------
+# Persistent intent commands
+# ---------------------------------------------------------------------------
+
+def _notify_watcher_reload() -> None:
+    """Tell agentd to reload filesystem watches. Best-effort."""
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(3.0)
+        s.connect(str(_AGENTD_SOCK))
+        s.sendall(json.dumps({"_reload_watcher": True}).encode() + b"\n")
+        s.recv(1024)
+        s.close()
+    except Exception:
+        pass
+
+
+def cmd_watch(raw: str) -> None:
+    """
+    Parse 'watch <intent text> on <path>' and create a filesystem-triggered
+    persistent intent.
+    """
+    db = _get_db()
+    parser = _parser
+
+    # Split on ' on ' (last occurrence to handle intents containing 'on')
+    parts = raw.rsplit(" on ", 1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        _show_error("Usage: watch <intent text> on <path>")
+        console.print(f"  [{LEAVES_DIM_COLOR}]Example: watch organize PDFs on ~/Downloads[/{LEAVES_DIM_COLOR}]")
+        return
+
+    intent_text = parts[0].strip()
+    watch_path = parts[1].strip()
+
+    # Expand ~ and validate path
+    expanded = pathlib.Path(watch_path).expanduser().resolve()
+    if not expanded.exists():
+        _show_error(f"Path does not exist: {expanded}")
+        return
+    if not expanded.is_dir():
+        _show_error(f"Path is not a directory: {expanded}")
+        return
+
+    # Parse the intent to get a GoalSpec
+    if not parser._client.is_available():
+        _show_error("Inference server not running. Start: bash scripts/start-inference.sh")
+        return
+
+    try:
+        with console.status(f"[{LEAVES_DIM_COLOR}]Parsing intent…[/{LEAVES_DIM_COLOR}]"):
+            goal_spec = parser.parse(intent_text)
+    except LeavesError as e:
+        _show_error(e.user_message)
+        return
+
+    # Store as persistent intent
+    trigger_config = {
+        "path": str(expanded),
+        "events": ["created"],
+    }
+    name = intent_text[:60]
+
+    try:
+        intent_id = store_persistent_intent(
+            db, name=name, goalspec=goal_spec,
+            trigger_type="filesystem", trigger_config=trigger_config,
+        )
+    except LeavesError as e:
+        _show_error(e.user_message)
+        return
+
+    # Notify agentd to reload watches
+    _notify_watcher_reload()
+
+    console.print(
+        f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] "
+        f"Watcher created: [white]{name}[/white]"
+    )
+    console.print(
+        f"  [{LEAVES_DIM_COLOR}]Watching: {expanded}[/{LEAVES_DIM_COLOR}]"
+    )
+    console.print(
+        f"  [{LEAVES_DIM_COLOR}]ID: {intent_id[:8]}…[/{LEAVES_DIM_COLOR}]"
+    )
+
+
+def cmd_watchers() -> None:
+    """List all active persistent intents."""
+    db = _get_db()
+    intents = get_active_intents(db)
+
+    if not intents:
+        console.print(f"[{LEAVES_DIM_COLOR}]No active watchers.[/{LEAVES_DIM_COLOR}]")
+        return
+
+    table = Table(
+        title="Active Watchers",
+        box=box.SIMPLE_HEAD,
+        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+    )
+    table.add_column("ID", style=LEAVES_DIM_COLOR)
+    table.add_column("Name", style="white")
+    table.add_column("Trigger", style=LEAVES_DIM_COLOR)
+    table.add_column("Path", style=LEAVES_DIM_COLOR)
+    table.add_column("Fires", justify="right", style=LEAVES_DIM_COLOR)
+    table.add_column("Last Fired", style=LEAVES_DIM_COLOR)
+
+    for i in intents:
+        trigger_conf = i.get("trigger_config") or {}
+        path = trigger_conf.get("path", "—")
+        last = i.get("last_fired") or "never"
+        if last != "never":
+            last = last[:16]  # trim to datetime
+        table.add_row(
+            i["id"][:8] + "…",
+            i["name"][:40],
+            i["trigger_type"],
+            str(path),
+            str(i["fire_count"]),
+            last,
+        )
+
+    console.print(table)
+
+
+def cmd_unwatch(id_prefix: str) -> None:
+    """Deactivate a persistent intent by ID prefix."""
+    db = _get_db()
+    intents = get_active_intents(db)
+    matches = [i for i in intents if i["id"].startswith(id_prefix)]
+
+    if not matches:
+        _show_error(f"No active watcher found with prefix '{id_prefix}'")
+        return
+
+    if len(matches) > 1:
+        _show_warning(f"Multiple matches for '{id_prefix}' — provide more characters.")
+        return
+
+    intent = matches[0]
+    try:
+        deactivate_intent(db, intent["id"])
+    except LeavesError as e:
+        _show_error(e.user_message)
+        return
+
+    console.print(
+        f"  [{LEAVES_WARNING_COLOR}]Unwatched:[/{LEAVES_WARNING_COLOR}] "
+        f"[white]{intent['name']}[/white]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cortex search
+# ---------------------------------------------------------------------------
+
+_indexer: CortexIndexer | None = None
+
+
+def _get_indexer() -> CortexIndexer:
+    global _indexer
+    if _indexer is None:
+        _indexer = CortexIndexer(_get_db(), _LANCE_PATH)
+        _indexer.register(FilesystemAdapter())
+    return _indexer
+
+
+def cmd_search(query: str) -> None:
+    """Semantic search over indexed files."""
+    if not query:
+        _show_error("Usage: search <query>")
+        return
+
+    indexer = _get_indexer()
+    with console.status(f"[{LEAVES_DIM_COLOR}]Searching…[/{LEAVES_DIM_COLOR}]"):
+        results = indexer.search(query, top_k=10)
+
+    if not results:
+        console.print(f"[{LEAVES_DIM_COLOR}]No results for '{query}'[/{LEAVES_DIM_COLOR}]")
+        return
+
+    table = Table(
+        title=f"Search: {query}",
+        box=box.SIMPLE_HEAD,
+        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+    )
+    table.add_column("#", style=LEAVES_DIM_COLOR, justify="right")
+    table.add_column("Title", style="white", max_width=40)
+    table.add_column("Type", style=LEAVES_DIM_COLOR)
+    table.add_column("Score", justify="right", style=LEAVES_DIM_COLOR)
+    table.add_column("Path", style=LEAVES_DIM_COLOR, max_width=50)
+
+    for i, r in enumerate(results, 1):
+        dist = r.get("_distance", 0)
+        score = f"{1 - dist:.2f}" if dist else "—"
+        # source_id is the file path for filesystem items
+        path = r.get("source_type", "")
+        title = r.get("title", "—")
+        content_preview = r.get("content", "")[:80].replace("\n", " ")
+        table.add_row(
+            str(i), title, r.get("source_type", "—"), score, content_preview
+        )
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Briefing
+# ---------------------------------------------------------------------------
+
+# Patterns that trigger briefing from natural language (subset of L0 rules)
+import re as _re
+_BRIEFING_PATTERNS = [
+    _re.compile(r'^\s*(?:good\s+)?morning\s*$', _re.IGNORECASE),
+    _re.compile(r'^\s*brief(?:ing)?\s+me\s*$', _re.IGNORECASE),
+    _re.compile(r'^\s*what(?:\'s|\s+has)\s+changed\b', _re.IGNORECASE),
+    _re.compile(r'^\s*what\s+happened\b', _re.IGNORECASE),
+    _re.compile(r'^\s*what(?:\'s|\s+is)\s+new\b', _re.IGNORECASE),
+    _re.compile(r'^\s*catch\s+me\s+up\b', _re.IGNORECASE),
+]
+
+
+def _is_briefing_trigger(text: str) -> bool:
+    return any(p.match(text) for p in _BRIEFING_PATTERNS)
+
+
+def cmd_briefing(hours: int = 12) -> None:
+    """Generate and display a briefing of recent changes."""
+    indexer = _get_indexer()
+    bg = BriefingGenerator(indexer._kg)
+
+    with console.status(f"[{LEAVES_DIM_COLOR}]Generating briefing…[/{LEAVES_DIM_COLOR}]"):
+        briefing = bg.generate(hours=hours)
+
+    if briefing["empty"]:
+        console.print(
+            f"  [{LEAVES_DIM_COLOR}]{briefing['headline']}[/{LEAVES_DIM_COLOR}]"
+        )
+        return
+
+    # Headline
+    console.print(
+        f"  [{LEAVES_PRIMARY_COLOR}]{briefing['headline']}[/{LEAVES_PRIMARY_COLOR}]"
+    )
+    console.print()
+
+    # Sections
+    for section in briefing["sections"]:
+        src = section["source_type"]
+        count = section["count"]
+        console.print(
+            f"  [bold white]{src}[/bold white] "
+            f"[{LEAVES_DIM_COLOR}]({count} changed)[/{LEAVES_DIM_COLOR}]"
+        )
+
+        for group in section["groups"]:
+            directory = group["directory"]
+            g_count = group["count"]
+            console.print(
+                f"    [{LEAVES_DIM_COLOR}]📁[/{LEAVES_DIM_COLOR}] "
+                f"[white]{directory}[/white] "
+                f"[{LEAVES_DIM_COLOR}]({g_count})[/{LEAVES_DIM_COLOR}]"
+            )
+            for item in group["items"]:
+                ext = item.get("extension", "")
+                console.print(
+                    f"      [{LEAVES_DIM_COLOR}]·[/{LEAVES_DIM_COLOR}] "
+                    f"{item['title']}"
+                    f"[{LEAVES_DIM_COLOR}]{ext}[/{LEAVES_DIM_COLOR}]"
+                    if not ext or ext in item['title'] else
+                    f"      [{LEAVES_DIM_COLOR}]·[/{LEAVES_DIM_COLOR}] "
+                    f"{item['title']}"
+                )
+        console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +1022,18 @@ def repl() -> None:
             cmd_history()
         elif lower.startswith("detail "):
             cmd_detail(raw[7:].strip())
+        elif lower.startswith("watch ") and " on " in lower:
+            cmd_watch(raw[6:].strip())
+        elif lower in ("watchers", "watches"):
+            cmd_watchers()
+        elif lower.startswith("unwatch "):
+            cmd_unwatch(raw[8:].strip())
+        elif lower.startswith("search "):
+            cmd_search(raw[7:].strip())
+        elif lower in ("briefing", "morning"):
+            cmd_briefing()
+        elif _is_briefing_trigger(raw):
+            cmd_briefing()
         else:
             handle_intent(raw)
 

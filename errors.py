@@ -58,6 +58,11 @@ class LeavesErrorCode(enum.Enum):
     SEMANTIC_VALIDATION_FAILED = "SEMANTIC_VALIDATION_FAILED"  # hard semantic error, escalate
     LOW_CONFIDENCE_ESCALATION = "LOW_CONFIDENCE_ESCALATION"   # confidence below L2.5 threshold
 
+    # Persistent intents
+    INTENT_NOT_FOUND = "INTENT_NOT_FOUND"
+    INTENT_ALREADY_INACTIVE = "INTENT_ALREADY_INACTIVE"
+    WATCHER_PATH_INVALID = "WATCHER_PATH_INVALID"
+
     # Generic
     INTERNAL_ERROR = "INTERNAL_ERROR"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
@@ -110,6 +115,12 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
     LeavesErrorCode.LOW_CONFIDENCE_ESCALATION: (
         "I'm not confident enough about this intent — routing to a more capable model. "
         "Try being more specific while the escalation is in progress."
+    ),
+    LeavesErrorCode.INTENT_NOT_FOUND: "That persistent intent was not found.",
+    LeavesErrorCode.INTENT_ALREADY_INACTIVE: "That persistent intent is already inactive.",
+    LeavesErrorCode.WATCHER_PATH_INVALID: (
+        "The watcher path is invalid or does not exist. "
+        "Provide an absolute path or a path under your home directory."
     ),
     LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
     LeavesErrorCode.NOT_IMPLEMENTED: (

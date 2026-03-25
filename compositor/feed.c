@@ -364,6 +364,163 @@ void feed_load_history(struct leaves_feed *feed) {
 	cJSON_Delete(root);
 }
 
+/* ── Briefing fetch ── */
+
+void feed_load_briefing(struct leaves_feed *feed) {
+	CURL *curl = curl_easy_init();
+	if (!curl) return;
+
+	char url[512];
+	snprintf(url, sizeof(url), "%s/v1/cortex/briefing?hours=12",
+		feed->api_base);
+
+	struct curl_buf buf = {0};
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+
+	CURLcode res = curl_easy_perform(curl);
+	curl_easy_cleanup(curl);
+
+	if (res != CURLE_OK || !buf.data) {
+		free(buf.data);
+		return;
+	}
+
+	cJSON *root = cJSON_Parse(buf.data);
+	free(buf.data);
+	if (!root) return;
+
+	pthread_mutex_lock(&feed->mutex);
+	LeavesBriefing *b = &feed->briefing;
+	memset(b, 0, sizeof(*b));
+
+	const cJSON *headline = cJSON_GetObjectItem(root, "headline");
+	if (cJSON_IsString(headline))
+		snprintf(b->headline, sizeof(b->headline),
+			"%s", headline->valuestring);
+
+	const cJSON *total = cJSON_GetObjectItem(root, "total_changes");
+	if (cJSON_IsNumber(total))
+		b->total_changes = (int)total->valuedouble;
+
+	const cJSON *hours = cJSON_GetObjectItem(root, "period_hours");
+	if (cJSON_IsNumber(hours))
+		b->period_hours = (int)hours->valuedouble;
+
+	const cJSON *empty = cJSON_GetObjectItem(root, "empty");
+	if (cJSON_IsBool(empty))
+		b->empty = cJSON_IsTrue(empty);
+
+	const cJSON *sections = cJSON_GetObjectItem(root, "sections");
+	if (cJSON_IsArray(sections)) {
+		const cJSON *sec;
+		cJSON_ArrayForEach(sec, sections) {
+			if (b->section_count >= MAX_BRIEFING_SECTIONS) break;
+			LeavesBriefingSection *s =
+				&b->sections[b->section_count];
+			memset(s, 0, sizeof(*s));
+
+			const cJSON *st = cJSON_GetObjectItem(sec,
+				"source_type");
+			if (cJSON_IsString(st))
+				snprintf(s->source_type,
+					sizeof(s->source_type),
+					"%s", st->valuestring);
+
+			const cJSON *cnt = cJSON_GetObjectItem(sec, "count");
+			if (cJSON_IsNumber(cnt))
+				s->count = (int)cnt->valuedouble;
+
+			const cJSON *groups = cJSON_GetObjectItem(sec,
+				"groups");
+			if (cJSON_IsArray(groups)) {
+				const cJSON *grp;
+				cJSON_ArrayForEach(grp, groups) {
+					if (s->group_count >=
+							MAX_BRIEFING_GROUPS)
+						break;
+					LeavesBriefingGroup *g =
+						&s->groups[s->group_count];
+					memset(g, 0, sizeof(*g));
+
+					const cJSON *dir =
+						cJSON_GetObjectItem(grp,
+							"directory");
+					if (cJSON_IsString(dir))
+						snprintf(g->directory,
+							sizeof(g->directory),
+							"%s",
+							dir->valuestring);
+
+					const cJSON *gc =
+						cJSON_GetObjectItem(grp,
+							"count");
+					if (cJSON_IsNumber(gc))
+						g->count =
+							(int)gc->valuedouble;
+
+					const cJSON *items =
+						cJSON_GetObjectItem(grp,
+							"items");
+					if (cJSON_IsArray(items)) {
+						const cJSON *it;
+						cJSON_ArrayForEach(it, items) {
+							if (g->item_count >=
+								MAX_BRIEFING_ITEMS)
+								break;
+							LeavesBriefingItem *bi =
+								&g->items[
+								g->item_count];
+							const cJSON *title =
+								cJSON_GetObjectItem(
+									it,
+									"title");
+							if (cJSON_IsString(
+								title))
+								snprintf(
+								bi->title,
+								sizeof(
+								bi->title),
+								"%s",
+								title->
+								valuestring);
+							const cJSON *path =
+								cJSON_GetObjectItem(
+									it,
+									"path");
+							if (cJSON_IsString(
+								path))
+								snprintf(
+								bi->path,
+								sizeof(
+								bi->path),
+								"%s",
+								path->
+								valuestring);
+							g->item_count++;
+						}
+					}
+					s->group_count++;
+				}
+			}
+			b->section_count++;
+		}
+	}
+
+	b->loaded = true;
+	spring_init(&b->anim_opacity, 0.0f, 1.0f);
+	pthread_mutex_unlock(&feed->mutex);
+
+	cJSON_Delete(root);
+
+	/* Signal main thread to redraw */
+	char byte = 'u';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+}
+
 /* ── Two-phase submit thread ── */
 
 struct submit_args {
@@ -600,6 +757,14 @@ void feed_process_updates(struct leaves_feed *feed) {
 bool feed_animate(struct leaves_feed *feed, float dt) {
 	bool any_active = false;
 	pthread_mutex_lock(&feed->mutex);
+
+	/* Briefing fade-in */
+	if (feed->briefing.loaded &&
+			!spring_settled(&feed->briefing.anim_opacity)) {
+		spring_update(&feed->briefing.anim_opacity, dt);
+		any_active = true;
+	}
+
 	for (int i = 0; i < feed->count; i++) {
 		LeavesIntent *intent = &feed->intents[i];
 		if (!spring_settled(&intent->anim_y)) {

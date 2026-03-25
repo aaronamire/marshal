@@ -198,6 +198,28 @@ _terminate_rule(r'^\s*kill\s+(?:pid\s+)?(\d+)\s*$')
 
 
 # ---------------------------------------------------------------------------
+# Briefing rules — "good morning", "what changed", "briefing"
+# Returns agent="briefing", category="briefing" so callers can dispatch directly.
+# ---------------------------------------------------------------------------
+
+_BRIEFING_RULES: list[re.Pattern] = []
+
+
+def _briefing_rule(pattern: str) -> None:
+    _BRIEFING_RULES.append(re.compile(pattern, re.IGNORECASE))
+
+
+_briefing_rule(r'^\s*(?:good\s+)?morning\s*$')
+_briefing_rule(r'^\s*briefing\s*$')
+_briefing_rule(r'^\s*brief\s+me\s*$')
+_briefing_rule(r'^\s*what(?:\'s|\s+has)?\s+changed\b')
+_briefing_rule(r'^\s*what\s+happened\b')
+_briefing_rule(r'^\s*what(?:\'s|\s+is)\s+new\b')
+_briefing_rule(r'^\s*catch\s+me\s+up\b')
+_briefing_rule(r'^\s*status\s+update\s*$')
+
+
+# ---------------------------------------------------------------------------
 # NOT_IMPLEMENTED fast-path patterns
 # Matched inputs are flagged is_implemented=False → caller raises immediately.
 # Patterns are intentionally broad (no explicit path required).
@@ -306,6 +328,20 @@ def match(user_text: str) -> Layer0Result:
                 is_implemented=True,
                 agent="system",
                 category="system_task",
+            )
+    # Briefing — "good morning", "what changed", "briefing"
+    for pattern in _BRIEFING_RULES:
+        if pattern.match(user_text):
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type="BRIEFING",
+                params={},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="briefing",
+                category="briefing",
             )
     for pattern in _NOT_IMPL_RULES:
         if pattern.search(user_text):

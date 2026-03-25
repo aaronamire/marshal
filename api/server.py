@@ -22,8 +22,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agents.intent_parser import IntentParser
-from config import INFERENCE_SERVER_URL
+from config import AUDIT_DB_PATH, INFERENCE_SERVER_URL
+from cortex.briefing import BriefingGenerator
+from cortex.indexer import CortexIndexer
+from cortex.adapters.filesystem import FilesystemAdapter
 from db.audit import complete_intent, get_db, get_recent_intents, log_intent_created
+from db.intent_store import (
+    activate_intent,
+    deactivate_intent,
+    delete_intent,
+    fire_intent,
+    get_active_intents,
+    get_all_intents,
+    get_intent,
+    store_persistent_intent,
+)
 from errors import LeavesError, LeavesErrorCode
 
 log = logging.getLogger(__name__)
@@ -92,6 +105,7 @@ app.add_middleware(
 # Singletons — created lazily on first request
 _parser: Optional[IntentParser] = None
 _db = None
+_indexer: Optional[CortexIndexer] = None
 
 
 def _get_parser() -> IntentParser:
@@ -106,6 +120,15 @@ def _get_db():
     if _db is None:
         _db = get_db()
     return _db
+
+
+def _get_indexer() -> CortexIndexer:
+    global _indexer
+    if _indexer is None:
+        _lance_path = pathlib.Path(__file__).parent.parent / "rag" / ".lancedb"
+        _indexer = CortexIndexer(_get_db(), _lance_path)
+        _indexer.register(FilesystemAdapter())
+    return _indexer
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +212,21 @@ async def _send_goalspec(goal_spec: dict) -> tuple[dict, str]:
     raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
 
 
+async def _notify_watcher_reload() -> None:
+    """Tell agentd to reload filesystem watches. Best-effort — silently ignores failures."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(str(_SOCK_PATH)), timeout=3.0
+        )
+        writer.write(json.dumps({"_reload_watcher": True}).encode() + b"\n")
+        await writer.drain()
+        await asyncio.wait_for(reader.readline(), timeout=3.0)
+        writer.close()
+        await writer.wait_closed()
+    except Exception:
+        pass  # watcher reload is best-effort
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -201,6 +239,13 @@ class IntentRequest(BaseModel):
 class ExecuteRequest(BaseModel):
     intent_id: str
     confirmed: bool = True
+
+
+class PersistRequest(BaseModel):
+    name: str
+    text: str
+    trigger_type: str = "manual"
+    trigger_config: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +433,220 @@ async def get_health():
         "inference": inference_ok,
         "model": _read_model_from_script(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Cortex — knowledge graph search / timeline / status
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/cortex/search")
+async def cortex_search(
+    q: str = Query(..., min_length=1),
+    top_k: int = Query(default=10, ge=1, le=100),
+    source_type: Optional[str] = None,
+):
+    """Semantic search over the knowledge graph."""
+    indexer = _get_indexer()
+    source_types = [source_type] if source_type else None
+    results = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: indexer.search(q, top_k=top_k, source_types=source_types)
+    )
+    return {"query": q, "count": len(results), "results": results}
+
+
+@app.get("/v1/cortex/timeline")
+async def cortex_timeline(
+    hours: int = Query(default=24, ge=1, le=720),
+    source_type: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """What changed in the last N hours?"""
+    indexer = _get_indexer()
+    source_types = [source_type] if source_type else None
+    results = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: indexer.timeline(hours=hours, source_types=source_types, limit=limit)
+    )
+    return {"hours": hours, "count": len(results), "results": results}
+
+
+@app.get("/v1/cortex/status")
+async def cortex_status():
+    """Knowledge graph indexing statistics."""
+    indexer = _get_indexer()
+    return await asyncio.get_event_loop().run_in_executor(None, indexer.status)
+
+
+@app.post("/v1/cortex/index")
+async def cortex_index(full: bool = False):
+    """Trigger an indexing run. full=true for full re-index."""
+    indexer = _get_indexer()
+    if full:
+        stats = await asyncio.get_event_loop().run_in_executor(None, indexer.run_once)
+    else:
+        stats = await asyncio.get_event_loop().run_in_executor(None, indexer.run_incremental)
+    return stats
+
+
+@app.get("/v1/cortex/briefing")
+async def cortex_briefing(hours: int = Query(default=12, ge=1, le=720)):
+    """Generate a briefing of recent changes."""
+    indexer = _get_indexer()
+    bg = BriefingGenerator(indexer._kg)
+    briefing = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: bg.generate(hours=hours)
+    )
+    return briefing
+
+
+# ---------------------------------------------------------------------------
+# Persistent intents
+# ---------------------------------------------------------------------------
+
+
+@app.post("/v1/intent/persist")
+async def persist_intent(body: PersistRequest):
+    """Parse an intent and store it as a persistent intent with a trigger."""
+    parser = _get_parser()
+    db = _get_db()
+
+    try:
+        goal_spec = await asyncio.get_event_loop().run_in_executor(
+            None, parser.parse, body.text
+        )
+    except LeavesError as e:
+        if e.code == LeavesErrorCode.NOT_IMPLEMENTED:
+            raise HTTPException(status_code=400, detail=e.user_message)
+        raise HTTPException(status_code=500, detail=e.user_message)
+
+    # Validate trigger config for filesystem triggers
+    if body.trigger_type == "filesystem":
+        if not body.trigger_config or "path" not in body.trigger_config:
+            raise HTTPException(
+                status_code=400,
+                detail="filesystem trigger requires trigger_config with 'path'",
+            )
+
+    intent_id = store_persistent_intent(
+        db,
+        name=body.name,
+        goalspec=goal_spec,
+        trigger_type=body.trigger_type,
+        trigger_config=body.trigger_config,
+    )
+
+    # Notify agentd to reload filesystem watches
+    await _notify_watcher_reload()
+
+    return {"id": intent_id, "status": "stored", "name": body.name}
+
+
+@app.get("/v1/intent/persistent")
+async def list_persistent_intents(active_only: bool = True):
+    db = _get_db()
+    if active_only:
+        intents = get_active_intents(db)
+    else:
+        intents = get_all_intents(db)
+    return [
+        {
+            "id": i["id"],
+            "name": i["name"],
+            "trigger_type": i["trigger_type"],
+            "trigger_config": i.get("trigger_config"),
+            "active": i["active"],
+            "fire_count": i["fire_count"],
+            "last_fired": i.get("last_fired"),
+            "created_at": i["created_at"],
+        }
+        for i in intents
+    ]
+
+
+@app.get("/v1/intent/persistent/{intent_id}")
+async def get_persistent_intent(intent_id: str):
+    db = _get_db()
+    intent = get_intent(db, intent_id)
+    if intent is None:
+        raise HTTPException(status_code=404, detail="Persistent intent not found")
+    return intent
+
+
+@app.delete("/v1/intent/persistent/{intent_id}")
+async def delete_persistent_intent(intent_id: str):
+    db = _get_db()
+    try:
+        delete_intent(db, intent_id)
+    except LeavesError as e:
+        if e.code == LeavesErrorCode.INTENT_NOT_FOUND:
+            raise HTTPException(status_code=404, detail=e.user_message)
+        raise HTTPException(status_code=500, detail=e.user_message)
+    return {"status": "deleted", "id": intent_id}
+
+
+@app.post("/v1/intent/persistent/{intent_id}/fire")
+async def fire_persistent_intent(intent_id: str):
+    """Manually fire a persistent intent — execute its GoalSpec now."""
+    db = _get_db()
+    intent = get_intent(db, intent_id)
+    if intent is None:
+        raise HTTPException(status_code=404, detail="Persistent intent not found")
+
+    goal_spec = intent["goalspec"]
+    fire_intent(db, intent_id)
+
+    t_start = time.monotonic()
+    gs_intent_id = goal_spec["intent_id"]
+    log_intent_created(db, gs_intent_id, goal_spec.get("natural_text", ""), goal_spec)
+
+    try:
+        results, summary = await _send_goalspec(goal_spec)
+        status = "done"
+        db_state = "DONE"
+    except LeavesError as e:
+        results = {}
+        summary = e.user_message
+        status = "failed"
+        db_state = "FAILED"
+
+    duration_ms = (time.monotonic() - t_start) * 1000
+    complete_intent(db, gs_intent_id, db_state, summary, duration_ms)
+
+    return {
+        "intent_id": gs_intent_id,
+        "persistent_id": intent_id,
+        "status": status,
+        "summary": summary,
+        "results": results,
+        "duration_ms": round(duration_ms, 1),
+        "fire_count": intent["fire_count"] + 1,
+    }
+
+
+@app.post("/v1/intent/persistent/{intent_id}/pause")
+async def pause_persistent_intent(intent_id: str):
+    db = _get_db()
+    try:
+        deactivate_intent(db, intent_id)
+    except LeavesError as e:
+        if e.code == LeavesErrorCode.INTENT_NOT_FOUND:
+            raise HTTPException(status_code=404, detail=e.user_message)
+        if e.code == LeavesErrorCode.INTENT_ALREADY_INACTIVE:
+            raise HTTPException(status_code=409, detail=e.user_message)
+        raise HTTPException(status_code=500, detail=e.user_message)
+    return {"status": "paused", "id": intent_id}
+
+
+@app.post("/v1/intent/persistent/{intent_id}/resume")
+async def resume_persistent_intent(intent_id: str):
+    db = _get_db()
+    try:
+        activate_intent(db, intent_id)
+    except LeavesError as e:
+        if e.code == LeavesErrorCode.INTENT_NOT_FOUND:
+            raise HTTPException(status_code=404, detail=e.user_message)
+        raise HTTPException(status_code=500, detail=e.user_message)
+    return {"status": "resumed", "id": intent_id}
 
 
 def _read_model_from_script() -> str:

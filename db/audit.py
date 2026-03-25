@@ -85,6 +85,40 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_intents_created_at ON intents(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_actions_intent_id ON actions(intent_id);
     CREATE INDEX IF NOT EXISTS idx_transitions_intent_id ON state_transitions(intent_id);
+
+    CREATE TABLE IF NOT EXISTS persistent_intents (
+        id              TEXT PRIMARY KEY,
+        name            TEXT NOT NULL,
+        goalspec_json   TEXT NOT NULL,
+        trigger_type    TEXT NOT NULL,
+        trigger_config  TEXT,
+        created_at      TEXT NOT NULL,
+        last_fired      TEXT,
+        fire_count      INTEGER DEFAULT 0,
+        active          INTEGER DEFAULT 1,
+        CONSTRAINT valid_trigger CHECK (trigger_type IN ('manual', 'filesystem', 'schedule'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pi_trigger_type ON persistent_intents(trigger_type);
+    CREATE INDEX IF NOT EXISTS idx_pi_active ON persistent_intents(active);
+
+    CREATE TABLE IF NOT EXISTS knowledge_items (
+        id              TEXT PRIMARY KEY,
+        source_type     TEXT NOT NULL,
+        source_id       TEXT NOT NULL,
+        source_path     TEXT NOT NULL,
+        title           TEXT,
+        content_preview TEXT,
+        content_hash    TEXT NOT NULL,
+        metadata_json   TEXT,
+        timestamp       TEXT NOT NULL,
+        indexed_at      TEXT NOT NULL,
+        UNIQUE(source_type, source_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ki_timestamp ON knowledge_items(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_ki_source_type ON knowledge_items(source_type);
+    CREATE INDEX IF NOT EXISTS idx_ki_source_path ON knowledge_items(source_path);
     """)
     conn.commit()
 

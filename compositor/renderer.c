@@ -522,6 +522,116 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 	return card_h;
 }
 
+/* ── Briefing card ── */
+
+static int draw_briefing_card(struct leaves_renderer *r,
+		LeavesBriefing *briefing, int y) {
+	if (!briefing->loaded) return 0;
+
+	cairo_t *cr = r->cr;
+	int card_x = CARD_MARGIN_H;
+	int card_w = r->width - 2 * CARD_MARGIN_H;
+	int inner_w = card_w - 2 * CARD_PADDING_H - CARD_INDICATOR_W - SPACE_S;
+	float alpha = briefing->anim_opacity.pos;
+	if (alpha < 0.01f) return 0;
+
+	/* Measure content height */
+	int content_h = 0;
+
+	/* Headline */
+	PangoLayout *headline = create_layout(cr, r->font_intent_title, 0);
+	pango_layout_set_text(headline, briefing->headline, -1);
+	pango_layout_set_width(headline, inner_w * PANGO_SCALE);
+	pango_layout_set_wrap(headline, PANGO_WRAP_WORD);
+	int hw, hh;
+	pango_layout_get_pixel_size(headline, &hw, &hh);
+	content_h += hh + SPACE_S;
+
+	/* Group lines */
+	int group_lines = 0;
+	for (int s = 0; s < briefing->section_count; s++) {
+		LeavesBriefingSection *sec = &briefing->sections[s];
+		for (int g = 0; g < sec->group_count; g++) {
+			group_lines++;
+			LeavesBriefingGroup *grp = &sec->groups[g];
+			group_lines += (grp->item_count > 3) ? 3 : grp->item_count;
+		}
+	}
+	int line_h = 18;
+	content_h += group_lines * line_h;
+
+	int card_h = CARD_PADDING_V + content_h + CARD_PADDING_V;
+
+	/* Card background */
+	cairo_save(cr);
+	rounded_rect(cr, card_x, y, card_w, card_h, CARD_RADIUS);
+	set_color(cr, color_with_alpha(FILL_CARD,
+		(uint8_t)(FILL_CARD.a * alpha)));
+	cairo_fill_preserve(cr);
+	set_color(cr, color_with_alpha(BORDER_CARD,
+		(uint8_t)(BORDER_CARD.a * alpha)));
+	cairo_set_line_width(cr, 1);
+	cairo_stroke(cr);
+
+	/* Blue indicator bar (briefing accent) */
+	rounded_rect(cr, card_x + SPACE_XS, y + CARD_PADDING_V,
+		CARD_INDICATOR_W, card_h - 2 * CARD_PADDING_V,
+		CARD_INDICATOR_W / 2.0);
+	set_color(cr, color_with_alpha(ACCENT_BLUE,
+		(uint8_t)(ACCENT_BLUE.a * alpha)));
+	cairo_fill(cr);
+
+	/* Headline text */
+	int text_x = card_x + CARD_PADDING_H + CARD_INDICATOR_W + SPACE_S;
+	int text_y = y + CARD_PADDING_V;
+	cairo_move_to(cr, text_x, text_y);
+	set_color(cr, color_with_alpha(TEXT_PRIMARY,
+		(uint8_t)(TEXT_PRIMARY.a * alpha)));
+	pango_cairo_show_layout(cr, headline);
+	g_object_unref(headline);
+	text_y += hh + SPACE_S;
+
+	/* Groups */
+	for (int s = 0; s < briefing->section_count; s++) {
+		LeavesBriefingSection *sec = &briefing->sections[s];
+		for (int g = 0; g < sec->group_count; g++) {
+			LeavesBriefingGroup *grp = &sec->groups[g];
+			char dir_line[300];
+			snprintf(dir_line, sizeof(dir_line), "%s (%d)",
+				grp->directory, grp->count);
+
+			PangoLayout *dir_layout = create_layout(cr,
+				r->font_action_chain, 0);
+			pango_layout_set_text(dir_layout, dir_line, -1);
+			cairo_move_to(cr, text_x, text_y);
+			set_color(cr, color_with_alpha(TEXT_SECONDARY,
+				(uint8_t)(TEXT_SECONDARY.a * alpha)));
+			pango_cairo_show_layout(cr, dir_layout);
+			g_object_unref(dir_layout);
+			text_y += line_h;
+
+			int show = (grp->item_count > 3) ? 3 : grp->item_count;
+			for (int i = 0; i < show; i++) {
+				char item_line[300];
+				snprintf(item_line, sizeof(item_line),
+					"  · %s", grp->items[i].title);
+				PangoLayout *il = create_layout(cr,
+					r->font_capability, 0);
+				pango_layout_set_text(il, item_line, -1);
+				cairo_move_to(cr, text_x, text_y);
+				set_color(cr, color_with_alpha(TEXT_TERTIARY,
+					(uint8_t)(TEXT_TERTIARY.a * alpha)));
+				pango_cairo_show_layout(cr, il);
+				g_object_unref(il);
+				text_y += line_h;
+			}
+		}
+	}
+
+	cairo_restore(cr);
+	return card_h;
+}
+
 /* ── Empty state ── */
 
 static void draw_empty_state(struct leaves_renderer *r, int top, int bottom) {
@@ -966,10 +1076,18 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 
 	pthread_mutex_lock(&feed->mutex);
 
-	if (feed->count == 0) {
-		draw_empty_state(r, feed_top, feed_bottom);
-	} else {
-		/* 3. Clip feed area */
+	/* 3. Briefing card (always at top when loaded) */
+	int briefing_h = 0;
+	if (feed->briefing.loaded && !feed->briefing.empty) {
+		briefing_h = draw_briefing_card(r, &feed->briefing, feed_top);
+		if (briefing_h > 0)
+			briefing_h += CARD_GAP;
+	}
+
+	if (feed->count == 0 && !feed->briefing.loaded) {
+		draw_empty_state(r, feed_top + briefing_h, feed_bottom);
+	} else if (feed->count > 0) {
+		/* 4. Clip feed area */
 		cairo_save(cr);
 		cairo_rectangle(cr, 0, top_offset,
 			r->width, r->height - INPUT_HEIGHT - top_offset);
