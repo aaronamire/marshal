@@ -1044,14 +1044,29 @@ static void *create_watcher_thread(void *arg) {
 	char url[512];
 	snprintf(url, sizeof(url), "%s/v1/intent/persist", feed->api_base);
 
+	/* Extract path from "... on <path>" or "... in <path>" clause */
+	char watch_path[256] = "";
+	const char *on = strstr(wa->text, " on ");
+	const char *in = strstr(wa->text, " in ");
+	const char *prep = on ? on : in;
+	if (prep) {
+		const char *p = prep + 4; /* skip " on " or " in " */
+		while (*p == ' ') p++;
+		if (*p) snprintf(watch_path, sizeof(watch_path), "%s", p);
+	}
+	if (!watch_path[0])
+		snprintf(watch_path, sizeof(watch_path), "%s", getenv("HOME") ? getenv("HOME") : "~");
+
 	char escaped[512];
 	json_escape(wa->text, escaped, sizeof(escaped));
-	char body[1280];
+	char escaped_path[512];
+	json_escape(watch_path, escaped_path, sizeof(escaped_path));
+	char body[1536];
 	snprintf(body, sizeof(body),
 		"{\"name\":\"%.200s\",\"text\":\"%.480s\","
 		"\"trigger_type\":\"filesystem\","
-		"\"trigger_config\":{}}",
-		escaped, escaped);
+		"\"trigger_config\":{\"path\":\"%.240s\"}}",
+		escaped, escaped, escaped_path);
 
 	cJSON *result = http_post(url, body, 30L);
 
