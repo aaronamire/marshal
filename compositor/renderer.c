@@ -37,9 +37,7 @@ static void draw_leaf_glyph(cairo_t *cr, double cx, double cy) {
 	cairo_move_to(cr, 0, -10);
 	cairo_line_to(cr, 0, 10);
 
-	struct color c = ACCENT_GREEN;
-	cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
-		c.b / 255.0, 0.70);
+	cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.75);
 	cairo_set_line_width(cr, 1.5);
 	cairo_stroke(cr);
 

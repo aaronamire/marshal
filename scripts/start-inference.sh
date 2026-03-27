@@ -45,8 +45,9 @@ if [ ! -f "$MODEL" ]; then
     fi
 fi
 
-# If the systemd service is running, just restart it and exit
-if systemctl --user is-active --quiet leaves-inference.service 2>/dev/null; then
+# If invoked manually while the systemd service is already running, restart it.
+# Skip this check when we ARE the systemd service (INVOCATION_ID is set by systemd).
+if [ -z "$INVOCATION_ID" ] && systemctl --user is-active --quiet leaves-inference.service 2>/dev/null; then
     echo "systemd service already active — restarting..."
     systemctl --user restart leaves-inference.service
     echo "Done. Use: journalctl --user -u leaves-inference -f"

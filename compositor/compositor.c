@@ -32,6 +32,8 @@
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/interfaces/wlr_buffer.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/backend/session.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 #include <drm_fourcc.h>
@@ -44,6 +46,12 @@
 /* ── Layout constants ── */
 
 #define PANEL_WIDTH 420  /* fixed width for the AI panel */
+
+/* ── Modifier bit-flags ── */
+
+#define MOD_CTRL  (1 << 0)
+#define MOD_ALT   (1 << 1)
+#define MOD_SUPER (1 << 2)
 
 /* ── Focus mode ── */
 
@@ -143,6 +151,7 @@ struct leaves_server {
 	struct wl_display *display;
 	struct wl_event_loop *event_loop;
 	struct wlr_backend *backend;
+	struct wlr_session *session;
 	struct wlr_renderer *renderer;
 	struct wlr_allocator *allocator;
 	struct wlr_output_layout *output_layout;
@@ -160,6 +169,10 @@ struct leaves_server {
 
 	/* Wayland protocols */
 	struct wlr_xdg_shell *xdg_shell;
+	struct wlr_xdg_decoration_manager_v1 *decoration_mgr;
+
+	/* Listeners (decoration) */
+	struct wl_listener new_decoration;
 
 	/* Cursor */
 	struct wlr_cursor *cursor;
@@ -211,10 +224,6 @@ static void relayout_toplevels(struct leaves_server *server);
 
 /* ── Panel dimensions ── */
 
-static int panel_width(struct leaves_server *server) {
-	return PANEL_WIDTH;
-}
-
 static int output_height(struct leaves_server *server) {
 	struct leaves_output *out;
 	wl_list_for_each(out, &server->outputs, link) {
@@ -233,6 +242,12 @@ static int output_width(struct leaves_server *server) {
 		return w;
 	}
 	return 1920;
+}
+
+static int effective_panel_width(struct leaves_server *server) {
+	if (wl_list_empty(&server->toplevels))
+		return output_width(server);  /* full screen when no apps open */
+	return PANEL_WIDTH;
 }
 
 /* ── Cursor blink timer ── */
@@ -300,7 +315,7 @@ static void update_panel_buffer(struct leaves_server *server) {
 	if (!server->panel_dirty) return;
 	server->panel_dirty = false;
 
-	int pw = panel_width(server);
+	int pw = effective_panel_width(server);
 	int ph = output_height(server);
 
 	/* Ensure cairo surface matches panel size */
@@ -407,7 +422,7 @@ static void toplevel_commit(struct wl_listener *listener, void *data) {
 		struct leaves_server *server = toplevel->server;
 		int ow = output_width(server);
 		int oh = output_height(server);
-		int pw = panel_width(server);
+		int pw = effective_panel_width(server);
 		int app_w = ow - pw;
 
 		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, app_w, oh);
@@ -477,21 +492,24 @@ static void focus_toplevel(struct leaves_server *server,
 static void relayout_toplevels(struct leaves_server *server) {
 	int ow = output_width(server);
 	int oh = output_height(server);
-	int pw = panel_width(server);
-	int app_w = ow - pw;
-	if (app_w < 100) app_w = 100;
+	int pw = effective_panel_width(server);
 
-	/* Resize panel background rect */
-	wlr_scene_rect_set_size(server->panel_bg, pw, oh);
+	/* Resize panel background to full output */
+	wlr_scene_rect_set_size(server->panel_bg, ow, oh);
 
-	/* Update panel scene buffer position (already at 0,0) */
+	/* Resize panel renderer to match effective width */
+	renderer_resize(server->lrenderer, pw, oh);
+
+	/* Move app tree */
 	wlr_scene_node_set_position(&server->app_tree->node, pw, 0);
 
-	/* For now: each toplevel fills the entire app area (stacked) */
+	/* Configure each toplevel */
+	int app_w = ow - pw;
+	if (app_w < 100) app_w = 100;
 	struct leaves_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
-		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
 		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, app_w, oh);
+		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
 	}
 
 	schedule_panel_redraw(server);
@@ -537,6 +555,8 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 }
 
 static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, new_xdg_popup);
 	struct wlr_xdg_popup *popup = data;
 	struct wlr_xdg_surface *parent =
 		wlr_xdg_surface_try_from_wlr_surface(popup->parent);
@@ -544,11 +564,9 @@ static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
 
 	struct wlr_scene_tree *parent_tree = parent->data;
 	if (!parent_tree) {
-		/* Try finding the scene tree from the toplevel */
-		parent_tree = wlr_scene_xdg_surface_create(
-			parent->data ? parent->data : &popup->base->client->shell->data,
-			popup->base);
-		return;
+		/* Parent has no scene tree (shouldn't happen normally).
+		 * Fall back to the app tree so the popup still renders. */
+		parent_tree = server->app_tree;
 	}
 	popup->base->data =
 		wlr_scene_xdg_surface_create(parent_tree, popup->base);
@@ -571,10 +589,42 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		for (int i = 0; i < nsyms; i++) {
-			/* Super+Space: toggle focus between panel and app */
-			if ((server->modifiers & (1 << 0)) &&
+			/* ── VT switch: Ctrl+Alt+F1..F12 ── */
+			if ((server->modifiers & MOD_CTRL) &&
+					(server->modifiers & MOD_ALT)) {
+				if (syms[i] >= XKB_KEY_XF86Switch_VT_1 &&
+						syms[i] <= XKB_KEY_XF86Switch_VT_12) {
+					if (server->session) {
+						unsigned vt = syms[i] -
+							XKB_KEY_XF86Switch_VT_1 + 1;
+						wlr_session_change_vt(server->session, vt);
+					}
+					handled = true;
+					break;
+				}
+				/* Ctrl+Alt+Backspace: emergency compositor exit */
+				if (syms[i] == XKB_KEY_BackSpace) {
+					wl_display_terminate(server->display);
+					handled = true;
+					break;
+				}
+			}
+
+			/* ── Super+Q: close focused app window ── */
+			if ((server->modifiers & MOD_SUPER) &&
+					syms[i] == XKB_KEY_q) {
+				if (!wl_list_empty(&server->toplevels)) {
+					struct leaves_toplevel *top = wl_container_of(
+						server->toplevels.next, top, link);
+					wlr_xdg_toplevel_send_close(top->xdg_toplevel);
+				}
+				handled = true;
+				break;
+			}
+
+			/* ── Super+Space: toggle focus between panel and app ── */
+			if ((server->modifiers & MOD_SUPER) &&
 					syms[i] == XKB_KEY_space) {
-				/* Ctrl+Space toggle */
 				if (server->focus_mode == FOCUS_PANEL &&
 						!wl_list_empty(&server->toplevels)) {
 					server->focus_mode = FOCUS_APP;
@@ -633,11 +683,21 @@ static void keyboard_handle_modifiers(struct wl_listener *listener,
 
 	struct xkb_keymap *keymap = xkb_state_get_keymap(
 		keyboard->wlr_keyboard->xkb_state);
+
 	xkb_mod_index_t ctrl_idx = xkb_keymap_mod_get_index(keymap,
 		XKB_MOD_NAME_CTRL);
-	if (ctrl_idx != XKB_MOD_INVALID && (mod_mask & (1 << ctrl_idx))) {
-		server->modifiers |= (1 << 0); /* MOD_CTRL */
-	}
+	if (ctrl_idx != XKB_MOD_INVALID && (mod_mask & (1 << ctrl_idx)))
+		server->modifiers |= MOD_CTRL;
+
+	xkb_mod_index_t alt_idx = xkb_keymap_mod_get_index(keymap,
+		XKB_MOD_NAME_ALT);
+	if (alt_idx != XKB_MOD_INVALID && (mod_mask & (1 << alt_idx)))
+		server->modifiers |= MOD_ALT;
+
+	xkb_mod_index_t logo_idx = xkb_keymap_mod_get_index(keymap,
+		XKB_MOD_NAME_LOGO);
+	if (logo_idx != XKB_MOD_INVALID && (mod_mask & (1 << logo_idx)))
+		server->modifiers |= MOD_SUPER;
 
 	if (server->focus_mode == FOCUS_APP) {
 		wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
@@ -736,7 +796,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 			/* Click on app window — focus it */
 			server->focus_mode = FOCUS_APP;
 			focus_toplevel(server, toplevel);
-		} else if (server->cursor->x < panel_width(server)) {
+		} else if (server->cursor->x < effective_panel_width(server)) {
 			/* Click on panel area — focus panel */
 			server->focus_mode = FOCUS_PANEL;
 			wlr_seat_keyboard_clear_focus(server->seat);
@@ -749,6 +809,19 @@ static void cursor_axis_handler(struct wl_listener *listener, void *data) {
 	struct leaves_server *server =
 		wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
+
+	/* Scroll the panel feed when the cursor is over the panel area */
+	if (server->cursor->x < effective_panel_width(server) &&
+			event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+		pthread_mutex_lock(&server->feed->mutex);
+		server->feed->scroll_offset += event->delta;
+		if (server->feed->scroll_offset < 0)
+			server->feed->scroll_offset = 0;
+		pthread_mutex_unlock(&server->feed->mutex);
+		schedule_panel_redraw(server);
+		return;
+	}
+
 	wlr_seat_pointer_notify_axis(server->seat, event->time_msec,
 		event->orientation, event->delta, event->delta_discrete,
 		event->source, event->relative_direction);
@@ -869,6 +942,28 @@ static void backend_destroy_handler(struct wl_listener *listener, void *data) {
 	wl_display_terminate(server->display);
 }
 
+/* ── XDG decoration: request server-side decorations ── */
+
+static void decoration_handle_request_mode(struct wl_listener *listener,
+		void *data) {
+	struct wlr_xdg_toplevel_decoration_v1 *decoration = data;
+	wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
+		WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+}
+
+static void server_new_decoration(struct wl_listener *listener, void *data) {
+	struct wlr_xdg_toplevel_decoration_v1 *decoration = data;
+
+	/* Immediately request SSD and listen for future mode requests */
+	wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
+		WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+
+	struct wl_listener *request_mode =
+		calloc(1, sizeof(struct wl_listener));
+	request_mode->notify = decoration_handle_request_mode;
+	wl_signal_add(&decoration->events.request_mode, request_mode);
+}
+
 /* ── Main ── */
 
 int main(int argc, char *argv[]) {
@@ -882,7 +977,8 @@ int main(int argc, char *argv[]) {
 	server.display = wl_display_create();
 	server.event_loop = wl_display_get_event_loop(server.display);
 
-	server.backend = wlr_backend_autocreate(server.event_loop, NULL);
+	server.backend = wlr_backend_autocreate(server.event_loop,
+		&server.session);
 	if (!server.backend) {
 		fprintf(stderr, "Failed to create wlr_backend\n");
 		return 1;
@@ -942,11 +1038,20 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.xdg_shell->events.new_popup,
 		&server.new_xdg_popup);
 
+	/* xdg-decoration: tell clients we handle titlebars (SSD) */
+	server.decoration_mgr =
+		wlr_xdg_decoration_manager_v1_create(server.display);
+	server.new_decoration.notify = server_new_decoration;
+	wl_signal_add(&server.decoration_mgr->events.new_toplevel_decoration,
+		&server.new_decoration);
+
 	/* Cursor */
 	server.cursor = wlr_cursor_create();
 	wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
 
 	server.cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+	wlr_xcursor_manager_load(server.cursor_mgr, 1.0);
+	wlr_cursor_set_xcursor(server.cursor, server.cursor_mgr, "default");
 
 	server.cursor_motion.notify = cursor_motion_handler;
 	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
