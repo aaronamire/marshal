@@ -56,6 +56,7 @@
 /* ── Focus mode ── */
 
 enum leaves_focus_mode {
+	FOCUS_NONE,   /* keyboard input is idle (no target) */
 	FOCUS_PANEL,  /* keyboard goes to the Leaves input bar */
 	FOCUS_APP,    /* keyboard goes to the focused toplevel */
 };
@@ -254,8 +255,16 @@ static int effective_panel_width(struct leaves_server *server) {
 
 static int cursor_timer_cb(void *data) {
 	struct leaves_server *server = data;
-	if (input_tick_cursor(&server->input, 530)) {
-		schedule_panel_redraw(server);
+	if (server->focus_mode == FOCUS_PANEL) {
+		if (input_tick_cursor(&server->input, 530)) {
+			schedule_panel_redraw(server);
+		}
+	} else {
+		/* Hide cursor when panel isn't focused */
+		if (server->input.cursor_visible) {
+			server->input.cursor_visible = false;
+			schedule_panel_redraw(server);
+		}
 	}
 	wl_event_source_timer_update(server->cursor_timer, 530);
 	return 0;
@@ -407,7 +416,7 @@ static void toplevel_unmap(struct wl_listener *listener, void *data) {
 			server->toplevels.next, next, link);
 		focus_toplevel(server, next);
 	} else {
-		server->focus_mode = FOCUS_PANEL;
+		server->focus_mode = FOCUS_NONE;
 		wlr_seat_keyboard_clear_focus(server->seat);
 		schedule_panel_redraw(server);
 	}
@@ -418,12 +427,13 @@ static void toplevel_commit(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, toplevel, commit);
 
 	if (toplevel->xdg_toplevel->base->initial_commit) {
-		/* Send initial configure with the app area dimensions */
+		/* Send initial configure with the app area dimensions.
+		 * Don't use effective_panel_width here — the toplevel isn't
+		 * in server->toplevels yet (added in toplevel_map). */
 		struct leaves_server *server = toplevel->server;
 		int ow = output_width(server);
 		int oh = output_height(server);
-		int pw = effective_panel_width(server);
-		int app_w = ow - pw;
+		int app_w = ow - PANEL_WIDTH;
 
 		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, app_w, oh);
 		wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
@@ -622,17 +632,21 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				break;
 			}
 
-			/* ── Super+Space: toggle focus between panel and app ── */
+			/* ── Super+Space: cycle focus: NONE → PANEL → APP → NONE ── */
 			if ((server->modifiers & MOD_SUPER) &&
 					syms[i] == XKB_KEY_space) {
-				if (server->focus_mode == FOCUS_PANEL &&
+				if (server->focus_mode == FOCUS_NONE) {
+					server->focus_mode = FOCUS_PANEL;
+					wlr_seat_keyboard_clear_focus(server->seat);
+				} else if (server->focus_mode == FOCUS_PANEL &&
 						!wl_list_empty(&server->toplevels)) {
 					server->focus_mode = FOCUS_APP;
 					struct leaves_toplevel *top = wl_container_of(
 						server->toplevels.next, top, link);
 					focus_toplevel(server, top);
 				} else {
-					server->focus_mode = FOCUS_PANEL;
+					/* FOCUS_APP → NONE, or PANEL with no apps → NONE */
+					server->focus_mode = FOCUS_NONE;
 					wlr_seat_keyboard_clear_focus(server->seat);
 				}
 				schedule_panel_redraw(server);
@@ -644,7 +658,10 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 	if (handled) return;
 
-	if (server->focus_mode == FOCUS_PANEL) {
+	if (server->focus_mode == FOCUS_NONE) {
+		/* No focus target — drop keypresses */
+		return;
+	} else if (server->focus_mode == FOCUS_PANEL) {
 		/* Route to Leaves input handler */
 		if (event->state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
 
@@ -660,6 +677,10 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				is_printable ? utf8_len : 0)) {
 			schedule_panel_redraw(server);
 			wl_event_source_timer_update(server->anim_timer, 16);
+		} else if (event->keycode == 1) {
+			/* Escape with empty buffer — defocus the input bar */
+			server->focus_mode = FOCUS_NONE;
+			schedule_panel_redraw(server);
 		}
 	} else {
 		/* Forward to focused app */
@@ -797,8 +818,14 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 			server->focus_mode = FOCUS_APP;
 			focus_toplevel(server, toplevel);
 		} else if (server->cursor->x < effective_panel_width(server)) {
-			/* Click on panel area — focus panel */
-			server->focus_mode = FOCUS_PANEL;
+			/* Click on panel — input bar focuses panel, feed defocuses */
+			int oh = output_height(server);
+			int bar_y = oh - INPUT_HEIGHT;
+			if (server->cursor->y >= bar_y) {
+				server->focus_mode = FOCUS_PANEL;
+			} else {
+				server->focus_mode = FOCUS_NONE;
+			}
 			wlr_seat_keyboard_clear_focus(server->seat);
 		}
 		schedule_panel_redraw(server);
@@ -951,6 +978,20 @@ static void decoration_handle_request_mode(struct wl_listener *listener,
 		WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 }
 
+struct leaves_decoration {
+	struct wl_listener request_mode;
+	struct wl_listener destroy;
+};
+
+static void decoration_handle_destroy(struct wl_listener *listener,
+		void *data) {
+	struct leaves_decoration *deco =
+		wl_container_of(listener, deco, destroy);
+	wl_list_remove(&deco->request_mode.link);
+	wl_list_remove(&deco->destroy.link);
+	free(deco);
+}
+
 static void server_new_decoration(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel_decoration_v1 *decoration = data;
 
@@ -958,10 +999,11 @@ static void server_new_decoration(struct wl_listener *listener, void *data) {
 	wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
 		WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 
-	struct wl_listener *request_mode =
-		calloc(1, sizeof(struct wl_listener));
-	request_mode->notify = decoration_handle_request_mode;
-	wl_signal_add(&decoration->events.request_mode, request_mode);
+	struct leaves_decoration *deco = calloc(1, sizeof(*deco));
+	deco->request_mode.notify = decoration_handle_request_mode;
+	wl_signal_add(&decoration->events.request_mode, &deco->request_mode);
+	deco->destroy.notify = decoration_handle_destroy;
+	wl_signal_add(&decoration->events.destroy, &deco->destroy);
 }
 
 /* ── Main ── */
@@ -972,7 +1014,7 @@ int main(int argc, char *argv[]) {
 	struct leaves_server server = {0};
 	wl_list_init(&server.outputs);
 	wl_list_init(&server.toplevels);
-	server.focus_mode = FOCUS_PANEL;
+	server.focus_mode = FOCUS_NONE;
 
 	server.display = wl_display_create();
 	server.event_loop = wl_display_get_event_loop(server.display);
@@ -1018,7 +1060,7 @@ int main(int argc, char *argv[]) {
 	 *     └── app_tree (positioned at x=PANEL_WIDTH)
 	 *         └── [xdg_surface nodes from client windows]
 	 */
-	float panel_bg_color[4] = {0.067f, 0.067f, 0.078f, 1.0f}; /* BG_BASE approx */
+	float panel_bg_color[4] = {1.0f, 1.0f, 1.0f, 1.0f}; /* match BG_BASE #FFFFFF */
 	server.panel_bg = wlr_scene_rect_create(&server.scene->tree,
 		PANEL_WIDTH, 1080, panel_bg_color);
 
