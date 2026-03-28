@@ -17,6 +17,7 @@ pangocairo = dependency('pangocairo')
 libcurl = dependency('libcurl')
 cjson = dependency('libcjson')
 drm = dependency('libdrm')
+jpeg = dependency('libjpeg')
 math = meson.get_compiler('c').find_library('m')
 threads = dependency('threads')
 
@@ -37,6 +38,7 @@ executable('leaves-compositor',
   'feed.c',
   'input.c',
   'spring.c',
+  'status.c',
   xdg_shell_header,
   dependencies : [
     wlroots,
@@ -47,6 +49,7 @@ executable('leaves-compositor',
     libcurl,
     cjson,
     drm,
+    jpeg,
     math,
     threads,
   ],

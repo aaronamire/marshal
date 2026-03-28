@@ -47,6 +47,9 @@ typedef struct {
 	LeavesSearchHit search_hits[MAX_SEARCH_HITS];
 	int search_hit_count;
 
+	/* Result summary — human-readable text shown in the card */
+	char result_summary[4096];
+
 	/* Injection detection — populated from execution response */
 	bool injection_detected;
 	char injection_content[512];
@@ -113,6 +116,8 @@ struct leaves_feed {
 	int confirm_pipe[2];    /* [0]=read (HTTP thread), [1]=write (main) */
 	bool awaiting_confirm;  /* true when overlay is active */
 	int confirm_card_idx;   /* which card is awaiting confirmation */
+	int selected_card;      /* index of card selected for copy, or -1 */
+	int expanded_card;      /* index of card expanded for full detail, or -1 */
 	char api_base[256];
 	LeavesBriefing briefing;
 	LeavesWatcher watchers[MAX_WATCHERS];

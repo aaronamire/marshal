@@ -183,6 +183,19 @@ def _do_apply(goal_spec: dict) -> None:
         _ll_add_path_rule(ruleset_fd, pathlib.Path.home().parent, _ACCESS_READ_DIR)
         _ll_add_path_rule(ruleset_fd, pathlib.Path.home(), _ACCESS_READ_DIR)
 
+        # /tmp: many programs need temp file access.
+        _ll_add_path_rule(ruleset_fd, pathlib.Path("/tmp"), _FS_READ_WRITE)
+
+        # XDG_RUNTIME_DIR: Wayland/PipeWire/D-Bus sockets live here.
+        # GUI apps launched by SystemAgent need to connect to the compositor.
+        xdg_runtime = pathlib.Path(
+            os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        )
+        _ll_add_path_rule(ruleset_fd, xdg_runtime, _FS_READ_ONLY)
+        # Traversal for /run and /run/user
+        _ll_add_path_rule(ruleset_fd, pathlib.Path("/run"), _ACCESS_READ_DIR)
+        _ll_add_path_rule(ruleset_fd, pathlib.Path("/run/user"), _ACCESS_READ_DIR)
+
         # Always read-only: Python runtime + system config
         for path in (
             project_root,
@@ -212,6 +225,11 @@ def _main() -> None:
     msg            = json.loads(line)
     goal_spec      = msg["goal_spec"]
     from_state_str = msg.get("from_state", "PARSING")
+
+    # Step 1b: propagate compositor's WAYLAND_DISPLAY if present in goal_spec
+    wl_display = goal_spec.get("metadata", {}).get("wayland_display")
+    if wl_display:
+        os.environ["WAYLAND_DISPLAY"] = wl_display
 
     # Step 2: apply Landlock — restricts THIS process's FS access from here on
     apply_landlock(goal_spec)

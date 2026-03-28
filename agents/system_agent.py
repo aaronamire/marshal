@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import pathlib
 import shutil
 import subprocess
 import time
@@ -24,6 +25,22 @@ import psutil
 
 from agents.base_agent import BaseAgent
 from errors import LeavesError, LeavesErrorCode
+
+# Common program aliases — maps user-friendly names to real executables.
+# Checked in order; first one found in PATH wins.
+_PROGRAM_ALIASES: dict[str, list[str]] = {
+    "google": ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"],
+    "chrome": ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"],
+    "browser": ["firefox", "google-chrome-stable", "chromium", "epiphany"],
+    "files": ["nautilus", "thunar", "dolphin", "pcmanfm", "nemo"],
+    "file manager": ["nautilus", "thunar", "dolphin", "pcmanfm", "nemo"],
+    "text editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
+    "editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
+    "terminal": ["foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
+    "term": ["foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
+    "calculator": ["gnome-calculator", "kcalc", "galculator", "qalculate-gtk"],
+    "settings": ["gnome-control-center", "xfce4-settings-manager", "systemsettings"],
+}
 
 # Programs that must never be terminated via the agent.
 _PROTECTED_PROCESSES = frozenset({
@@ -104,8 +121,14 @@ class SystemAgent(BaseAgent):
                 detail="No program specified for launch",
             )
 
-        # Resolve the program to a real path (validates it exists in PATH)
+        # Try the literal name first, then check aliases.
         exe = shutil.which(program)
+        if exe is None:
+            candidates = _PROGRAM_ALIASES.get(program.lower(), [])
+            for candidate in candidates:
+                exe = shutil.which(candidate)
+                if exe:
+                    break
         if exe is None:
             raise LeavesError(
                 LeavesErrorCode.FILE_NOT_FOUND,
@@ -114,15 +137,53 @@ class SystemAgent(BaseAgent):
 
         row_id = self._audit_start(action_id, "WRITE", params)
         try:
+            # Build env with Wayland display info so GUI apps connect to compositor.
+            env = os.environ.copy()
+            if "WAYLAND_DISPLAY" not in env:
+                # 1. Try reading from compositor's marker file.
+                try:
+                    marker = pathlib.Path.home() / ".leaves" / "wayland-display"
+                    display = marker.read_text().strip()
+                    if display:
+                        env["WAYLAND_DISPLAY"] = display
+                except (OSError, ValueError):
+                    pass
+            if "WAYLAND_DISPLAY" not in env:
+                # 2. Discover Wayland socket from XDG_RUNTIME_DIR.
+                # Pick the highest-numbered socket (most recently created
+                # compositor) so we connect to the user's active session.
+                try:
+                    xrd = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+                    import glob as _glob
+                    sockets = sorted(_glob.glob(os.path.join(xrd, "wayland-*")))
+                    for s in reversed(sockets):
+                        if not s.endswith(".lock"):
+                            env["WAYLAND_DISPLAY"] = os.path.basename(s)
+                            break
+                except OSError:
+                    pass  # sandboxed — Wayland discovery not possible
+            if "XDG_RUNTIME_DIR" not in env:
+                env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+
             # Launch detached from our process group so it outlives us.
-            # stdout/stderr to devnull — GUI apps don't need a terminal.
+            # Use PIPE instead of DEVNULL to avoid opening /dev/null,
+            # which Landlock's PATH_BENEATH can't grant on char devices.
             proc = subprocess.Popen(
                 [exe],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
                 start_new_session=True,
+                env=env,
             )
+            # Close our end of the pipes immediately — the child keeps
+            # running with broken pipes (harmless for GUI apps).
+            if proc.stdin:
+                proc.stdin.close()
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
             result = {
                 "launched": program,
                 "pid": proc.pid,
@@ -169,22 +230,39 @@ class SystemAgent(BaseAgent):
         if target.isdigit():
             return self._terminate_pid(int(target))
 
-        # By name — find matching processes owned by current user
+        # By name — find matching processes owned by current user.
+        # Use fuzzy matching: exact match first, then prefix/contains match.
+        # e.g. "firefox" matches "firefox", "firefox-esr", "firefox-bin",
+        #       ".firefox-wrapped", "Web Content" (child of firefox) etc.
         uid = os.getuid()
-        matches = []
-        for p in psutil.process_iter(["pid", "name", "uids"]):
+        exact_matches: list[psutil.Process] = []
+        fuzzy_matches: list[psutil.Process] = []
+        target_lower = target.lower()
+
+        for p in psutil.process_iter(["pid", "name", "cmdline", "uids"]):
             try:
                 info = p.info
-                if info["name"] and info["name"].lower() == target.lower():
-                    # Only kill our own processes
-                    if info["uids"] and info["uids"].real == uid:
-                        matches.append(p)
+                if not (info["uids"] and info["uids"].real == uid):
+                    continue
+                pname = (info["name"] or "").lower()
+                # Exact match
+                if pname == target_lower:
+                    exact_matches.append(p)
+                # Fuzzy: process name starts with or contains target
+                elif target_lower in pname or pname.startswith(target_lower):
+                    fuzzy_matches.append(p)
+                # Check cmdline for the program name (e.g. /usr/lib/firefox/firefox)
+                elif info.get("cmdline"):
+                    cmd0 = (info["cmdline"][0] if info["cmdline"] else "").lower()
+                    if target_lower in os.path.basename(cmd0):
+                        fuzzy_matches.append(p)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
+        matches = exact_matches or fuzzy_matches
         if not matches:
             raise LeavesError(
-                LeavesErrorCode.FILE_NOT_FOUND,
+                LeavesErrorCode.PROCESS_NOT_FOUND,
                 detail=f"No running process named '{target}' owned by current user",
             )
 
@@ -221,7 +299,7 @@ class SystemAgent(BaseAgent):
             p = psutil.Process(pid)
         except psutil.NoSuchProcess:
             raise LeavesError(
-                LeavesErrorCode.FILE_NOT_FOUND,
+                LeavesErrorCode.PROCESS_NOT_FOUND,
                 detail=f"No process with PID {pid}",
             )
 

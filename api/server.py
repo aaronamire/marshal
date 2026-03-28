@@ -235,6 +235,7 @@ async def _notify_watcher_reload() -> None:
 
 class IntentRequest(BaseModel):
     text: str
+    wayland_display: str | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -296,11 +297,82 @@ def _scan_for_injections(results: dict) -> tuple[bool, str]:
     return False, ""
 
 
+def _format_result_text(goal_spec: dict, results: dict) -> str:
+    """Build a human-readable one-liner from execution results."""
+    parts: list[str] = []
+    for action in goal_spec.get("actions", []):
+        aid = action.get("action_id", "")
+        r = results.get(aid)
+        if not isinstance(r, dict):
+            continue
+        if "error" in r:
+            parts.append(r["error"])
+            continue
+        agent = action.get("agent", "")
+        atype = action.get("type", "").upper()
+        if agent == "system":
+            if "launched" in r:
+                parts.append(f"Launched {r['launched']} (PID {r.get('pid', '?')})")
+            elif "terminated" in r:
+                parts.append(f"Terminated {r.get('target', '?')} ({r.get('count', 0)} process{'es' if r.get('count', 1) != 1 else ''})")
+            elif "percent" in r:
+                qt = action.get("params", {}).get("query_type", "")
+                if qt == "memory":
+                    parts.append(f"RAM: {r.get('used_gb', '?')} GB used / {r.get('total_gb', '?')} GB total ({r.get('percent', '?')}%)")
+                elif qt == "cpu":
+                    s = f"CPU: {r.get('usage_percent', '?')}%"
+                    if r.get("temp_celsius"):
+                        s += f", {r['temp_celsius']}°C"
+                    parts.append(s)
+                elif qt == "disk":
+                    parts.append(f"Disk: {r.get('used_gb', '?')} GB used / {r.get('total_gb', '?')} GB total ({r.get('percent', '?')}%)")
+                else:
+                    parts.append(f"{qt}: {r.get('percent', '?')}%")
+            elif "uptime_seconds" in r:
+                h = int(r["uptime_seconds"]) // 3600
+                m = (int(r["uptime_seconds"]) % 3600) // 60
+                parts.append(f"Uptime: {h}h {m}m")
+            elif "processes" in r:
+                top3 = r["processes"][:3]
+                names = ", ".join(p.get("name", "?") for p in top3)
+                parts.append(f"{r.get('count', '?')} processes (top: {names})")
+        elif agent == "file":
+            if atype == "QUERY" and "files" in r:
+                n = r.get("count", len(r["files"]))
+                if n == 0:
+                    parts.append("No files found")
+                else:
+                    # Show up to 50 files with one per line for readability
+                    sample = r["files"][:50]
+                    names = "\n".join(
+                        f"  {f.get('name', f)}" if isinstance(f, dict) else f"  {f}"
+                        for f in sample
+                    )
+                    suffix = f"\n  … +{n - 50} more" if n > 50 else ""
+                    parts.append(f"{n} file(s):\n{names}{suffix}")
+            elif atype == "READ" and "content" in r:
+                length = r.get("content_length", len(r.get("content", "")))
+                parts.append(f"Read {length} chars")
+            elif atype in ("WRITE", "DELETE", "MOVE", "COPY"):
+                if r.get("created") == "directory":
+                    parts.append(f"Created folder: {r.get('path', '?')}")
+                else:
+                    parts.append(f"{atype.capitalize()} done")
+        elif agent == "web":
+            if "results" in r:
+                n = r.get("result_count", len(r["results"]))
+                parts.append(f"{n} web result(s)")
+            elif "content" in r:
+                parts.append(f"Fetched {r.get('url', 'page')}")
+    return " · ".join(parts) if parts else ""
+
+
 def _build_result_response(
     goal_spec: dict, results: dict, summary: str, duration_ms: float
 ) -> dict:
     injection_detected, injection_content = _scan_for_injections(results)
     auth = goal_spec.get("authorization", {})
+    result_text = _format_result_text(goal_spec, results)
 
     resp = {
         "intent_id": goal_spec["intent_id"],
@@ -318,6 +390,7 @@ def _build_result_response(
         "authorization": auth,
         "results": results,
         "summary": summary,
+        "result_text": result_text,
         "duration_ms": round(duration_ms, 1),
         "model_latency_ms": round(
             goal_spec.get("metadata", {}).get("parse_latency_ms", 0), 1
@@ -359,6 +432,12 @@ async def plan_intent(body: IntentRequest):
         raise HTTPException(status_code=500, detail=e.user_message)
 
     intent_id = goal_spec["intent_id"]
+
+    # Thread compositor's WAYLAND_DISPLAY into goal_spec so launched apps
+    # connect to the correct compositor session.
+    if body.wayland_display:
+        goal_spec.setdefault("metadata", {})["wayland_display"] = body.wayland_display
+
     _store_plan(intent_id, goal_spec)
 
     return {

@@ -24,9 +24,10 @@
 #define INPUT_PADDING_L   SPACE_L     /* 16px */
 #define INPUT_INDICATOR_W  3
 #define TASKBAR_ICON_W    52          /* left zone: OS icon */
-#define TASKBAR_APPS_W    120         /* right zone: running apps */
+#define TASKBAR_APPS_W    120         /* legacy — still used by hit-test */
 #define TASKBAR_DOT_R     4           /* activity dot radius */
 #define TASKBAR_DOT_GAP   10          /* gap between dots */
+#define HISTORY_ICON_W    32          /* history toggle icon zone */
 
 /* Feed area */
 #define FEED_PADDING_T    SPACE_2XL   /* 24px */
@@ -40,6 +41,16 @@
 #define OVERLAY_BUTTON_H   36
 #define OVERLAY_BUTTON_R    6
 #define OVERLAY_BUTTON_GAP SPACE_M  /* 12px between buttons */
+
+/* Status indicators (bottom bar right zone) */
+#define STATUS_PAD_H      10          /* right-edge padding */
+
+/* Quick-settings dropdown */
+#define DROPDOWN_W        280
+#define DROPDOWN_PAD      16
+#define DROPDOWN_RADIUS    8
+#define DROPDOWN_TOGGLE_R  6          /* toggle dot radius */
+#define DROPDOWN_SECTION_GAP SPACE_L  /* between sections */
 
 /* Misc */
 #define SEPARATOR_H        1

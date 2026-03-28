@@ -89,6 +89,31 @@ _rule(
     lambda m: {"source": _norm(m.group(1)), "destination": _norm(m.group(2))},
 )
 
+# WRITE (directory) — "create folder ~/new", "mkdir ~/projects/test",
+# "make directory ~/stuff", "create a folder called test in ~/Downloads"
+_rule(
+    r'^\s*(?:create|make)\s+(?:a\s+)?(?:folder|directory|dir)\s+(?:called\s+)?'
+    + _PATH + r'(?:\s+(?:folder|directory|dir))?\s*$',
+    "WRITE", False,
+    lambda m: {"path": _norm(m.group(1)), "content": "", "is_directory": True},
+)
+
+# "create a folder called <name> in ~/path"
+_rule(
+    r'^\s*(?:create|make)\s+(?:a\s+)?(?:folder|directory|dir)\s+(?:called\s+)?'
+    r'(\w[\w\.\-]*)\s+in\s+' + _PATH + r'(?:\s+(?:folder|directory|dir))?\s*$',
+    "WRITE", False,
+    lambda m: {"path": _norm(m.group(2)) + "/" + m.group(1).strip(),
+               "content": "", "is_directory": True},
+)
+
+# "mkdir ~/path"
+_rule(
+    r'^\s*mkdir\s+' + _PATH + r'\s*$',
+    "WRITE", False,
+    lambda m: {"path": _norm(m.group(1)), "content": "", "is_directory": True},
+)
+
 # DELETE — "delete ~/tmp/file.txt", "remove /tmp/foo", "rm ~/junk.txt"
 _rule(
     r'^\s*(?:delete|remove|rm)\s+' + _PATH + r'\s*$',
@@ -112,7 +137,16 @@ _rule(
 
 # QUERY (list directory) — "list ~/dir", "ls ~/projects", "list files in ~/dir"
 _rule(
-    r'^\s*(?:list(?:\s+files?(?:\s+in)?)?|ls)\s+' + _PATH + r'\s*$',
+    r'^\s*(?:list(?:\s+(?:all\s+)?files?(?:\s+in)?)?|ls)\s+' + _PATH
+    + r'(?:\s+(?:folder|directory|dir))?\s*$',
+    "QUERY", False,
+    lambda m: {"path": _norm(m.group(1)), "search_type": "name"},
+)
+
+# QUERY (show files) — "show files in ~/dir", "show all files in ~/trash folder"
+_rule(
+    r'^\s*show\s+(?:all\s+)?files?\s+in\s+' + _PATH
+    + r'(?:\s+(?:folder|directory|dir))?\s*$',
     "QUERY", False,
     lambda m: {"path": _norm(m.group(1)), "search_type": "name"},
 )
@@ -123,7 +157,23 @@ _rule(
     "QUERY", False,
     lambda m: {
         "pattern": _norm(m.group(1)),
-        **({"path": _norm(m.group(2))} if m.group(2) else {}),
+        "path": _norm(m.group(2)) if m.group(2) else "~",
+        "recursive": True,
+        "search_type": "glob",
+    },
+)
+
+# QUERY (natural-language find) — "find all files in ~/dir", "find files in ~/dev",
+# "find everything in ~/trash", "find all files in ~/trash folder"
+# The trailing "folder"/"directory"/"dir" is optional noise — ignored.
+_rule(
+    r'^\s*find\s+(?:all\s+)?(?:files?|everything)\s+in\s+' + _PATH
+    + r'(?:\s+(?:folder|directory|dir))?\s*$',
+    "QUERY", False,
+    lambda m: {
+        "path": _norm(m.group(1)),
+        "pattern": "*",
+        "recursive": True,
         "search_type": "glob",
     },
 )
@@ -189,6 +239,10 @@ def _terminate_rule(pattern: str) -> None:
 
 # Launch patterns: "open firefox", "launch gimp", "start htop", "run vlc"
 _launch_rule(r'^\s*(?:open|launch|start|run)\s+' + _APP_NAME + r'\s*$')
+
+# Terminal-specific patterns: "open a terminal", "new terminal", "open a new terminal"
+_launch_rule(r'^\s*(?:open|launch|start|run)\s+(?:a\s+)?(?:new\s+)?(terminal)\s*$')
+_launch_rule(r'^\s*(?:new|give\s+me\s+a)\s+(terminal)\s*$')
 
 # Terminate patterns: "close firefox", "kill firefox", "quit vlc", "terminate gimp"
 _terminate_rule(r'^\s*(?:close|kill|quit|terminate|stop)\s+' + _APP_NAME + r'\s*$')

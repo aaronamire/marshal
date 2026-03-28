@@ -5,7 +5,9 @@
 #include "geometry.h"
 #include "feed.h"
 #include "input.h"
+#include "status.h"
 #include <math.h>
+#include <jpeglib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,6 +99,8 @@ struct leaves_renderer *renderer_create(void) {
 	r->font_overlay_button = pango_font_description_from_string(FONT_DESC_OVERLAY_BUTTON);
 
 	r->inference_online = true;
+	r->card_sel.card_idx = -1;
+	r->card_hit_count = 0;
 
 	return r;
 }
@@ -119,6 +123,7 @@ void renderer_destroy(struct leaves_renderer *r) {
 	pango_font_description_free(r->font_overlay_body);
 	pango_font_description_free(r->font_overlay_mono);
 	pango_font_description_free(r->font_overlay_button);
+	if (r->wallpaper) cairo_surface_destroy(r->wallpaper);
 	free(r);
 }
 
@@ -134,7 +139,7 @@ void renderer_resize(struct leaves_renderer *r, int width, int height) {
 /* ── Measure card height ── */
 
 static int measure_card_height(struct leaves_renderer *r,
-		LeavesIntent *intent) {
+		LeavesIntent *intent, bool expanded) {
 	cairo_t *cr = r->cr;
 	int inner_w = r->width - 2 * CARD_MARGIN_H - CARD_INDICATOR_W
 		- CARD_PADDING_H * 2;
@@ -197,6 +202,21 @@ static int measure_card_height(struct leaves_renderer *r,
 			pango_layout_get_pixel_size(l2, &l2w, &l2h);
 			g_object_unref(l2);
 			h += l2h + SPACE_XS;
+		}
+
+		/* Result summary */
+		if (intent->result_summary[0]) {
+			PangoLayout *rs = create_layout(cr, r->font_body, 0);
+			pango_layout_set_text(rs, intent->result_summary, -1);
+			pango_layout_set_width(rs, inner_w * PANGO_SCALE);
+			pango_layout_set_wrap(rs, PANGO_WRAP_WORD_CHAR);
+			if (!expanded)
+				pango_layout_set_height(rs, -4);
+			/* expanded: no height limit — show all content */
+			int rsw, rsh;
+			pango_layout_get_pixel_size(rs, &rsw, &rsh);
+			g_object_unref(rs);
+			h += rsh + SPACE_S;
 		}
 
 		/* Injection block height */
@@ -274,7 +294,7 @@ static struct color indicator_for_state(LeavesCardState state, float opacity) {
 /* ── Draw a single intent card ── */
 
 static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
-		int y_base) {
+		int y_base, bool selected, int card_index, bool expanded) {
 	cairo_t *cr = r->cr;
 	int card_w = r->width - 2 * CARD_MARGIN_H;
 	int card_x = CARD_MARGIN_H;
@@ -285,7 +305,7 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 	float y_off = intent->anim_y.pos;
 	int card_y = y_base + (int)y_off;
 
-	int card_h = measure_card_height(r, intent);
+	int card_h = measure_card_height(r, intent, expanded);
 
 	/* Dim cancelled cards */
 	float text_dim = (intent->state == CARD_STATE_CANCELLED) ? 0.4f : 1.0f;
@@ -302,12 +322,17 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 	/* Card border */
 	cairo_save(cr);
 	rounded_rect(cr, card_x, card_y, card_w, card_h, CARD_RADIUS);
-	{
+	if (selected) {
+		struct color c = ACCENT_BLUE;
+		cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
+			c.b / 255.0, 0.6 * opacity);
+		cairo_set_line_width(cr, 1.5);
+	} else {
 		struct color c = BORDER_CARD;
 		cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
 			c.b / 255.0, (c.a / 255.0) * opacity);
+		cairo_set_line_width(cr, 1.0);
 	}
-	cairo_set_line_width(cr, 1.0);
 	cairo_stroke(cr);
 	cairo_restore(cr);
 
@@ -335,6 +360,10 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 	int text_y = card_y + CARD_PADDING_V;
 	int inner_w = card_w - CARD_INDICATOR_W - CARD_PADDING_H * 2;
 
+	/* Track combined selectable text area for hit-testing */
+	int sel_text_start_y = text_y;  /* top of selectable region */
+	int result_text_y = 0;          /* y of result summary (set later) */
+
 	/* LINE 1: intent natural text */
 	{
 		PangoLayout *layout = create_layout(cr, r->font_intent_title, 0);
@@ -343,6 +372,47 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 		pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 		pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
 		pango_layout_set_height(layout, -2);
+
+		/* Draw selection highlight behind title text */
+		if (r->card_sel.card_idx == card_index &&
+				r->card_sel.anchor != r->card_sel.focus) {
+			int sel_s = r->card_sel.anchor < r->card_sel.focus
+				? r->card_sel.anchor : r->card_sel.focus;
+			int sel_e = r->card_sel.anchor < r->card_sel.focus
+				? r->card_sel.focus : r->card_sel.anchor;
+			int title_len = (int)strlen(intent->natural_text);
+			if (sel_s < title_len && sel_e > 0) {
+				int s = sel_s < 0 ? 0 : sel_s;
+				int e = sel_e > title_len ? title_len : sel_e;
+				/* Use Pango's line-based index_to_x for each line */
+				PangoLayoutIter *iter = pango_layout_get_iter(layout);
+				do {
+					PangoRectangle logical;
+					pango_layout_iter_get_line_extents(iter, NULL, &logical);
+					PangoLayoutLine *line = pango_layout_iter_get_line_readonly(iter);
+					int ls = line->start_index;
+					int le = ls + line->length;
+					int cs = s > ls ? s : ls;
+					int ce = e < le ? e : le;
+					if (cs < ce) {
+						int x1, x2;
+						pango_layout_line_index_to_x(line, cs, FALSE, &x1);
+						pango_layout_line_index_to_x(line, ce, FALSE, &x2);
+						if (x1 > x2) { int tmp = x1; x1 = x2; x2 = tmp; }
+						cairo_save(cr);
+						cairo_set_source_rgba(cr, 0.14, 0.39, 0.92, 0.3);
+						cairo_rectangle(cr,
+							text_x + (double)x1 / PANGO_SCALE,
+							text_y + (double)logical.y / PANGO_SCALE,
+							(double)(x2 - x1) / PANGO_SCALE,
+							(double)logical.height / PANGO_SCALE);
+						cairo_fill(cr);
+						cairo_restore(cr);
+					}
+				} while (pango_layout_iter_next_line(iter));
+				pango_layout_iter_free(iter);
+			}
+		}
 
 		cairo_move_to(cr, text_x, text_y);
 		if (state_is_pending(intent->state) ||
@@ -569,6 +639,82 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 			g_object_unref(layout);
 		}
 
+		/* Result summary text */
+		result_text_y = text_y;  /* track for hit-test */
+		if (intent->result_summary[0]) {
+			PangoLayout *layout = create_layout(cr,
+				r->font_body, 0);
+			pango_layout_set_text(layout,
+				intent->result_summary, -1);
+			pango_layout_set_width(layout,
+				inner_w * PANGO_SCALE);
+			pango_layout_set_wrap(layout,
+				PANGO_WRAP_WORD_CHAR);
+			if (!expanded)
+				pango_layout_set_height(layout, -4);
+			/* expanded: no height limit — show full content */
+			if (!expanded)
+				pango_layout_set_ellipsize(layout,
+					PANGO_ELLIPSIZE_END);
+
+			/* Draw selection highlight for result text */
+			if (r->card_sel.card_idx == card_index &&
+					r->card_sel.anchor != r->card_sel.focus) {
+				int title_len = (int)strlen(intent->natural_text);
+				int base_off = title_len + 1; /* +1 for \n separator */
+				int rlen = (int)strlen(intent->result_summary);
+				int sel_s = r->card_sel.anchor < r->card_sel.focus
+					? r->card_sel.anchor : r->card_sel.focus;
+				int sel_e = r->card_sel.anchor < r->card_sel.focus
+					? r->card_sel.focus : r->card_sel.anchor;
+				int rs = sel_s - base_off;
+				int re = sel_e - base_off;
+				if (rs < rlen && re > 0) {
+					if (rs < 0) rs = 0;
+					if (re > rlen) re = rlen;
+					PangoLayoutIter *iter = pango_layout_get_iter(layout);
+					do {
+						PangoRectangle logical;
+						pango_layout_iter_get_line_extents(iter, NULL, &logical);
+						PangoLayoutLine *line = pango_layout_iter_get_line_readonly(iter);
+						int ls = line->start_index;
+						int le = ls + line->length;
+						int cs = rs > ls ? rs : ls;
+						int ce = re < le ? re : le;
+						if (cs < ce) {
+							int x1, x2;
+							pango_layout_line_index_to_x(line, cs, FALSE, &x1);
+							pango_layout_line_index_to_x(line, ce, FALSE, &x2);
+							if (x1 > x2) { int tmp = x1; x1 = x2; x2 = tmp; }
+							cairo_save(cr);
+							cairo_set_source_rgba(cr, 0.14, 0.39, 0.92, 0.3);
+							cairo_rectangle(cr,
+								text_x + (double)x1 / PANGO_SCALE,
+								text_y + (double)logical.y / PANGO_SCALE,
+								(double)(x2 - x1) / PANGO_SCALE,
+								(double)logical.height / PANGO_SCALE);
+							cairo_fill(cr);
+							cairo_restore(cr);
+						}
+					} while (pango_layout_iter_next_line(iter));
+					pango_layout_iter_free(iter);
+				}
+			}
+
+			cairo_move_to(cr, text_x, text_y);
+			{
+				struct color c = TEXT_PRIMARY;
+				cairo_set_source_rgba(cr, c.r / 255.0,
+					c.g / 255.0, c.b / 255.0,
+					(c.a / 255.0) * opacity * text_dim);
+			}
+			pango_cairo_show_layout(cr, layout);
+			int rsw, rsh;
+			pango_layout_get_pixel_size(layout, &rsw, &rsh);
+			text_y += rsh + SPACE_S;
+			g_object_unref(layout);
+		}
+
 		/* Injection detection block */
 		if (intent->injection_detected &&
 				intent->injection_content[0]) {
@@ -728,6 +874,78 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 			pango_cairo_show_layout(cr, layout);
 			g_object_unref(layout);
 		}
+	}
+
+	/* Record card text hit-test geometry for mouse selection */
+	if (card_index >= 0 && r->card_hit_count < 200) {
+		struct card_text_hit *hit = &r->card_hits[r->card_hit_count];
+		memset(hit, 0, sizeof(*hit));
+		hit->card_idx = card_index;
+		hit->text_x = text_x;
+		hit->text_w = inner_w;
+
+		/* Title region */
+		hit->title_y = sel_text_start_y;
+		int tl = (int)strlen(intent->natural_text);
+		if (tl > (int)sizeof(hit->title) - 1)
+			tl = (int)sizeof(hit->title) - 1;
+		memcpy(hit->title, intent->natural_text, tl);
+		hit->title[tl] = '\0';
+		hit->title_len = tl;
+
+		/* Measure title height with the correct font */
+		{
+			PangoLayout *tmp = create_layout(r->cr,
+				r->font_intent_title, 0);
+			pango_layout_set_text(tmp, hit->title, hit->title_len);
+			pango_layout_set_width(tmp, inner_w * PANGO_SCALE);
+			pango_layout_set_wrap(tmp, PANGO_WRAP_WORD_CHAR);
+			pango_layout_set_height(tmp, -2);
+			int tw, th;
+			pango_layout_get_pixel_size(tmp, &tw, &th);
+			hit->title_h = th;
+			g_object_unref(tmp);
+		}
+
+		/* Result region */
+		if (intent->result_summary[0]) {
+			hit->result_y = result_text_y;
+			int rl = (int)strlen(intent->result_summary);
+			if (rl > (int)sizeof(hit->result) - 1)
+				rl = (int)sizeof(hit->result) - 1;
+			memcpy(hit->result, intent->result_summary, rl);
+			hit->result[rl] = '\0';
+			hit->result_len = rl;
+
+			/* Measure result height */
+			PangoLayout *tmp = create_layout(r->cr,
+				r->font_body, 0);
+			pango_layout_set_text(tmp, hit->result, hit->result_len);
+			pango_layout_set_width(tmp, inner_w * PANGO_SCALE);
+			pango_layout_set_wrap(tmp, PANGO_WRAP_WORD_CHAR);
+			if (!expanded)
+				pango_layout_set_height(tmp, -4);
+			int rw, rh;
+			pango_layout_get_pixel_size(tmp, &rw, &rh);
+			hit->result_h = rh;
+			g_object_unref(tmp);
+		}
+
+		/* Build combined text for copy: title + \n + result */
+		int off = 0;
+		memcpy(hit->text, hit->title, hit->title_len);
+		off = hit->title_len;
+		if (hit->result_len > 0) {
+			hit->text[off++] = '\n';
+			int rl = hit->result_len;
+			if (off + rl > (int)sizeof(hit->text) - 1)
+				rl = (int)sizeof(hit->text) - 1 - off;
+			memcpy(hit->text + off, hit->result, rl);
+			off += rl;
+		}
+		hit->text[off] = '\0';
+		hit->text_len = off;
+		r->card_hit_count++;
 	}
 
 	return card_h;
@@ -970,6 +1188,122 @@ static int draw_watcher_cards(struct leaves_renderer *r,
 
 /* ── Empty state ── */
 
+/* ── JPEG wallpaper loader ── */
+
+void renderer_load_wallpaper(struct leaves_renderer *r, const char *path) {
+	if (r->wallpaper) {
+		cairo_surface_destroy(r->wallpaper);
+		r->wallpaper = NULL;
+	}
+	FILE *f = fopen(path, "rb");
+	if (!f) return;
+
+	struct jpeg_decompress_struct cinfo;
+	struct jpeg_error_mgr jerr;
+	cinfo.err = jpeg_std_error(&jerr);
+	jpeg_create_decompress(&cinfo);
+	jpeg_stdio_src(&cinfo, f);
+	jpeg_read_header(&cinfo, TRUE);
+	cinfo.out_color_space = JCS_RGB;
+	jpeg_start_decompress(&cinfo);
+
+	int w = (int)cinfo.output_width;
+	int h = (int)cinfo.output_height;
+	int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, w);
+	unsigned char *data = calloc(1, (size_t)stride * h);
+	unsigned char *row  = malloc((size_t)w * 3);
+
+	while ((int)cinfo.output_scanline < h) {
+		JSAMPROW rp = row;
+		jpeg_read_scanlines(&cinfo, &rp, 1);
+		int y = (int)cinfo.output_scanline - 1;
+		uint32_t *px = (uint32_t *)(data + y * stride);
+		for (int x = 0; x < w; x++)
+			px[x] = 0xFF000000u |
+				((uint32_t)row[x * 3]     << 16) |
+				((uint32_t)row[x * 3 + 1] << 8)  |
+				 (uint32_t)row[x * 3 + 2];
+	}
+	free(row);
+	jpeg_finish_decompress(&cinfo);
+	jpeg_destroy_decompress(&cinfo);
+	fclose(f);
+
+	/* If image is portrait (taller than wide), rotate 90° CW for landscape */
+	if (h > w) {
+		int rw = h, rh = w;
+		int rstride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, rw);
+		unsigned char *rdata = calloc(1, (size_t)rstride * rh);
+		for (int sy = 0; sy < h; sy++) {
+			uint32_t *src_row = (uint32_t *)(data + sy * stride);
+			for (int sx = 0; sx < w; sx++) {
+				/* (sx, sy) → (h-1-sy, sx) rotated 90° CW */
+				int dx = h - 1 - sy;
+				int dy = sx;
+				uint32_t *dst_row = (uint32_t *)(rdata + dy * rstride);
+				dst_row[dx] = src_row[sx];
+			}
+		}
+		free(data);
+		data = rdata;
+		w = rw;
+		h = rh;
+		stride = rstride;
+	}
+
+	r->wallpaper = cairo_image_surface_create_for_data(
+		data, CAIRO_FORMAT_ARGB32, w, h, stride);
+
+	/* Tie pixel buffer lifetime to the surface */
+	static const cairo_user_data_key_t key;
+	cairo_surface_set_user_data(r->wallpaper, &key, data, free);
+}
+
+/* Draw wallpaper in "cover" mode within [0, y .. y+h] */
+static void draw_wallpaper(struct leaves_renderer *r, int y, int h) {
+	if (!r->wallpaper) return;
+	cairo_t *cr = r->cr;
+	int iw = cairo_image_surface_get_width(r->wallpaper);
+	int ih = cairo_image_surface_get_height(r->wallpaper);
+
+	double sx = (double)r->width / iw;
+	double sy = (double)h / ih;
+	double sc = sx > sy ? sx : sy;           /* cover: use larger */
+	double ox = (r->width - iw * sc) / 2.0;
+	double oy = y + (h - ih * sc) / 2.0;
+
+	cairo_save(cr);
+	cairo_rectangle(cr, 0, y, r->width, h);
+	cairo_clip(cr);
+	cairo_translate(cr, ox, oy);
+	cairo_scale(cr, sc, sc);
+	cairo_set_source_surface(cr, r->wallpaper, 0, 0);
+	cairo_paint(cr);
+	cairo_restore(cr);
+}
+
+/* ── History-toggle icon (3-line list) ── */
+
+static void draw_history_icon(cairo_t *cr, int cx, int cy, bool active) {
+	struct color c = active ? ACCENT_BLUE : TEXT_SECONDARY;
+	set_color(cr, c);
+
+	int lw = 12;       /* line width */
+	int gap = 5;       /* vertical gap between lines */
+	int lx = cx - lw / 2;
+	int top = cy - gap;
+
+	for (int i = 0; i < 3; i++) {
+		int y = top + i * gap;
+		/* Bullet */
+		cairo_arc(cr, lx - 3, y, 1.3, 0, 2 * M_PI);
+		cairo_fill(cr);
+		/* Line */
+		rounded_rect(cr, lx, y - 0.8, lw, 1.6, 0.8);
+		cairo_fill(cr);
+	}
+}
+
 static void draw_empty_state(struct leaves_renderer *r, int top, int bottom) {
 	cairo_t *cr = r->cr;
 	int center_x = r->width / 2;
@@ -1034,6 +1368,69 @@ static void draw_status_banner(struct leaves_renderer *r) {
 
 /* ── Taskbar (input bar + OS icon + running apps) ── */
 
+/* ── Status bar icons (Cairo-drawn, no icon font dependency) ── */
+
+static void draw_battery_icon(cairo_t *cr, int x, int cy, int pct,
+		bool charging) {
+	int bw = 18, bh = 10;
+	int by = cy - bh / 2;
+	rounded_rect(cr, x, by, bw, bh, 2);
+	set_color(cr, TEXT_SECONDARY);
+	cairo_set_line_width(cr, 1.0);
+	cairo_stroke(cr);
+	set_color(cr, TEXT_SECONDARY);
+	cairo_rectangle(cr, x + bw, cy - 2, 2, 4);
+	cairo_fill(cr);
+	int fill_w = (bw - 4) * pct / 100;
+	if (fill_w > 0) {
+		struct color fc;
+		if (charging)        fc = ACCENT_BLUE;
+		else if (pct <= 20)  fc = ACCENT_RED;
+		else if (pct <= 40)  fc = ACCENT_AMBER;
+		else                 fc = ACCENT_GREEN;
+		set_color(cr, fc);
+		cairo_rectangle(cr, x + 2, by + 2, fill_w, bh - 4);
+		cairo_fill(cr);
+	}
+}
+
+static void draw_wifi_icon(cairo_t *cr, double cx, double cy,
+		bool connected, int signal) {
+	struct color c = connected ? TEXT_SECONDARY : TEXT_TERTIARY;
+	set_color(cr, c);
+	cairo_arc(cr, cx, cy + 3, 1.5, 0, 2 * M_PI);
+	cairo_fill(cr);
+	for (int i = 0; i < 3; i++) {
+		double r = 4.0 + i * 3.0;
+		bool active = connected && signal >= (i + 1) * 25;
+		double a = active ? (c.a / 255.0) : 0.12;
+		cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
+			c.b / 255.0, a);
+		cairo_set_line_width(cr, 1.5);
+		cairo_arc(cr, cx, cy + 3, r, -M_PI * 0.75, -M_PI * 0.25);
+		cairo_stroke(cr);
+	}
+}
+
+static void draw_bt_icon(cairo_t *cr, double cx, double cy, bool enabled) {
+	struct color c = enabled ? ACCENT_BLUE : TEXT_TERTIARY;
+	set_color(cr, c);
+	cairo_set_line_width(cr, 1.3);
+	double h = 12, hw = 4;
+	double top = cy - h / 2, bot = cy + h / 2;
+	cairo_move_to(cr, cx, top);
+	cairo_line_to(cr, cx, bot);
+	cairo_stroke(cr);
+	cairo_move_to(cr, cx, top);
+	cairo_line_to(cr, cx + hw, cy - h / 6);
+	cairo_line_to(cr, cx - hw, cy + h / 6);
+	cairo_stroke(cr);
+	cairo_move_to(cr, cx, bot);
+	cairo_line_to(cr, cx + hw, cy + h / 6);
+	cairo_line_to(cr, cx - hw, cy - h / 6);
+	cairo_stroke(cr);
+}
+
 static void draw_taskbar(struct leaves_renderer *r,
 		struct leaves_input *input, struct leaves_feed *feed) {
 	cairo_t *cr = r->cr;
@@ -1062,7 +1459,8 @@ static void draw_taskbar(struct leaves_renderer *r,
 
 	/* ── Center zone: input field ── */
 	int input_x = TASKBAR_ICON_W + INPUT_PADDING_L;
-	int input_max_x = r->width - TASKBAR_APPS_W;
+	int input_max_x = r->input_field_right_x > 0
+		? r->input_field_right_x : (r->width - TASKBAR_APPS_W);
 
 	PangoLayout *layout = create_layout(cr, r->font_input, 0);
 	pango_layout_set_width(layout,
@@ -1079,7 +1477,30 @@ static void draw_taskbar(struct leaves_renderer *r,
 	} else {
 		pango_layout_set_text(layout, input->buf, input->len);
 		pango_layout_get_pixel_size(layout, &lw, &lh);
-		cairo_move_to(cr, input_x, bar_y + (INPUT_HEIGHT - lh) / 2);
+		int text_y = bar_y + (INPUT_HEIGHT - lh) / 2;
+
+		/* Selection highlight — drawn before text so text renders on top */
+		if (input->sel_anchor != -1 &&
+				input->sel_anchor != input->sel_focus) {
+			int sel_s = input->sel_anchor < input->sel_focus
+				? input->sel_anchor : input->sel_focus;
+			int sel_e = input->sel_anchor < input->sel_focus
+				? input->sel_focus : input->sel_anchor;
+
+			PangoRectangle sr, er;
+			pango_layout_get_cursor_pos(layout, sel_s, &sr, NULL);
+			pango_layout_get_cursor_pos(layout, sel_e, &er, NULL);
+
+			int hx  = input_x + sr.x / PANGO_SCALE;
+			int hx2 = input_x + er.x / PANGO_SCALE;
+			cairo_set_source_rgba(cr,
+				ACCENT_BLUE.r / 255.0, ACCENT_BLUE.g / 255.0,
+				ACCENT_BLUE.b / 255.0, 0.18);
+			cairo_rectangle(cr, hx, text_y - 1, hx2 - hx, lh + 2);
+			cairo_fill(cr);
+		}
+
+		cairo_move_to(cr, input_x, text_y);
 		set_color(cr, TEXT_PRIMARY);
 		pango_cairo_show_layout(cr, layout);
 	}
@@ -1117,76 +1538,284 @@ static void draw_taskbar(struct leaves_renderer *r,
 
 	g_object_unref(layout);
 
-	/* ── Right zone: running apps / active intents ── */
-	/* Separator before apps zone */
-	set_color(cr, BORDER_SEPARATOR);
-	cairo_rectangle(cr, r->width - TASKBAR_APPS_W, bar_y + 10, 1,
-		INPUT_HEIGHT - 20);
-	cairo_fill(cr);
+	/* ── Right zone: history icon + status indicators ── */
+	struct leaves_status *st = r->status;
+	int bar_cy = bar_y + INPUT_HEIGHT / 2;
 
-	/* Count active intents (pending, executing, awaiting confirm) */
-	int active_count = 0;
-	for (int i = 0; i < feed->count; i++) {
-		LeavesCardState s = feed->intents[i].state;
-		if (s == CARD_STATE_PENDING || s == CARD_STATE_EXECUTING ||
-				s == CARD_STATE_AWAITING_CONFIRM)
-			active_count++;
+	/* Build the right zone right-to-left */
+	int rx = r->width - STATUS_PAD_H;
+
+	/* Battery: icon + percentage */
+	if (st && st->battery_pct >= 0) {
+		char pstr[8];
+		snprintf(pstr, sizeof(pstr), "%d%%", st->battery_pct);
+		PangoLayout *bpl = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(bpl, pstr, -1);
+		int bpw, bph;
+		pango_layout_get_pixel_size(bpl, &bpw, &bph);
+		rx -= bpw;
+		cairo_move_to(cr, rx, bar_cy - bph / 2);
+		set_color(cr, TEXT_SECONDARY);
+		pango_cairo_show_layout(cr, bpl);
+		g_object_unref(bpl);
+		rx -= 22 + SPACE_XS;
+		draw_battery_icon(cr, rx, bar_cy,
+			st->battery_pct, st->battery_charging);
+		rx -= SPACE_S;
 	}
 
-	int apps_cx = r->width - TASKBAR_APPS_W / 2;
-	int apps_cy = bar_y + INPUT_HEIGHT / 2;
+	/* Bluetooth icon */
+	if (st && st->bt_available) {
+		rx -= 8;
+		draw_bt_icon(cr, rx, bar_cy, st->bt_enabled);
+		rx -= 8 + SPACE_S;
+	}
 
-	if (active_count > 0) {
-		/* Draw activity dots (max 5 visible) */
-		int dots = active_count > 5 ? 5 : active_count;
-		int total_w = dots * (TASKBAR_DOT_R * 2) +
-			(dots - 1) * TASKBAR_DOT_GAP;
-		int dot_x = apps_cx - total_w / 2 + TASKBAR_DOT_R;
+	/* WiFi icon */
+	rx -= 8;
+	draw_wifi_icon(cr, rx, bar_cy,
+		st ? st->wifi_connected : false,
+		st ? st->wifi_signal : 0);
+	rx -= 8 + SPACE_S;
 
-		for (int i = 0; i < dots; i++) {
-			/* Pulse animation for active dots */
-			double t = monotonic_time_s();
-			double phase = fmod(t + i * 0.3, 2.0);
-			double alpha_mult = phase < 1.0 ?
-				0.5 + 0.5 * phase : 0.5 + 0.5 * (2.0 - phase);
+	/* Keyboard layout */
+	if (st) {
+		PangoLayout *kbl = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(kbl, st->kb_layout, -1);
+		int kw2, kh2;
+		pango_layout_get_pixel_size(kbl, &kw2, &kh2);
+		rx -= kw2;
+		cairo_move_to(cr, rx, bar_cy - kh2 / 2);
+		set_color(cr, TEXT_SECONDARY);
+		pango_cairo_show_layout(cr, kbl);
+		g_object_unref(kbl);
+		rx -= SPACE_S;
+	}
 
-			struct color c = ACCENT_BLUE;
-			cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
-				c.b / 255.0, alpha_mult * 0.9);
-			cairo_arc(cr, dot_x, apps_cy,
-				TASKBAR_DOT_R, 0, 2 * M_PI);
+	/* Time */
+	if (st) {
+		PangoLayout *tl = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(tl, st->time_str, -1);
+		int tw2, th2;
+		pango_layout_get_pixel_size(tl, &tw2, &th2);
+		rx -= tw2;
+		cairo_move_to(cr, rx, bar_cy - th2 / 2);
+		set_color(cr, TEXT_PRIMARY);
+		pango_cairo_show_layout(cr, tl);
+		g_object_unref(tl);
+		rx -= SPACE_S;
+	}
+
+	/* Store where the status zone starts */
+	r->status_zone_left_x = rx;
+
+	/* Separator */
+	set_color(cr, BORDER_SEPARATOR);
+	cairo_rectangle(cr, rx, bar_y + 10, 1, INPUT_HEIGHT - 20);
+	cairo_fill(cr);
+	rx -= SPACE_XS;
+
+	/* History toggle icon */
+	bool hist_on = st ? st->history_open : false;
+	int hist_cx = rx - HISTORY_ICON_W / 2;
+	draw_history_icon(cr, hist_cx, bar_cy, hist_on);
+
+	/* Store history icon hit rect */
+	r->history_icon_x = rx - HISTORY_ICON_W;
+	r->history_icon_y = bar_y;
+	r->history_icon_w = HISTORY_ICON_W;
+	r->history_icon_h = INPUT_HEIGHT;
+
+	rx -= HISTORY_ICON_W;
+	r->input_field_right_x = rx;
+}
+
+/* (Icon functions moved above draw_taskbar.) */
+
+/* ── Quick-settings dropdown ── */
+
+static void draw_dropdown(struct leaves_renderer *r,
+		struct leaves_status *s) {
+	if (!s || !s->dropdown_open) return;
+	cairo_t *cr = r->cr;
+
+	int dx = r->width - DROPDOWN_W - STATUS_PAD_H;
+	if (dx < STATUS_PAD_H) dx = STATUS_PAD_H;
+	/* Will be positioned above the taskbar once we know content_h */
+	int dy = 0;  /* placeholder — computed below */
+
+	/* Measure content height */
+	int rows = 0;
+	int row_h = 28;  /* height per info row */
+
+	/* WiFi section: label + SSID */
+	rows += 2;
+	/* Bluetooth section: label + status */
+	if (s->bt_available) rows += 2;
+	/* Battery section: label + bar */
+	if (s->battery_pct >= 0) rows += 2;
+
+	int content_h = DROPDOWN_PAD + rows * row_h + DROPDOWN_PAD;
+	int dw = DROPDOWN_W;
+	int dh = content_h;
+	/* Position above the taskbar with a 4px gap */
+	dy = r->height - INPUT_HEIGHT - dh - 4;
+
+	/* Store geometry for hit-testing */
+	r->dropdown_x = dx;
+	r->dropdown_y = dy;
+	r->dropdown_w = dw;
+	r->dropdown_h = dh;
+
+	/* Shadow */
+	cairo_set_source_rgba(cr, 0, 0, 0, 0.08);
+	rounded_rect(cr, dx + 2, dy + 2, dw, dh, DROPDOWN_RADIUS);
+	cairo_fill(cr);
+
+	/* Background */
+	rounded_rect(cr, dx, dy, dw, dh, DROPDOWN_RADIUS);
+	set_color(cr, BG_OVERLAY_PANEL);
+	cairo_fill(cr);
+
+	/* Border */
+	rounded_rect(cr, dx, dy, dw, dh, DROPDOWN_RADIUS);
+	set_color(cr, BORDER_OVERLAY);
+	cairo_set_line_width(cr, 1.0);
+	cairo_stroke(cr);
+
+	/* Content */
+	int cx = dx + DROPDOWN_PAD;
+	int cy = dy + DROPDOWN_PAD;
+	int cw = dw - 2 * DROPDOWN_PAD;
+
+	/* ── WiFi section ── */
+	{
+		PangoLayout *lbl = create_layout(cr, r->font_status, 0);
+		pango_layout_set_text(lbl, "Wi-Fi", -1);
+		int lw, lh;
+		pango_layout_get_pixel_size(lbl, &lw, &lh);
+		cairo_move_to(cr, cx, cy + (row_h - lh) / 2);
+		set_color(cr, TEXT_PRIMARY);
+		pango_cairo_show_layout(cr, lbl);
+
+		/* Status dot — right-aligned */
+		double dot_x = cx + cw - DROPDOWN_TOGGLE_R;
+		double dot_cy = cy + row_h / 2.0;
+		if (s->wifi_connected) {
+			set_color(cr, ACCENT_GREEN);
+			cairo_arc(cr, dot_x, dot_cy, DROPDOWN_TOGGLE_R, 0, 2*M_PI);
 			cairo_fill(cr);
-
-			dot_x += TASKBAR_DOT_R * 2 + TASKBAR_DOT_GAP;
-		}
-
-		/* Show count if more than 5 */
-		if (active_count > 5) {
-			PangoLayout *cnt = create_layout(cr,
-				r->font_keyboard_hint, 0);
-			char cnt_str[8];
-			snprintf(cnt_str, sizeof(cnt_str), "+%d",
-				active_count - 5);
-			pango_layout_set_text(cnt, cnt_str, -1);
-			int cw, ch;
-			pango_layout_get_pixel_size(cnt, &cw, &ch);
-			cairo_move_to(cr, dot_x + SPACE_XS,
-				apps_cy - ch / 2);
+		} else {
 			set_color(cr, TEXT_TERTIARY);
-			pango_cairo_show_layout(cr, cnt);
-			g_object_unref(cnt);
+			cairo_arc(cr, dot_x, dot_cy, DROPDOWN_TOGGLE_R, 0, 2*M_PI);
+			cairo_set_line_width(cr, 1.0);
+			cairo_stroke(cr);
 		}
-	} else {
-		/* No active intents — show subtle idle indicator */
-		PangoLayout *idle = create_layout(cr,
-			r->font_keyboard_hint, TRACKING_CAPTION2);
-		pango_layout_set_text(idle, "idle", -1);
-		int iw, ih;
-		pango_layout_get_pixel_size(idle, &iw, &ih);
-		cairo_move_to(cr, apps_cx - iw / 2, apps_cy - ih / 2);
+		g_object_unref(lbl);
+		cy += row_h;
+
+		/* SSID / disconnected */
+		PangoLayout *ssid = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(ssid,
+			s->wifi_connected ? s->wifi_ssid : "Not connected", -1);
+		pango_layout_get_pixel_size(ssid, &lw, &lh);
+		cairo_move_to(cr, cx, cy + (row_h - lh) / 2);
+		set_color(cr, TEXT_SECONDARY);
+		pango_cairo_show_layout(cr, ssid);
+		g_object_unref(ssid);
+		cy += row_h;
+	}
+
+	/* ── Bluetooth section ── */
+	if (s->bt_available) {
+		/* Separator */
+		set_color(cr, BORDER_SEPARATOR);
+		cairo_rectangle(cr, cx, cy, cw, 1);
+		cairo_fill(cr);
+
+		PangoLayout *lbl = create_layout(cr, r->font_status, 0);
+		pango_layout_set_text(lbl, "Bluetooth", -1);
+		int lw, lh;
+		pango_layout_get_pixel_size(lbl, &lw, &lh);
+		cairo_move_to(cr, cx, cy + (row_h - lh) / 2);
+		set_color(cr, TEXT_PRIMARY);
+		pango_cairo_show_layout(cr, lbl);
+
+		double dot_x = cx + cw - DROPDOWN_TOGGLE_R;
+		double dot_cy = cy + row_h / 2.0;
+		if (s->bt_enabled) {
+			set_color(cr, ACCENT_BLUE);
+			cairo_arc(cr, dot_x, dot_cy, DROPDOWN_TOGGLE_R, 0, 2*M_PI);
+			cairo_fill(cr);
+		} else {
+			set_color(cr, TEXT_TERTIARY);
+			cairo_arc(cr, dot_x, dot_cy, DROPDOWN_TOGGLE_R, 0, 2*M_PI);
+			cairo_set_line_width(cr, 1.0);
+			cairo_stroke(cr);
+		}
+		g_object_unref(lbl);
+		cy += row_h;
+
+		PangoLayout *st = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(st,
+			s->bt_enabled ? "Enabled" : "Disabled", -1);
+		pango_layout_get_pixel_size(st, &lw, &lh);
+		cairo_move_to(cr, cx, cy + (row_h - lh) / 2);
+		set_color(cr, TEXT_SECONDARY);
+		pango_cairo_show_layout(cr, st);
+		g_object_unref(st);
+		cy += row_h;
+	}
+
+	/* ── Battery section ── */
+	if (s->battery_pct >= 0) {
+		/* Separator */
+		set_color(cr, BORDER_SEPARATOR);
+		cairo_rectangle(cr, cx, cy, cw, 1);
+		cairo_fill(cr);
+
+		PangoLayout *lbl = create_layout(cr, r->font_status, 0);
+		char batt_str[32];
+		snprintf(batt_str, sizeof(batt_str), "Battery  %d%%",
+			s->battery_pct);
+		pango_layout_set_text(lbl, batt_str, -1);
+		int lw, lh;
+		pango_layout_get_pixel_size(lbl, &lw, &lh);
+		cairo_move_to(cr, cx, cy + (row_h - lh) / 2);
+		set_color(cr, TEXT_PRIMARY);
+		pango_cairo_show_layout(cr, lbl);
+		g_object_unref(lbl);
+		cy += row_h;
+
+		/* Progress bar */
+		int bar_w = cw;
+		int bar_h = 6;
+		int bar_y = cy + (row_h - bar_h) / 2;
+		rounded_rect(cr, cx, bar_y, bar_w, bar_h, 3);
+		set_color(cr, FILL_CARD);
+		cairo_fill(cr);
+
+		int fill = bar_w * s->battery_pct / 100;
+		if (fill > 0) {
+			struct color fc;
+			if (s->battery_charging)      fc = ACCENT_BLUE;
+			else if (s->battery_pct <= 20) fc = ACCENT_RED;
+			else                           fc = ACCENT_GREEN;
+			rounded_rect(cr, cx, bar_y, fill, bar_h, 3);
+			set_color(cr, fc);
+			cairo_fill(cr);
+		}
+
+		/* Charging / discharging label */
+		PangoLayout *chl = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(chl,
+			s->battery_charging ? "Charging" : "On battery", -1);
+		pango_layout_get_pixel_size(chl, &lw, &lh);
+		cairo_move_to(cr, cx + bar_w - lw, bar_y + bar_h + 2);
 		set_color(cr, TEXT_TERTIARY);
-		pango_cairo_show_layout(cr, idle);
-		g_object_unref(idle);
+		pango_cairo_show_layout(cr, chl);
+		g_object_unref(chl);
+		cy += row_h;
 	}
 }
 
@@ -1332,6 +1961,18 @@ static void draw_auth_overlay(struct leaves_renderer *r,
 	int buttons_total = btn_cancel_w + OVERLAY_BUTTON_GAP + btn_confirm_w;
 	int btn_x = panel_x + panel_w - OVERLAY_PADDING - buttons_total;
 
+	/* Expose hit rects to compositor for mouse click handling */
+	r->overlay_cancel_x  = btn_x;
+	r->overlay_cancel_y  = cy;
+	r->overlay_cancel_w  = btn_cancel_w;
+	r->overlay_cancel_h  = OVERLAY_BUTTON_H;
+	int btn_confirm_x_save = btn_x + btn_cancel_w + OVERLAY_BUTTON_GAP;
+	r->overlay_confirm_x = btn_confirm_x_save;
+	r->overlay_confirm_y = cy;
+	r->overlay_confirm_w = btn_confirm_w;
+	r->overlay_confirm_h = OVERLAY_BUTTON_H;
+	r->overlay_buttons_valid = true;
+
 	/* Cancel button — outlined */
 	rounded_rect(cr, btn_x, cy, btn_cancel_w, OVERLAY_BUTTON_H,
 		OVERLAY_BUTTON_R);
@@ -1394,69 +2035,94 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 	if (!r->surface || !r->cr) return NULL;
 	cairo_t *cr = r->cr;
 
-	/* 1. Clear with BG_BASE */
-	set_color(cr, BG_BASE);
-	cairo_paint(cr);
+	/* Reset hit-test state */
+	r->overlay_buttons_valid = false;
+	r->card_hit_count = 0;
+
+	bool show_feed = r->status && r->status->history_open;
+	int wall_h = r->height - INPUT_HEIGHT;
+
+	/* 1. Background: wallpaper or plain white */
+	if (!show_feed && r->wallpaper) {
+		draw_wallpaper(r, 0, wall_h);
+	} else {
+		set_color(cr, BG_BASE);
+		cairo_paint(cr);
+	}
 
 	int top_offset = 0;
 
-	/* 2. Status banner */
+	/* 2. Inference-offline banner (floats over wallpaper) */
 	if (!r->inference_online) {
 		draw_status_banner(r);
 		top_offset = STATUS_BANNER_H;
 	}
 
-	/* Feed area bounds */
-	int feed_top = top_offset + FEED_PADDING_T;
-	int feed_bottom = r->height - INPUT_HEIGHT - SPACE_M;
-
 	pthread_mutex_lock(&feed->mutex);
 
-	/* 3. Briefing card (always at top when loaded) */
-	int briefing_h = 0;
-	if (feed->briefing.loaded && !feed->briefing.empty) {
-		briefing_h = draw_briefing_card(r, &feed->briefing, feed_top);
-		if (briefing_h > 0)
-			briefing_h += CARD_GAP;
-	}
-
-	/* 3b. Watcher cards (below briefing, above intents) */
-	int watchers_h = draw_watcher_cards(r, feed,
-		feed_top + briefing_h);
-
-	if (feed->count == 0 && !feed->briefing.loaded
-			&& feed->watcher_count == 0) {
-		draw_empty_state(r, feed_top + briefing_h + watchers_h,
-			feed_bottom);
-	} else if (feed->count > 0) {
-		/* 4. Clip feed area */
-		cairo_save(cr);
-		cairo_rectangle(cr, 0, top_offset,
-			r->width, r->height - INPUT_HEIGHT - top_offset);
-		cairo_clip(cr);
-
-		/* Calculate card heights */
-		int card_heights[MAX_INTENTS];
-		for (int i = 0; i < feed->count; i++) {
-			card_heights[i] = measure_card_height(r, &feed->intents[i]);
+	/* 3. Feed cards (only when history is open) */
+	if (show_feed) {
+		/* Semi-transparent scrim over wallpaper when history is open
+		 * so cards are readable */
+		if (r->wallpaper) {
+			cairo_set_source_rgba(cr, 1, 1, 1, 0.82);
+			cairo_rectangle(cr, 0, 0, r->width, wall_h);
+			cairo_fill(cr);
 		}
 
-		/* Draw cards bottom-up (newest at bottom) */
-		int y = feed_bottom - (int)feed->scroll_offset;
-		for (int i = feed->count - 1; i >= 0; i--) {
-			y -= card_heights[i];
-			if (y < r->height + 50 &&
-					y + card_heights[i] > top_offset - 50) {
-				draw_card(r, &feed->intents[i], y);
+		int feed_top = top_offset + FEED_PADDING_T;
+		int feed_bottom = r->height - INPUT_HEIGHT - SPACE_M;
+
+		/* Briefing */
+		int briefing_h = 0;
+		if (feed->briefing.loaded && !feed->briefing.empty) {
+			briefing_h = draw_briefing_card(r,
+				&feed->briefing, feed_top);
+			if (briefing_h > 0)
+				briefing_h += CARD_GAP;
+		}
+
+		/* Watchers */
+		int watchers_h = draw_watcher_cards(r, feed,
+			feed_top + briefing_h);
+
+		if (feed->count == 0 && !feed->briefing.loaded
+				&& feed->watcher_count == 0) {
+			draw_empty_state(r,
+				feed_top + briefing_h + watchers_h,
+				feed_bottom);
+		} else if (feed->count > 0) {
+			cairo_save(cr);
+			cairo_rectangle(cr, 0, top_offset,
+				r->width, r->height - INPUT_HEIGHT - top_offset);
+			cairo_clip(cr);
+
+			int card_heights[MAX_INTENTS];
+			for (int i = 0; i < feed->count; i++)
+				card_heights[i] = measure_card_height(r,
+					&feed->intents[i],
+					i == feed->expanded_card);
+
+			int y = feed_bottom + (int)feed->scroll_offset;
+			for (int i = feed->count - 1; i >= 0; i--) {
+				y -= card_heights[i];
+				if (y < r->height + 50 &&
+						y + card_heights[i] > top_offset - 50)
+					draw_card(r, &feed->intents[i], y,
+					i == feed->selected_card, i,
+					i == feed->expanded_card);
+				y -= CARD_GAP;
 			}
-			y -= CARD_GAP;
-		}
 
-		cairo_restore(cr);
+			cairo_restore(cr);
+		}
 	}
 
-	/* 5. Taskbar (always on top) */
+	/* 4. Taskbar (always on top) */
 	draw_taskbar(r, input, feed);
+
+	/* 5. Quick-settings dropdown */
+	draw_dropdown(r, r->status);
 
 	/* 6. Authorization overlay (on top of everything) */
 	if (feed->awaiting_confirm) {
@@ -1468,4 +2134,208 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 	cairo_surface_flush(r->surface);
 	*stride = cairo_image_surface_get_stride(r->surface);
 	return cairo_image_surface_get_data(r->surface);
+}
+
+int renderer_input_hit_test(struct leaves_renderer *r,
+		struct leaves_input *input, double panel_x) {
+	if (input->len == 0) return 0;
+
+	int input_x     = TASKBAR_ICON_W + INPUT_PADDING_L;
+	int input_max_x = r->input_field_right_x > 0
+		? r->input_field_right_x : (r->width - TASKBAR_APPS_W);
+
+	/* Recreate the same layout parameters as draw_taskbar */
+	PangoLayout *layout = create_layout(r->cr, r->font_input, 0);
+	pango_layout_set_width(layout,
+		(input_max_x - input_x - SPACE_L) * PANGO_SCALE);
+	pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+	pango_layout_set_text(layout, input->buf, input->len);
+
+	/* Convert screen x to layout-relative x (clamped to [0, layout width]) */
+	double rel_x = panel_x - input_x;
+	if (rel_x < 0) rel_x = 0;
+
+	int index, trailing;
+	pango_layout_xy_to_index(layout,
+		(int)(rel_x * PANGO_SCALE), 0, &index, &trailing);
+
+	/* trailing==1 means the click was in the right half of the glyph —
+	 * advance index past this codepoint so the cursor lands after it. */
+	if (trailing) {
+		const char *p   = input->buf + index;
+		const char *end = input->buf + input->len;
+		if (p < end) {
+			p++;
+			while (p < end && ((unsigned char)*p & 0xC0) == 0x80)
+				p++;
+		}
+		index = (int)(p - input->buf);
+	}
+
+	g_object_unref(layout);
+
+	if (index < 0)           index = 0;
+	if (index > input->len)  index = input->len;
+	return index;
+}
+
+int renderer_card_hit_test(struct leaves_renderer *r,
+		struct leaves_feed *feed, double panel_y) {
+	if (!feed || feed->count == 0 || !r->cr) return -1;
+
+	int feed_bottom = r->height - INPUT_HEIGHT - SPACE_M;
+	int y = feed_bottom + (int)feed->scroll_offset;
+
+	for (int i = feed->count - 1; i >= 0; i--) {
+		int card_h = measure_card_height(r, &feed->intents[i],
+			i == feed->expanded_card);
+		y -= card_h;
+		float y_off = feed->intents[i].anim_y.pos;
+		int card_y = y + (int)y_off;
+
+		if (panel_y >= card_y && panel_y < card_y + card_h)
+			return i;
+		y -= CARD_GAP;
+	}
+	return -1;
+}
+
+int renderer_card_copy_text(struct leaves_feed *feed, int card_idx,
+		char *buf, int buf_size) {
+	if (!feed || card_idx < 0 || card_idx >= feed->count || buf_size <= 0)
+		return 0;
+
+	LeavesIntent *intent = &feed->intents[card_idx];
+	int off = 0;
+
+	/* Natural text */
+	if (intent->natural_text[0] && off < buf_size - 1)
+		off += snprintf(buf + off, buf_size - off,
+			"%s", intent->natural_text);
+
+	/* Result summary */
+	if (intent->result_summary[0] && off < buf_size - 2)
+		off += snprintf(buf + off, buf_size - off,
+			"\n%s", intent->result_summary);
+
+	/* Action chain */
+	if (intent->action_chain[0] && off < buf_size - 2)
+		off += snprintf(buf + off, buf_size - off,
+			"\n%s", intent->action_chain);
+
+	return off;
+}
+
+int renderer_card_text_at(struct leaves_renderer *r,
+		double panel_x, double panel_y, int *byte_offset) {
+	if (!r || !r->cr) return -1;
+
+	for (int i = 0; i < r->card_hit_count; i++) {
+		struct card_text_hit *hit = &r->card_hits[i];
+		if (panel_x < hit->text_x || panel_x >= hit->text_x + hit->text_w)
+			continue;
+
+		/* Check title region */
+		if (panel_y >= hit->title_y &&
+				panel_y < hit->title_y + hit->title_h) {
+			PangoLayout *layout = create_layout(r->cr,
+				r->font_intent_title, 0);
+			pango_layout_set_text(layout, hit->title, hit->title_len);
+			pango_layout_set_width(layout, hit->text_w * PANGO_SCALE);
+			pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+			pango_layout_set_height(layout, -2);
+
+			int index = 0, trailing = 0;
+			pango_layout_xy_to_index(layout,
+				(int)((panel_x - hit->text_x) * PANGO_SCALE),
+				(int)((panel_y - hit->title_y) * PANGO_SCALE),
+				&index, &trailing);
+
+			if (trailing > 0 && index < hit->title_len) {
+				const char *p = hit->title + index;
+				while (trailing > 0 && *p) {
+					unsigned char c = (unsigned char)*p;
+					if (c < 0x80) p++; else if (c < 0xE0) p += 2;
+					else if (c < 0xF0) p += 3; else p += 4;
+					trailing--;
+				}
+				index = (int)(p - hit->title);
+			}
+			g_object_unref(layout);
+
+			if (index < 0) index = 0;
+			if (index > hit->title_len) index = hit->title_len;
+			*byte_offset = index;  /* title bytes start at 0 in combined */
+			return hit->card_idx;
+		}
+
+		/* Check result region */
+		if (hit->result_len > 0 && panel_y >= hit->result_y &&
+				panel_y < hit->result_y + hit->result_h) {
+			PangoLayout *layout = create_layout(r->cr,
+				r->font_body, 0);
+			pango_layout_set_text(layout, hit->result, hit->result_len);
+			pango_layout_set_width(layout, hit->text_w * PANGO_SCALE);
+			pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+			/* No height limit — use stored hit->result_h for bounds */
+
+			int index = 0, trailing = 0;
+			pango_layout_xy_to_index(layout,
+				(int)((panel_x - hit->text_x) * PANGO_SCALE),
+				(int)((panel_y - hit->result_y) * PANGO_SCALE),
+				&index, &trailing);
+
+			if (trailing > 0 && index < hit->result_len) {
+				const char *p = hit->result + index;
+				while (trailing > 0 && *p) {
+					unsigned char c = (unsigned char)*p;
+					if (c < 0x80) p++; else if (c < 0xE0) p += 2;
+					else if (c < 0xF0) p += 3; else p += 4;
+					trailing--;
+				}
+				index = (int)(p - hit->result);
+			}
+			g_object_unref(layout);
+
+			if (index < 0) index = 0;
+			if (index > hit->result_len) index = hit->result_len;
+			/* Offset into combined text: title_len + 1 (\n) + index */
+			*byte_offset = hit->title_len + 1 + index;
+			return hit->card_idx;
+		}
+	}
+
+	return -1;
+}
+
+int renderer_card_sel_text(struct leaves_renderer *r,
+		char *buf, int buf_size) {
+	if (!r || r->card_sel.card_idx < 0 || buf_size <= 0)
+		return 0;
+	if (r->card_sel.anchor == r->card_sel.focus)
+		return 0;
+
+	/* Find the card_hit for this card */
+	struct card_text_hit *hit = NULL;
+	for (int i = 0; i < r->card_hit_count; i++) {
+		if (r->card_hits[i].card_idx == r->card_sel.card_idx) {
+			hit = &r->card_hits[i];
+			break;
+		}
+	}
+	if (!hit) return 0;
+
+	int s = r->card_sel.anchor < r->card_sel.focus
+		? r->card_sel.anchor : r->card_sel.focus;
+	int e = r->card_sel.anchor < r->card_sel.focus
+		? r->card_sel.focus : r->card_sel.anchor;
+	if (s < 0) s = 0;
+	if (e > hit->text_len) e = hit->text_len;
+	if (s >= e) return 0;
+
+	int len = e - s;
+	if (len > buf_size - 1) len = buf_size - 1;
+	memcpy(buf, hit->text + s, len);
+	buf[len] = '\0';
+	return len;
 }

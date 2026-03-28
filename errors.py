@@ -63,6 +63,9 @@ class LeavesErrorCode(enum.Enum):
     INTENT_ALREADY_INACTIVE = "INTENT_ALREADY_INACTIVE"
     WATCHER_PATH_INVALID = "WATCHER_PATH_INVALID"
 
+    # Process management
+    PROCESS_NOT_FOUND = "PROCESS_NOT_FOUND"
+
     # Generic
     INTERNAL_ERROR = "INTERNAL_ERROR"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
@@ -122,6 +125,7 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
         "The watcher path is invalid or does not exist. "
         "Provide an absolute path or a path under your home directory."
     ),
+    LeavesErrorCode.PROCESS_NOT_FOUND: "No running process found with that name.",
     LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
     LeavesErrorCode.NOT_IMPLEMENTED: (
         "That type of task isn't implemented yet. "

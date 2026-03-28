@@ -320,6 +320,8 @@ struct leaves_feed *feed_create(const char *api_base) {
 		free(feed);
 		return NULL;
 	}
+	feed->selected_card = -1;
+	feed->expanded_card = -1;
 	snprintf(feed->api_base, sizeof(feed->api_base), "%s", api_base);
 	return feed;
 }
@@ -564,8 +566,14 @@ static void *submit_thread(void *arg) {
 
 	char escaped[1024];
 	json_escape(sa->text, escaped, sizeof(escaped));
-	char body[1200];
-	snprintf(body, sizeof(body), "{\"text\":\"%s\"}", escaped);
+	const char *wl_display = getenv("WAYLAND_DISPLAY");
+	char body[1400];
+	if (wl_display)
+		snprintf(body, sizeof(body),
+			"{\"text\":\"%s\",\"wayland_display\":\"%s\"}",
+			escaped, wl_display);
+	else
+		snprintf(body, sizeof(body), "{\"text\":\"%s\"}", escaped);
 
 	cJSON *plan = http_post(plan_url, body, 180L);
 
@@ -763,12 +771,30 @@ static void *submit_thread(void *arg) {
 					"%s", ap);
 			}
 
+			/* Extract result_text for display */
+			const cJSON *rt = cJSON_GetObjectItem(result,
+				"result_text");
+			if (cJSON_IsString(rt) && rt->valuestring[0])
+				snprintf(intent->result_summary,
+					sizeof(intent->result_summary),
+					"%s", rt->valuestring);
+
 			intent->state = CARD_STATE_DONE;
 		} else {
+			/* Extract error summary for failed cards */
+			const cJSON *sm = cJSON_GetObjectItem(result,
+				"summary");
+			if (cJSON_IsString(sm) && sm->valuestring[0])
+				snprintf(intent->result_summary,
+					sizeof(intent->result_summary),
+					"%s", sm->valuestring);
 			intent->state = CARD_STATE_FAILED;
 		}
 		cJSON_Delete(result);
 	} else {
+		snprintf(intent->result_summary,
+			sizeof(intent->result_summary),
+			"Connection to backend failed");
 		intent->state = CARD_STATE_FAILED;
 	}
 

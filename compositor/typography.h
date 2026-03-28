@@ -16,7 +16,7 @@
 #define FONT_DESC_BODY           "Geist 15"
 #define FONT_DESC_ACTION_CHAIN   "Geist Mono 13"
 #define FONT_DESC_CAPABILITY     "Geist Mono 12"
-#define FONT_DESC_TIMING         "Geist Mono 11"
+#define FONT_DESC_TIMING         "Geist 11"
 #define FONT_DESC_INPUT          "Geist 16"
 #define FONT_DESC_KEYBOARD_HINT  "Geist Mono 11"
 #define FONT_DESC_EMPTY_HEADING  "Geist Semi-Bold 26"

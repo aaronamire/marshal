@@ -172,13 +172,21 @@ class FileAgent(BaseAgent):
         self,
         action_id: str,
         path: str,
-        content: str,
+        content: str = "",
         overwrite: bool = False,
+        is_directory: bool = False,
         **_: Any,
     ) -> dict:
         resolved = self._authorize(path)
         row_id = self._audit_start(action_id, "WRITE", {"path": path, "overwrite": overwrite})
         try:
+            if is_directory:
+                # Create directory (and parents)
+                resolved.mkdir(parents=True, exist_ok=True)
+                result = {"path": str(resolved), "created": "directory"}
+                self._audit_end(row_id, result)
+                return result
+
             if resolved.exists() and not overwrite:
                 raise LeavesError(
                     LeavesErrorCode.FILE_WRITE_ERROR,

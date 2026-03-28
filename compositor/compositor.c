@@ -12,6 +12,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <sys/select.h>
+#include <sys/stat.h>
 #include <linux/input-event-codes.h>
 
 #include <wayland-server-core.h>
@@ -42,6 +45,7 @@
 #include "feed.h"
 #include "input.h"
 #include "geometry.h"
+#include "status.h"
 
 /* ── Layout constants ── */
 
@@ -197,9 +201,19 @@ struct leaves_server {
 	struct wl_event_source *cursor_timer;
 	struct wl_event_source *anim_timer;
 	struct wl_event_source *briefing_retry_timer;
+	struct wl_event_source *status_timer;
+
+	/* System status bar */
+	struct leaves_status *status;
 
 	/* Panel dirty flag */
 	bool panel_dirty;
+
+	/* Mouse text-selection state */
+	bool     input_drag;          /* true while LMB is held in the input bar */
+	bool     card_text_drag;      /* true while LMB is held in card text */
+	uint32_t last_click_ms;       /* timestamp of previous click (ms) */
+	int      last_click_offset;   /* byte offset of previous click */
 
 	/* Listeners */
 	struct wl_listener new_output;
@@ -213,6 +227,7 @@ struct leaves_server {
 	struct wl_listener cursor_axis;
 	struct wl_listener cursor_frame;
 	struct wl_listener request_set_cursor;
+	struct wl_listener request_set_selection;
 };
 
 /* ── Forward declarations ── */
@@ -249,6 +264,113 @@ static int effective_panel_width(struct leaves_server *server) {
 	if (wl_list_empty(&server->toplevels))
 		return output_width(server);  /* full screen when no apps open */
 	return PANEL_WIDTH;
+}
+
+/* ── Panel clipboard source ── */
+
+struct leaves_clipboard_source {
+	struct wlr_data_source base;
+	char text[1024];
+	int len;
+};
+
+static void clipboard_source_send(struct wlr_data_source *wlr_source,
+		const char *mime_type, int32_t fd) {
+	struct leaves_clipboard_source *src =
+		wl_container_of(wlr_source, src, base);
+	(void)mime_type;
+	write(fd, src->text, src->len);
+	close(fd);
+}
+
+static void clipboard_source_destroy(struct wlr_data_source *wlr_source) {
+	struct leaves_clipboard_source *src =
+		wl_container_of(wlr_source, src, base);
+	free(src);
+}
+
+static const struct wlr_data_source_impl clipboard_source_impl = {
+	.send    = clipboard_source_send,
+	.destroy = clipboard_source_destroy,
+};
+
+/* Copy an arbitrary text range to the Wayland selection. */
+static void panel_copy_range_to_clipboard(struct leaves_server *server,
+		const char *text, int len) {
+	if (len <= 0) return;
+	if (len > (int)sizeof(((struct leaves_clipboard_source *)0)->text) - 1)
+		len = (int)sizeof(((struct leaves_clipboard_source *)0)->text) - 1;
+
+	struct leaves_clipboard_source *src = calloc(1, sizeof(*src));
+	if (!src) return;
+
+	src->len = len;
+	memcpy(src->text, text, len);
+	src->text[len] = '\0';
+
+	wlr_data_source_init(&src->base, &clipboard_source_impl);
+
+	char **t1 = wl_array_add(&src->base.mime_types, sizeof(char *));
+	if (!t1) { free(src); return; }
+	*t1 = strdup("text/plain;charset=utf-8");
+
+	char **t2 = wl_array_add(&src->base.mime_types, sizeof(char *));
+	if (!t2) { wlr_data_source_destroy(&src->base); return; }
+	*t2 = strdup("text/plain");
+
+	wlr_seat_set_selection(server->seat, &src->base,
+		wl_display_next_serial(server->display));
+}
+
+/* Copy the full panel input buffer to the Wayland selection. */
+static void panel_copy_to_clipboard(struct leaves_server *server) {
+	panel_copy_range_to_clipboard(server,
+		server->input.buf, server->input.len);
+}
+
+/* Paste the Wayland selection into the panel input bar (Ctrl+V).
+ * Uses a pipe + 100 ms select() timeout.  For remote Wayland clients the
+ * display must be flushed first so they receive the send request. */
+static void panel_paste_from_clipboard(struct leaves_server *server) {
+	struct wlr_data_source *sel = server->seat->selection_source;
+	if (!sel) return;
+
+	/* Pick the best available text MIME type */
+	const char *mime = NULL;
+	char **p;
+	wl_array_for_each(p, &sel->mime_types) {
+		if (strcmp(*p, "text/plain;charset=utf-8") == 0) {
+			mime = "text/plain;charset=utf-8";
+			break;
+		}
+		if (strcmp(*p, "text/plain") == 0 && !mime)
+			mime = "text/plain";
+	}
+	if (!mime) return;
+
+	int pipefd[2];
+	if (pipe(pipefd) < 0) return;
+
+	/* wlr_data_source_send() closes pipefd[1] after sending */
+	wlr_data_source_send(sel, mime, pipefd[1]);
+
+	/* Flush pending Wayland protocol messages so client-side sources
+	 * receive the send request before we block on the read end */
+	wl_display_flush_clients(server->display);
+
+	char text[1024];
+	fd_set rfds;
+	FD_ZERO(&rfds);
+	FD_SET(pipefd[0], &rfds);
+	struct timeval tv = {.tv_sec = 0, .tv_usec = 100000}; /* 100 ms */
+	if (select(pipefd[0] + 1, &rfds, NULL, NULL, &tv) > 0) {
+		ssize_t n = read(pipefd[0], text, sizeof(text) - 1);
+		if (n > 0) {
+			text[n] = '\0';
+			input_paste(&server->input, text, (int)n);
+		}
+	}
+	close(pipefd[0]);
 }
 
 /* ── Cursor blink timer ── */
@@ -294,6 +416,21 @@ static int briefing_retry_cb(void *data) {
 		feed_load_watchers(server->feed);
 		schedule_panel_redraw(server);
 	}
+	return 0;
+}
+
+/* ── Status bar timer — fires every 1 s ── */
+
+static int status_timer_cb(void *data) {
+	struct leaves_server *server = data;
+	static int tick = 0;
+
+	status_update_clock(server->status);
+	if (tick++ % 30 == 0)   /* full system poll every 30 s */
+		status_poll(server->status);
+
+	schedule_panel_redraw(server);
+	wl_event_source_timer_update(server->status_timer, 1000);
 	return 0;
 }
 
@@ -658,12 +795,112 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 	if (handled) return;
 
+	/* When the authorization overlay is active, keyboard input MUST
+	 * reach the overlay handler regardless of focus_mode.  Without this,
+	 * clicking anywhere on the dimming layer sets focus_mode=FOCUS_NONE
+	 * and silently drops all subsequent key events — making the overlay
+	 * unresponsive (the original bug). */
+	if (server->feed->awaiting_confirm &&
+			event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		if (input_handle_key(&server->input, event->keycode,
+				server->modifiers, NULL, 0)) {
+			schedule_panel_redraw(server);
+			wl_event_source_timer_update(server->anim_timer, 16);
+		}
+		return;
+	}
+
 	if (server->focus_mode == FOCUS_NONE) {
 		/* No focus target — drop keypresses */
 		return;
 	} else if (server->focus_mode == FOCUS_PANEL) {
 		/* Route to Leaves input handler */
 		if (event->state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
+
+		/* ── Clipboard / selection shortcuts ── */
+		if (server->modifiers & MOD_CTRL) {
+			struct leaves_input *inp = &server->input;
+
+			if (event->keycode == KEY_C) {
+				/* Ctrl+C — copy card text selection, input
+				 * selection, selected card, or full input */
+				if (server->lrenderer->card_sel.card_idx >= 0 &&
+						server->lrenderer->card_sel.anchor !=
+						server->lrenderer->card_sel.focus) {
+					char buf[2048];
+					int len = renderer_card_sel_text(
+						server->lrenderer,
+						buf, sizeof(buf));
+					if (len > 0)
+						panel_copy_range_to_clipboard(
+							server, buf, len);
+				} else if (inp->sel_anchor != -1 &&
+						inp->sel_anchor != inp->sel_focus) {
+					int s = inp->sel_anchor < inp->sel_focus
+						? inp->sel_anchor : inp->sel_focus;
+					int e = inp->sel_anchor < inp->sel_focus
+						? inp->sel_focus  : inp->sel_anchor;
+					panel_copy_range_to_clipboard(server,
+						inp->buf + s, e - s);
+				} else if (server->feed->selected_card >= 0) {
+					char buf[2048];
+					pthread_mutex_lock(&server->feed->mutex);
+					int len = renderer_card_copy_text(
+						server->feed,
+						server->feed->selected_card,
+						buf, sizeof(buf));
+					pthread_mutex_unlock(&server->feed->mutex);
+					if (len > 0)
+						panel_copy_range_to_clipboard(
+							server, buf, len);
+				} else if (inp->len > 0) {
+					panel_copy_to_clipboard(server);
+				}
+				return;
+			}
+			if (event->keycode == KEY_X) {
+				/* Ctrl+X — cut selection */
+				if (inp->sel_anchor != -1 &&
+						inp->sel_anchor != inp->sel_focus) {
+					int s = inp->sel_anchor < inp->sel_focus
+						? inp->sel_anchor : inp->sel_focus;
+					int e = inp->sel_anchor < inp->sel_focus
+						? inp->sel_focus  : inp->sel_anchor;
+					panel_copy_range_to_clipboard(server,
+						inp->buf + s, e - s);
+					input_delete_selection(inp);
+					schedule_panel_redraw(server);
+				}
+				return;
+			}
+			if (event->keycode == KEY_V) {
+				/* Ctrl+V — paste from Wayland clipboard at cursor */
+				panel_paste_from_clipboard(server);
+				schedule_panel_redraw(server);
+				return;
+			}
+			if (event->keycode == KEY_A) {
+				/* Ctrl+A — select all */
+				if (inp->len > 0) {
+					inp->sel_anchor  = 0;
+					inp->sel_focus   = inp->len;
+					inp->cursor_pos  = inp->len;
+					schedule_panel_redraw(server);
+				}
+				return;
+			}
+			if (event->keycode == KEY_U) {
+				/* Ctrl+U — clear line */
+				if (inp->len > 0) {
+					inp->len = 0;
+					inp->cursor_pos = 0;
+					inp->buf[0] = '\0';
+					inp->sel_anchor = -1;
+					schedule_panel_redraw(server);
+				}
+				return;
+			}
+		}
 
 		char utf8[8] = {0};
 		int utf8_len = xkb_state_key_get_utf8(
@@ -720,6 +957,26 @@ static void keyboard_handle_modifiers(struct wl_listener *listener,
 	if (logo_idx != XKB_MOD_INVALID && (mod_mask & (1 << logo_idx)))
 		server->modifiers |= MOD_SUPER;
 
+	/* Track keyboard layout for status bar */
+	if (server->status) {
+		xkb_layout_index_t idx = xkb_state_serialize_layout(
+			keyboard->wlr_keyboard->xkb_state,
+			XKB_STATE_LAYOUT_EFFECTIVE);
+		const char *name = xkb_keymap_layout_get_name(keymap, idx);
+		if (name) {
+			/* "English (US)" → "US"; "Russian" → "RU" */
+			const char *paren = strchr(name, '(');
+			if (paren && paren[1] && paren[2]) {
+				server->status->kb_layout[0] = paren[1] & ~0x20;
+				server->status->kb_layout[1] = paren[2] & ~0x20;
+			} else if (name[0] && name[1]) {
+				server->status->kb_layout[0] = name[0] & ~0x20;
+				server->status->kb_layout[1] = name[1] & ~0x20;
+			}
+			server->status->kb_layout[2] = '\0';
+		}
+	}
+
 	if (server->focus_mode == FOCUS_APP) {
 		wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 		wlr_seat_keyboard_notify_modifiers(server->seat,
@@ -770,13 +1027,56 @@ static void process_cursor_motion(struct leaves_server *server,
 		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
 
 	if (!toplevel) {
-		/* Cursor is over the panel or empty space */
+		/* Show I-beam cursor when hovering over the editable input field
+		 * or over selectable card text */
+		int oh = output_height(server);
+		int bar_y = oh - INPUT_HEIGHT;
+		bool in_input_field =
+			server->cursor->x >= TASKBAR_ICON_W &&
+			server->cursor->x <  effective_panel_width(server) - TASKBAR_APPS_W &&
+			server->cursor->y >= bar_y;
+
+		bool in_card_text = false;
+		if (!in_input_field &&
+				server->cursor->x < effective_panel_width(server)) {
+			int dummy;
+			in_card_text = renderer_card_text_at(server->lrenderer,
+				server->cursor->x, server->cursor->y, &dummy) >= 0;
+		}
+
 		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr,
-			"default");
+			(in_input_field || in_card_text) ? "text" : "default");
 		wlr_seat_pointer_clear_focus(server->seat);
 	} else {
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 		wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 		wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
+	}
+
+	/* Extend selection while LMB is held in the input bar */
+	if (server->input_drag && server->focus_mode == FOCUS_PANEL) {
+		int offset = renderer_input_hit_test(server->lrenderer,
+			&server->input, server->cursor->x);
+		if (offset != server->input.sel_focus) {
+			server->input.sel_focus  = offset;
+			server->input.cursor_pos = offset;
+			schedule_panel_redraw(server);
+		}
+	}
+
+	/* Extend card text selection while LMB is held in card area */
+	if (server->card_text_drag && server->focus_mode == FOCUS_PANEL) {
+		double mx = server->cursor->x;
+		double my = server->cursor->y;
+		int byte_off = 0;
+		int card_idx = renderer_card_text_at(server->lrenderer,
+			mx, my, &byte_off);
+		if (card_idx == server->lrenderer->card_sel.card_idx) {
+			if (byte_off != server->lrenderer->card_sel.focus) {
+				server->lrenderer->card_sel.focus = byte_off;
+				schedule_panel_redraw(server);
+			}
+		}
 	}
 }
 
@@ -808,27 +1108,172 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 		event->button, event->state);
 
 	if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		double mx = server->cursor->x, my = server->cursor->y;
+
+		/* ── Auth overlay buttons take priority over everything ── */
+		if (server->lrenderer->overlay_buttons_valid) {
+			if (mx >= server->lrenderer->overlay_cancel_x &&
+					mx < server->lrenderer->overlay_cancel_x +
+						server->lrenderer->overlay_cancel_w &&
+					my >= server->lrenderer->overlay_cancel_y &&
+					my < server->lrenderer->overlay_cancel_y +
+						server->lrenderer->overlay_cancel_h) {
+				feed_cancel(server->feed);
+				schedule_panel_redraw(server);
+				wl_event_source_timer_update(server->anim_timer, 16);
+				return;
+			}
+			if (mx >= server->lrenderer->overlay_confirm_x &&
+					mx < server->lrenderer->overlay_confirm_x +
+						server->lrenderer->overlay_confirm_w &&
+					my >= server->lrenderer->overlay_confirm_y &&
+					my < server->lrenderer->overlay_confirm_y +
+						server->lrenderer->overlay_confirm_h) {
+				feed_confirm(server->feed);
+				schedule_panel_redraw(server);
+				wl_event_source_timer_update(server->anim_timer, 16);
+				return;
+			}
+			/* Overlay is modal — swallow all other clicks */
+			return;
+		}
+
 		double sx, sy;
 		struct wlr_surface *surface = NULL;
 		struct leaves_toplevel *toplevel = toplevel_at(server,
-			server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+			mx, my, &surface, &sx, &sy);
 
 		if (toplevel) {
 			/* Click on app window — focus it */
 			server->focus_mode = FOCUS_APP;
+			input_clear_selection(&server->input);
+			if (server->status) server->status->dropdown_open = false;
 			focus_toplevel(server, toplevel);
-		} else if (server->cursor->x < effective_panel_width(server)) {
-			/* Click on panel — input bar focuses panel, feed defocuses */
+		} else if (mx < effective_panel_width(server)) {
 			int oh = output_height(server);
 			int bar_y = oh - INPUT_HEIGHT;
-			if (server->cursor->y >= bar_y) {
+
+			/* Click inside an open dropdown? */
+			if (server->status && server->status->dropdown_open) {
+				struct leaves_renderer *lr = server->lrenderer;
+				if (mx >= lr->dropdown_x &&
+						mx < lr->dropdown_x + lr->dropdown_w &&
+						my >= lr->dropdown_y &&
+						my < lr->dropdown_y + lr->dropdown_h) {
+					/* Inside dropdown — consume click */
+					schedule_panel_redraw(server);
+					goto done_press;
+				}
+			}
+
+			if (my >= bar_y) {
+				/* Click in the taskbar region */
+				struct leaves_renderer *lr = server->lrenderer;
+
+				/* History icon? */
+				if (mx >= lr->history_icon_x &&
+						mx < lr->history_icon_x +
+							lr->history_icon_w &&
+						server->status) {
+					server->status->history_open =
+						!server->status->history_open;
+					if (server->status->dropdown_open)
+						server->status->dropdown_open = false;
+					schedule_panel_redraw(server);
+					wlr_seat_keyboard_clear_focus(server->seat);
+					goto done_press;
+				}
+
+				/* Status zone? (time, wifi, bt, battery) */
+				if (mx >= lr->status_zone_left_x &&
+						server->status) {
+					server->status->dropdown_open =
+						!server->status->dropdown_open;
+					schedule_panel_redraw(server);
+					wlr_seat_keyboard_clear_focus(server->seat);
+					goto done_press;
+				}
+
+				/* Otherwise: input field click */
+				if (server->status)
+					server->status->dropdown_open = false;
 				server->focus_mode = FOCUS_PANEL;
+
+				int offset = renderer_input_hit_test(
+					server->lrenderer, &server->input, mx);
+
+				bool dbl =
+					(event->time_msec - server->last_click_ms <= 300) &&
+					(offset == server->last_click_offset);
+
+				if (dbl) {
+					input_select_word(&server->input, offset);
+					server->input_drag = false;
+				} else {
+					server->input.sel_anchor  = offset;
+					server->input.sel_focus   = offset;
+					server->input.cursor_pos  = offset;
+					server->input_drag = true;
+				}
+
+				server->last_click_ms     = event->time_msec;
+				server->last_click_offset = offset;
 			} else {
-				server->focus_mode = FOCUS_NONE;
+				/* Click on feed area — try character-level text hit first */
+				int byte_off = 0;
+				int text_card = renderer_card_text_at(
+					server->lrenderer, mx, my, &byte_off);
+				if (text_card >= 0) {
+					/* Start character-level text selection */
+					server->lrenderer->card_sel.card_idx = text_card;
+					server->lrenderer->card_sel.anchor = byte_off;
+					server->lrenderer->card_sel.focus = byte_off;
+					server->card_text_drag = true;
+					pthread_mutex_lock(&server->feed->mutex);
+					server->feed->selected_card = text_card;
+					pthread_mutex_unlock(&server->feed->mutex);
+				} else {
+					/* Click outside text — toggle card expansion */
+					int card_idx = renderer_card_hit_test(
+						server->lrenderer, server->feed, my);
+					pthread_mutex_lock(&server->feed->mutex);
+					server->feed->selected_card = card_idx;
+					/* Toggle expansion: click same card again to collapse */
+					if (card_idx >= 0 && card_idx == server->feed->expanded_card)
+						server->feed->expanded_card = -1;
+					else
+						server->feed->expanded_card = card_idx;
+					pthread_mutex_unlock(&server->feed->mutex);
+					server->lrenderer->card_sel.card_idx = -1;
+					server->card_text_drag = false;
+				}
+
+				server->focus_mode = FOCUS_PANEL;
+				input_clear_selection(&server->input);
+				server->input_drag = false;
+				if (server->status)
+					server->status->dropdown_open = false;
 			}
 			wlr_seat_keyboard_clear_focus(server->seat);
 		}
+	done_press:
 		schedule_panel_redraw(server);
+	}
+
+	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		server->input_drag = false;
+		server->card_text_drag = false;
+		/* Single click with no drag → degenerate anchor, clear it */
+		if (server->input.sel_anchor != -1 &&
+				server->input.sel_anchor == server->input.sel_focus) {
+			server->input.sel_anchor = -1;
+		}
+		/* Same for card text: degenerate selection → clear */
+		if (server->lrenderer->card_sel.card_idx >= 0 &&
+				server->lrenderer->card_sel.anchor ==
+				server->lrenderer->card_sel.focus) {
+			server->lrenderer->card_sel.card_idx = -1;
+		}
 	}
 }
 
@@ -841,7 +1286,10 @@ static void cursor_axis_handler(struct wl_listener *listener, void *data) {
 	if (server->cursor->x < effective_panel_width(server) &&
 			event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
 		pthread_mutex_lock(&server->feed->mutex);
-		server->feed->scroll_offset += event->delta;
+		/* Wayland delta: positive = scroll down (toward user).
+		 * We want scroll-up (negative delta) to increase offset
+		 * (reveal older cards above), so negate. */
+		server->feed->scroll_offset -= event->delta;
 		if (server->feed->scroll_offset < 0)
 			server->feed->scroll_offset = 0;
 		pthread_mutex_unlock(&server->feed->mutex);
@@ -967,6 +1415,16 @@ static void backend_destroy_handler(struct wl_listener *listener, void *data) {
 	struct leaves_server *server =
 		wl_container_of(listener, server, backend_destroy);
 	wl_display_terminate(server->display);
+}
+
+/* ── Wayland data-device: honour selection requests from clients ── */
+
+static void handle_request_set_selection(struct wl_listener *listener,
+		void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, request_set_selection);
+	struct wlr_seat_request_set_selection_event *event = data;
+	wlr_seat_set_selection(server->seat, event->source, event->serial);
 }
 
 /* ── XDG decoration: request server-side decorations ── */
@@ -1116,6 +1574,9 @@ int main(int argc, char *argv[]) {
 	server.request_set_cursor.notify = request_set_cursor_handler;
 	wl_signal_add(&server.seat->events.request_set_cursor,
 		&server.request_set_cursor);
+	server.request_set_selection.notify = handle_request_set_selection;
+	wl_signal_add(&server.seat->events.request_set_selection,
+		&server.request_set_selection);
 
 	/* Input devices */
 	server.new_output.notify = server_new_output;
@@ -1127,12 +1588,19 @@ int main(int argc, char *argv[]) {
 	server.backend_destroy.notify = backend_destroy_handler;
 	wl_signal_add(&server.backend->events.destroy, &server.backend_destroy);
 
-	/* Feed + Input + Renderer */
+	/* Feed + Input + Renderer + Status */
 	const char *api_url = getenv("LEAVES_API_URL");
 	if (!api_url) api_url = "http://127.0.0.1:8765";
 	server.feed = feed_create(api_url);
 	input_init(&server.input, server.feed);
 	server.lrenderer = renderer_create();
+	server.status = status_create();
+	server.lrenderer->status = server.status;
+
+	/* Load desktop wallpaper */
+	const char *wp = getenv("LEAVES_WALLPAPER");
+	if (!wp) wp = "chromatic1.jpeg";
+	renderer_load_wallpaper(server.lrenderer, wp);
 
 	/* Load history, briefing, and active watchers */
 	feed_load_history(server.feed);
@@ -1159,6 +1627,11 @@ int main(int argc, char *argv[]) {
 		server.event_loop, briefing_retry_cb, &server);
 	wl_event_source_timer_update(server.briefing_retry_timer, 30000);
 
+	/* Status bar: update clock every second, full poll every 30s */
+	server.status_timer = wl_event_loop_add_timer(server.event_loop,
+		status_timer_cb, &server);
+	wl_event_source_timer_update(server.status_timer, 1000);
+
 	/* Start backend */
 	if (!wlr_backend_start(server.backend)) {
 		fprintf(stderr, "Failed to start backend\n");
@@ -1178,6 +1651,24 @@ int main(int argc, char *argv[]) {
 	setenv("WAYLAND_DISPLAY", socket, true);
 	fprintf(stderr, "Leaves compositor running on %s\n", socket);
 
+	/* Write display socket to ~/.leaves/wayland-display so the API server
+	 * and agents can discover which compositor to connect to. */
+	{
+		const char *home = getenv("HOME");
+		if (home) {
+			char path[512];
+			snprintf(path, sizeof(path), "%s/.leaves", home);
+			mkdir(path, 0700);
+			snprintf(path, sizeof(path),
+				"%s/.leaves/wayland-display", home);
+			FILE *f = fopen(path, "w");
+			if (f) {
+				fprintf(f, "%s\n", socket);
+				fclose(f);
+			}
+		}
+	}
+
 	/* Mark panel dirty for initial render */
 	server.panel_dirty = true;
 
@@ -1190,6 +1681,7 @@ int main(int argc, char *argv[]) {
 	wlr_xcursor_manager_destroy(server.cursor_mgr);
 	feed_destroy(server.feed);
 	renderer_destroy(server.lrenderer);
+	status_destroy(server.status);
 	wl_display_destroy(server.display);
 
 	return 0;
