@@ -73,7 +73,13 @@ class AgentCoordinator:
         results: dict[str, Any] = {}
         failed_ids: list[str] = []
 
+        # Inject compositor WAYLAND_DISPLAY into each action so agents can
+        # read it directly without relying on os.environ (belt-and-suspenders).
+        _wl_meta = goal_spec.get("metadata", {}).get("wayland_display")
+
         for action in actions:
+            if _wl_meta:
+                action["_wayland_display"] = _wl_meta
             action_id = action.get("action_id", "unknown")
             agent_type = action.get("agent", "")
 
@@ -162,6 +168,15 @@ _CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/leaves")
 _CGROUP_AVAILABLE = False
 
 
+def _is_app_launch(goal_spec: dict) -> bool:
+    """True when the goal only launches apps (system WRITE actions)."""
+    actions = goal_spec.get("actions", [])
+    return bool(actions) and all(
+        a.get("agent") == "system" and a.get("type", "").upper() == "WRITE"
+        for a in actions
+    )
+
+
 async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
     """
     Spawn agents/sandboxed_runner.py as a fresh subprocess.
@@ -172,6 +187,9 @@ async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
 
     If cgroup v2 is available, the subprocess is placed in a per-intent
     cgroup with memory, CPU, and PID limits.
+
+    App-launch intents (system WRITE) skip cgroup entirely — the launched
+    GUI app must outlive the runner and needs unrestricted resources.
     """
     runner = pathlib.Path(__file__).parent / "agents" / "sandboxed_runner.py"
     payload = json.dumps({"goal_spec": goal_spec,
@@ -179,16 +197,27 @@ async def _run_sandboxed(goal_spec: dict, from_state: str) -> tuple[dict, str]:
     intent_id = goal_spec.get("intent_id", "unknown")[:8]
     cgroup_path = _CGROUP_ROOT / f"intent-{intent_id}"
     cgroup_applied = False
+    is_launch = _is_app_launch(goal_spec)
+
+    # Build subprocess env: inject WAYLAND_DISPLAY from goal_spec metadata
+    # so the runner (and any app it launches) starts with the CORRECT socket
+    # even before the runner's own os.environ override kicks in.
+    sub_env = os.environ.copy()
+    wl_disp = goal_spec.get("metadata", {}).get("wayland_display")
+    if wl_disp:
+        sub_env["WAYLAND_DISPLAY"] = wl_disp
 
     proc = await asyncio.create_subprocess_exec(
         sys.executable, str(runner),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=sub_env,
     )
 
-    # Apply cgroup limits after spawn (must have PID)
-    if _CGROUP_AVAILABLE:
+    # Skip cgroup for app launches — launched apps need unrestricted
+    # resources and must not be killed when the runner exits.
+    if _CGROUP_AVAILABLE and not is_launch:
         try:
             cgroup_path.mkdir(parents=False, exist_ok=True)
             (cgroup_path / "memory.max").write_text("536870912")    # 512MB

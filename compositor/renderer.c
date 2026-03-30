@@ -2028,6 +2028,177 @@ static void draw_auth_overlay(struct leaves_renderer *r,
 	g_object_unref(rev_layout);
 }
 
+/* ── Expanded card full-window overlay ── */
+
+static void draw_expanded_overlay(struct leaves_renderer *r,
+		struct leaves_feed *feed) {
+	cairo_t *cr = r->cr;
+
+	int idx = feed->expanded_card;
+	if (idx < 0 || idx >= feed->count)
+		return;
+
+	LeavesIntent *intent = &feed->intents[idx];
+
+	/* Full-screen dimming */
+	set_color(cr, OVERLAY_DIM);
+	cairo_rectangle(cr, 0, 0, r->width, r->height);
+	cairo_fill(cr);
+
+	/* Panel: nearly full screen with margins */
+	int margin_h = 32;
+	int margin_v = 32;
+	int panel_w = r->width - 2 * margin_h;
+	int panel_h = r->height - 2 * margin_v;
+	int panel_x = margin_h;
+	int panel_y = margin_v;
+	int content_w = panel_w - 2 * OVERLAY_PADDING;
+	int cx = panel_x + OVERLAY_PADDING;
+	int content_top = panel_y + OVERLAY_PADDING;
+
+	/* Panel background */
+	rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, OVERLAY_RADIUS);
+	set_color(cr, BG_OVERLAY_PANEL);
+	cairo_fill(cr);
+
+	/* Panel border */
+	rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, OVERLAY_RADIUS);
+	set_color(cr, BORDER_OVERLAY);
+	cairo_set_line_width(cr, 1.0);
+	cairo_stroke(cr);
+
+	int cy = content_top;
+
+	/* Title: intent natural text */
+	PangoLayout *title = create_layout(cr, r->font_intent_title, 0);
+	pango_layout_set_text(title, intent->natural_text, -1);
+	pango_layout_set_width(title, content_w * PANGO_SCALE);
+	pango_layout_set_wrap(title, PANGO_WRAP_WORD_CHAR);
+	int tw, th;
+	pango_layout_get_pixel_size(title, &tw, &th);
+	cairo_move_to(cr, cx, cy);
+	set_color(cr, TEXT_PRIMARY);
+	pango_cairo_show_layout(cr, title);
+	g_object_unref(title);
+	cy += th + SPACE_S;
+
+	/* Action chain */
+	if (intent->action_chain[0]) {
+		PangoLayout *chain = create_layout(cr, r->font_action_chain, 0);
+		pango_layout_set_text(chain, intent->action_chain, -1);
+		int cw, ch;
+		pango_layout_get_pixel_size(chain, &cw, &ch);
+		cairo_move_to(cr, cx, cy);
+		set_color(cr, TEXT_SECONDARY);
+		pango_cairo_show_layout(cr, chain);
+		g_object_unref(chain);
+		cy += ch + SPACE_S;
+	}
+
+	/* Separator */
+	cairo_set_source_rgba(cr, 0, 0, 0, 0.06);
+	cairo_rectangle(cr, cx, cy, content_w, 1);
+	cairo_fill(cr);
+	cy += 1 + SPACE_S;
+
+	/* Close button — top right "✕" */
+	int close_sz = 28;
+	int close_x = panel_x + panel_w - OVERLAY_PADDING - close_sz;
+	int close_y = content_top;
+	r->expanded_close_x = close_x;
+	r->expanded_close_y = close_y;
+	r->expanded_close_w = close_sz;
+	r->expanded_close_h = close_sz;
+	r->expanded_overlay_valid = true;
+	{
+		cairo_save(cr);
+		double mx = close_x + close_sz / 2.0;
+		double my = close_y + close_sz / 2.0;
+		double d = 7;
+		cairo_set_line_width(cr, 1.5);
+		set_color(cr, TEXT_SECONDARY);
+		cairo_move_to(cr, mx - d, my - d);
+		cairo_line_to(cr, mx + d, my + d);
+		cairo_move_to(cr, mx + d, my - d);
+		cairo_line_to(cr, mx - d, my + d);
+		cairo_stroke(cr);
+		cairo_restore(cr);
+	}
+
+	/* Content area for result summary with scroll */
+	int content_area_top = cy;
+	int content_area_h = panel_y + panel_h - OVERLAY_PADDING - cy;
+
+	r->expanded_content_x = cx;
+	r->expanded_content_y = content_area_top;
+	r->expanded_content_w = content_w;
+	r->expanded_content_h = content_area_h;
+
+	if (intent->result_summary[0]) {
+		/* Measure full content height */
+		PangoLayout *result = create_layout(cr, r->font_body, 0);
+		pango_layout_set_text(result, intent->result_summary, -1);
+		pango_layout_set_width(result, content_w * PANGO_SCALE);
+		pango_layout_set_wrap(result, PANGO_WRAP_WORD_CHAR);
+		int rw, rh;
+		pango_layout_get_pixel_size(result, &rw, &rh);
+		feed->expanded_content_h = rh;
+
+		/* Clamp scroll */
+		float max_scroll = (float)(rh - content_area_h);
+		if (max_scroll < 0) max_scroll = 0;
+		if (feed->expanded_scroll < 0)
+			feed->expanded_scroll = 0;
+		if (feed->expanded_scroll > max_scroll)
+			feed->expanded_scroll = max_scroll;
+
+		/* Clip to content area */
+		cairo_save(cr);
+		cairo_rectangle(cr, cx, content_area_top,
+			content_w, content_area_h);
+		cairo_clip(cr);
+
+		/* Draw with scroll offset */
+		cairo_move_to(cr, cx,
+			content_area_top - (int)feed->expanded_scroll);
+		set_color(cr, TEXT_PRIMARY);
+		pango_cairo_show_layout(cr, result);
+		g_object_unref(result);
+		cairo_restore(cr);
+
+		/* Scroll bar (if content overflows) */
+		if (rh > content_area_h) {
+			int sb_w = 4;
+			int sb_x = panel_x + panel_w - OVERLAY_PADDING / 2 - sb_w;
+			double ratio = (double)content_area_h / rh;
+			int thumb_h = (int)(content_area_h * ratio);
+			if (thumb_h < 20) thumb_h = 20;
+			int track_h = content_area_h - thumb_h;
+			int thumb_y = content_area_top +
+				(int)(track_h * (feed->expanded_scroll / max_scroll));
+			cairo_set_source_rgba(cr, 0, 0, 0, 0.15);
+			rounded_rect(cr, sb_x, thumb_y, sb_w, thumb_h, 2);
+			cairo_fill(cr);
+		}
+	}
+
+	/* Keyboard hint */
+	PangoLayout *hint = create_layout(cr, r->font_keyboard_hint,
+		TRACKING_CAPTION2);
+	pango_layout_set_text(hint, "Esc = close    Scroll = navigate", -1);
+	int hkw, hkh;
+	pango_layout_get_pixel_size(hint, &hkw, &hkh);
+	cairo_move_to(cr,
+		panel_x + panel_w - OVERLAY_PADDING - hkw,
+		panel_y + panel_h - OVERLAY_PADDING + SPACE_XS);
+	set_color(cr, TEXT_TERTIARY);
+	/* Only show if it fits below content */
+	if (panel_y + panel_h - OVERLAY_PADDING + SPACE_XS + hkh
+			<= panel_y + panel_h)
+		pango_cairo_show_layout(cr, hint);
+	g_object_unref(hint);
+}
+
 /* ── Full frame render ── */
 
 unsigned char *renderer_draw_frame(struct leaves_renderer *r,
@@ -2037,6 +2208,7 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 
 	/* Reset hit-test state */
 	r->overlay_buttons_valid = false;
+	r->expanded_overlay_valid = false;
 	r->card_hit_count = 0;
 
 	bool show_feed = r->status && r->status->history_open;
@@ -2127,6 +2299,11 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 	/* 6. Authorization overlay (on top of everything) */
 	if (feed->awaiting_confirm) {
 		draw_auth_overlay(r, feed);
+	}
+
+	/* 7. Expanded card full-window overlay */
+	if (feed->expanded_card >= 0 && !feed->awaiting_confirm) {
+		draw_expanded_overlay(r, feed);
 	}
 
 	pthread_mutex_unlock(&feed->mutex);

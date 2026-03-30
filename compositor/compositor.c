@@ -49,7 +49,8 @@
 
 /* ── Layout constants ── */
 
-#define PANEL_WIDTH 420  /* fixed width for the AI panel */
+#define PANEL_WIDTH 420  /* fixed width for the AI panel (legacy) */
+#define TITLEBAR_H   32  /* server-side title bar height */
 
 /* ── Modifier bit-flags ── */
 
@@ -63,6 +64,11 @@ enum leaves_focus_mode {
 	FOCUS_NONE,   /* keyboard input is idle (no target) */
 	FOCUS_PANEL,  /* keyboard goes to the Leaves input bar */
 	FOCUS_APP,    /* keyboard goes to the focused toplevel */
+};
+
+enum leaves_cursor_mode {
+	CURSOR_PASSTHROUGH,
+	CURSOR_MOVE,        /* dragging a window by its title bar */
 };
 
 /* ── Panel buffer (custom wlr_buffer wrapping Cairo pixel data) ── */
@@ -118,7 +124,27 @@ struct leaves_toplevel {
 	struct wl_list link;  /* leaves_server.toplevels */
 	struct leaves_server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
+
+	/* Scene hierarchy:
+	 *   frame_tree (positioned at window x,y in app_tree)
+	 *     ├── titlebar_bg   (rect: title bar background)
+	 *     ├── btn_close      (rect: red dot)
+	 *     ├── btn_max        (rect: green dot)
+	 *     ├── btn_min        (rect: yellow dot)
+	 *     └── scene_tree     (xdg surface, at y=TITLEBAR_H)
+	 */
+	struct wlr_scene_tree *frame_tree;
 	struct wlr_scene_tree *scene_tree;
+	struct wlr_scene_rect *titlebar_bg;
+	struct wlr_scene_rect *btn_close;
+	struct wlr_scene_rect *btn_max;
+	struct wlr_scene_rect *btn_min;
+
+	/* Floating geometry (output coords) */
+	int x, y;
+	int width, height;     /* client surface size, excl. title bar */
+	bool maximized;
+	int saved_x, saved_y, saved_w, saved_h;
 
 	struct wl_listener map;
 	struct wl_listener unmap;
@@ -206,6 +232,16 @@ struct leaves_server {
 	/* System status bar */
 	struct leaves_status *status;
 
+	/* Taskbar overlay (above app windows, always visible) */
+	struct wlr_scene_tree *taskbar_tree;
+	struct wlr_scene_rect *taskbar_bg;
+	struct wlr_scene_buffer *taskbar_scene_buf;
+
+	/* Floating window management */
+	enum leaves_cursor_mode cursor_mode;
+	struct leaves_toplevel *grabbed_toplevel;
+	int grab_x, grab_y;    /* cursor offset from frame origin at grab start */
+
 	/* Panel dirty flag */
 	bool panel_dirty;
 
@@ -261,9 +297,9 @@ static int output_width(struct leaves_server *server) {
 }
 
 static int effective_panel_width(struct leaves_server *server) {
-	if (wl_list_empty(&server->toplevels))
-		return output_width(server);  /* full screen when no apps open */
-	return PANEL_WIDTH;
+	/* Panel is always full-screen — it's the desktop background.
+	 * App windows float on top. */
+	return output_width(server);
 }
 
 /* ── Panel clipboard source ── */
@@ -482,9 +518,21 @@ static void update_panel_buffer(struct leaves_server *server) {
 
 	/* Update the scene buffer node */
 	wlr_scene_buffer_set_buffer(server->panel_scene_buf, &pbuf->base);
-
-	/* We transferred ownership to the scene; drop our reference */
 	wlr_buffer_drop(&pbuf->base);
+
+	/* Update the taskbar overlay with the bottom strip of the panel.
+	 * This overlay sits above app windows so the taskbar is always visible. */
+	if (server->taskbar_scene_buf && ph > INPUT_HEIGHT) {
+		int tb_y = ph - INPUT_HEIGHT;
+		unsigned char *tb_pixels = pixels + tb_y * stride;
+		struct leaves_panel_buffer *tb_buf = panel_buffer_create(
+			tb_pixels, pw, INPUT_HEIGHT, (size_t)stride);
+		if (tb_buf) {
+			wlr_scene_buffer_set_buffer(server->taskbar_scene_buf,
+				&tb_buf->base);
+			wlr_buffer_drop(&tb_buf->base);
+		}
+	}
 }
 
 /* ── Output frame handler ── */
@@ -524,6 +572,19 @@ static void output_destroy(struct wl_listener *listener, void *data) {
 
 /* ── Toplevel management ── */
 
+/* Update title bar decoration rects to match window width. */
+static void update_titlebar_decorations(struct leaves_toplevel *toplevel) {
+	wlr_scene_rect_set_size(toplevel->titlebar_bg,
+		toplevel->width, TITLEBAR_H);
+	int btn_y = (TITLEBAR_H - 12) / 2;
+	wlr_scene_node_set_position(&toplevel->btn_close->node,
+		toplevel->width - 12 - 10, btn_y);
+	wlr_scene_node_set_position(&toplevel->btn_max->node,
+		toplevel->width - 12 - 10 - 12 - 8, btn_y);
+	wlr_scene_node_set_position(&toplevel->btn_min->node,
+		toplevel->width - 12 - 10 - 12 - 8 - 12 - 8, btn_y);
+}
+
 static void toplevel_map(struct wl_listener *listener, void *data) {
 	struct leaves_toplevel *toplevel =
 		wl_container_of(listener, toplevel, map);
@@ -531,8 +592,10 @@ static void toplevel_map(struct wl_listener *listener, void *data) {
 
 	wl_list_insert(&server->toplevels, &toplevel->link);
 
-	/* Position in app area and configure size */
-	relayout_toplevels(server);
+	/* Position the floating frame */
+	wlr_scene_node_set_position(&toplevel->frame_tree->node,
+		toplevel->x, toplevel->y);
+	update_titlebar_decorations(toplevel);
 
 	/* Focus the new window */
 	server->focus_mode = FOCUS_APP;
@@ -564,15 +627,19 @@ static void toplevel_commit(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, toplevel, commit);
 
 	if (toplevel->xdg_toplevel->base->initial_commit) {
-		/* Send initial configure with the app area dimensions.
-		 * Don't use effective_panel_width here — the toplevel isn't
-		 * in server->toplevels yet (added in toplevel_map). */
 		struct leaves_server *server = toplevel->server;
 		int ow = output_width(server);
 		int oh = output_height(server);
-		int app_w = ow - PANEL_WIDTH;
 
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, app_w, oh);
+		/* Default floating size: ~70% of screen, centered */
+		int usable_h = oh - INPUT_HEIGHT;  /* above the taskbar */
+		toplevel->width  = ow * 7 / 10;
+		toplevel->height = usable_h * 7 / 10;
+		toplevel->x = (ow - toplevel->width) / 2;
+		toplevel->y = (usable_h - toplevel->height - TITLEBAR_H) / 2;
+
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+			toplevel->width, toplevel->height);
 		wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
 	}
 }
@@ -587,25 +654,75 @@ static void toplevel_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&toplevel->destroy.link);
 	wl_list_remove(&toplevel->request_maximize.link);
 	wl_list_remove(&toplevel->request_fullscreen.link);
+
+	/* Reparent the xdg scene tree out of frame_tree so wlroots
+	 * can destroy it independently via its own lifecycle, then
+	 * destroy our decoration frame. */
+	if (toplevel->scene_tree) {
+		wlr_scene_node_reparent(&toplevel->scene_tree->node,
+			toplevel->server->app_tree);
+		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, false);
+	}
+	if (toplevel->frame_tree)
+		wlr_scene_node_destroy(&toplevel->frame_tree->node);
+
+	/* Clear grab if this toplevel was being dragged */
+	if (toplevel->server->grabbed_toplevel == toplevel) {
+		toplevel->server->cursor_mode = CURSOR_PASSTHROUGH;
+		toplevel->server->grabbed_toplevel = NULL;
+	}
+
 	free(toplevel);
+}
+
+static void toggle_maximize(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+	int ow = output_width(server);
+	int oh = output_height(server);
+
+	if (!toplevel->maximized) {
+		toplevel->saved_x = toplevel->x;
+		toplevel->saved_y = toplevel->y;
+		toplevel->saved_w = toplevel->width;
+		toplevel->saved_h = toplevel->height;
+		toplevel->maximized = true;
+		toplevel->x = 0;
+		toplevel->y = 0;
+		toplevel->width  = ow;
+		toplevel->height = oh - INPUT_HEIGHT - TITLEBAR_H;
+	} else {
+		toplevel->maximized = false;
+		toplevel->x = toplevel->saved_x;
+		toplevel->y = toplevel->saved_y;
+		toplevel->width  = toplevel->saved_w;
+		toplevel->height = toplevel->saved_h;
+	}
+
+	wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel,
+		toplevel->maximized);
+	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		toplevel->width, toplevel->height);
+	wlr_scene_node_set_position(&toplevel->frame_tree->node,
+		toplevel->x, toplevel->y);
+	update_titlebar_decorations(toplevel);
+	schedule_panel_redraw(server);
 }
 
 static void toplevel_request_maximize(struct wl_listener *listener,
 		void *data) {
 	struct leaves_toplevel *toplevel =
 		wl_container_of(listener, toplevel, request_maximize);
-	/* Always maximize to the app area */
-	wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
-	relayout_toplevels(toplevel->server);
+	toggle_maximize(toplevel);
 }
 
 static void toplevel_request_fullscreen(struct wl_listener *listener,
 		void *data) {
 	struct leaves_toplevel *toplevel =
 		wl_container_of(listener, toplevel, request_fullscreen);
-	/* For now, treat fullscreen same as maximized (fill app area) */
+	/* Treat fullscreen same as maximize for now */
+	if (!toplevel->maximized)
+		toggle_maximize(toplevel);
 	wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, false);
-	relayout_toplevels(toplevel->server);
 }
 
 static void focus_toplevel(struct leaves_server *server,
@@ -624,7 +741,7 @@ static void focus_toplevel(struct leaves_server *server,
 	}
 
 	/* Activate and focus new toplevel */
-	wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
+	wlr_scene_node_raise_to_top(&toplevel->frame_tree->node);
 	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
 
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
@@ -639,24 +756,36 @@ static void focus_toplevel(struct leaves_server *server,
 static void relayout_toplevels(struct leaves_server *server) {
 	int ow = output_width(server);
 	int oh = output_height(server);
-	int pw = effective_panel_width(server);
 
-	/* Resize panel background to full output */
+	/* Panel (desktop) is always full screen */
 	wlr_scene_rect_set_size(server->panel_bg, ow, oh);
+	renderer_resize(server->lrenderer, ow, oh);
 
-	/* Resize panel renderer to match effective width */
-	renderer_resize(server->lrenderer, pw, oh);
+	/* App tree at (0,0) — windows float with individual positions */
+	wlr_scene_node_set_position(&server->app_tree->node, 0, 0);
 
-	/* Move app tree */
-	wlr_scene_node_set_position(&server->app_tree->node, pw, 0);
+	/* Taskbar overlay at bottom, full width, above app windows */
+	if (server->taskbar_tree) {
+		wlr_scene_node_set_position(&server->taskbar_tree->node,
+			0, oh - INPUT_HEIGHT);
+		if (server->taskbar_bg)
+			wlr_scene_rect_set_size(server->taskbar_bg, ow, INPUT_HEIGHT);
+	}
 
-	/* Configure each toplevel */
-	int app_w = ow - pw;
-	if (app_w < 100) app_w = 100;
+	/* Update maximized windows to fill available area */
 	struct leaves_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, app_w, oh);
-		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+		if (toplevel->maximized) {
+			toplevel->x = 0;
+			toplevel->y = 0;
+			toplevel->width  = ow;
+			toplevel->height = oh - INPUT_HEIGHT - TITLEBAR_H;
+			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+				toplevel->width, toplevel->height);
+			wlr_scene_node_set_position(&toplevel->frame_tree->node,
+				0, 0);
+		}
+		update_titlebar_decorations(toplevel);
 	}
 
 	schedule_panel_redraw(server);
@@ -673,9 +802,32 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	toplevel->server = server;
 	toplevel->xdg_toplevel = xdg_toplevel;
 
-	/* Create scene tree for this toplevel under the app_tree */
+	/* Create frame tree (outer container for decorations + surface) */
+	toplevel->frame_tree = wlr_scene_tree_create(server->app_tree);
+	toplevel->frame_tree->node.data = toplevel;
+
+	/* Title bar background — light gray */
+	float tb_color[4] = {0.898f, 0.898f, 0.898f, 1.0f};  /* #E5E5E5 */
+	toplevel->titlebar_bg = wlr_scene_rect_create(
+		toplevel->frame_tree, 800, TITLEBAR_H, tb_color);
+
+	/* Window control buttons (macOS-style dots, right-aligned) */
+	float close_color[4] = {0.937f, 0.267f, 0.267f, 1.0f};  /* red */
+	toplevel->btn_close = wlr_scene_rect_create(
+		toplevel->frame_tree, 12, 12, close_color);
+
+	float max_color[4] = {0.133f, 0.784f, 0.251f, 1.0f};  /* green */
+	toplevel->btn_max = wlr_scene_rect_create(
+		toplevel->frame_tree, 12, 12, max_color);
+
+	float min_color[4] = {1.0f, 0.741f, 0.180f, 1.0f};  /* yellow */
+	toplevel->btn_min = wlr_scene_rect_create(
+		toplevel->frame_tree, 12, 12, min_color);
+
+	/* XDG surface below the title bar */
 	toplevel->scene_tree = wlr_scene_xdg_surface_create(
-		server->app_tree, xdg_toplevel->base);
+		toplevel->frame_tree, xdg_toplevel->base);
+	wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, TITLEBAR_H);
 	toplevel->scene_tree->node.data = toplevel;
 
 	struct wlr_xdg_surface *xdg_surface = xdg_toplevel->base;
@@ -807,6 +959,18 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 			schedule_panel_redraw(server);
 			wl_event_source_timer_update(server->anim_timer, 16);
 		}
+		return;
+	}
+
+	/* Escape closes expanded card overlay */
+	if (server->feed->expanded_card >= 0 &&
+			event->state == WL_KEYBOARD_KEY_STATE_PRESSED &&
+			event->keycode == 1) {
+		pthread_mutex_lock(&server->feed->mutex);
+		server->feed->expanded_card = -1;
+		server->feed->expanded_scroll = 0;
+		pthread_mutex_unlock(&server->feed->mutex);
+		schedule_panel_redraw(server);
 		return;
 	}
 
@@ -1000,15 +1164,7 @@ static struct leaves_toplevel *toplevel_at(struct leaves_server *server,
 		double *sx, double *sy) {
 	struct wlr_scene_node *node = wlr_scene_node_at(
 		&server->scene->tree.node, lx, ly, sx, sy);
-	if (!node || node->type != WLR_SCENE_NODE_BUFFER) return NULL;
-
-	struct wlr_scene_buffer *scene_buffer =
-		wlr_scene_buffer_from_node(node);
-	struct wlr_scene_surface *scene_surface =
-		wlr_scene_surface_try_from_buffer(scene_buffer);
-	if (!scene_surface) return NULL;
-
-	*surface = scene_surface->surface;
+	if (!node) return NULL;
 
 	/* Walk up the tree to find the toplevel */
 	struct wlr_scene_tree *tree = node->parent;
@@ -1016,29 +1172,57 @@ static struct leaves_toplevel *toplevel_at(struct leaves_server *server,
 		tree = tree->node.parent;
 	}
 	if (!tree) return NULL;
+
+	/* Try to resolve a wlr_surface for pointer routing */
+	*surface = NULL;
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *scene_buffer =
+			wlr_scene_buffer_from_node(node);
+		struct wlr_scene_surface *scene_surface =
+			wlr_scene_surface_try_from_buffer(scene_buffer);
+		if (scene_surface)
+			*surface = scene_surface->surface;
+	}
+	/* Rect nodes (title bar, buttons) return toplevel with surface=NULL */
+
 	return tree->node.data;
 }
 
 static void process_cursor_motion(struct leaves_server *server,
 		uint32_t time) {
+	/* Window drag mode — move the grabbed window */
+	if (server->cursor_mode == CURSOR_MOVE && server->grabbed_toplevel) {
+		struct leaves_toplevel *tl = server->grabbed_toplevel;
+		tl->x = (int)server->cursor->x - server->grab_x;
+		tl->y = (int)server->cursor->y - server->grab_y;
+		wlr_scene_node_set_position(&tl->frame_tree->node, tl->x, tl->y);
+		return;
+	}
+
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
 	struct leaves_toplevel *toplevel = toplevel_at(server,
 		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
 
-	if (!toplevel) {
-		/* Show I-beam cursor when hovering over the editable input field
-		 * or over selectable card text */
+	if (toplevel && surface) {
+		/* Over an app window surface — let the app handle the cursor */
+		wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+		wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
+	} else if (toplevel && !surface) {
+		/* Over title bar decoration */
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+		wlr_seat_pointer_clear_focus(server->seat);
+	} else {
+		/* Over panel/desktop or taskbar */
 		int oh = output_height(server);
 		int bar_y = oh - INPUT_HEIGHT;
 		bool in_input_field =
 			server->cursor->x >= TASKBAR_ICON_W &&
-			server->cursor->x <  effective_panel_width(server) - TASKBAR_APPS_W &&
+			server->cursor->x < effective_panel_width(server) - TASKBAR_APPS_W &&
 			server->cursor->y >= bar_y;
 
 		bool in_card_text = false;
-		if (!in_input_field &&
-				server->cursor->x < effective_panel_width(server)) {
+		if (!in_input_field) {
 			int dummy;
 			in_card_text = renderer_card_text_at(server->lrenderer,
 				server->cursor->x, server->cursor->y, &dummy) >= 0;
@@ -1047,10 +1231,6 @@ static void process_cursor_motion(struct leaves_server *server,
 		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr,
 			(in_input_field || in_card_text) ? "text" : "default");
 		wlr_seat_pointer_clear_focus(server->seat);
-	} else {
-		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
-		wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
-		wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
 	}
 
 	/* Extend selection while LMB is held in the input bar */
@@ -1138,18 +1318,92 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 			return;
 		}
 
+		/* ── Expanded card overlay: close button or click outside ── */
+		if (server->lrenderer->expanded_overlay_valid) {
+			struct leaves_renderer *lr = server->lrenderer;
+			/* Close button hit */
+			if (mx >= lr->expanded_close_x &&
+					mx < lr->expanded_close_x + lr->expanded_close_w &&
+					my >= lr->expanded_close_y &&
+					my < lr->expanded_close_y + lr->expanded_close_h) {
+				pthread_mutex_lock(&server->feed->mutex);
+				server->feed->expanded_card = -1;
+				server->feed->expanded_scroll = 0;
+				pthread_mutex_unlock(&server->feed->mutex);
+				schedule_panel_redraw(server);
+				return;
+			}
+			/* Click inside content area = scroll, no close */
+			if (mx >= lr->expanded_content_x &&
+					mx < lr->expanded_content_x + lr->expanded_content_w &&
+					my >= lr->expanded_content_y &&
+					my < lr->expanded_content_y + lr->expanded_content_h) {
+				/* Let scroll events handle navigation */
+				return;
+			}
+			/* Click on dim area outside panel = close */
+			pthread_mutex_lock(&server->feed->mutex);
+			server->feed->expanded_card = -1;
+			server->feed->expanded_scroll = 0;
+			pthread_mutex_unlock(&server->feed->mutex);
+			schedule_panel_redraw(server);
+			return;
+		}
+
 		double sx, sy;
 		struct wlr_surface *surface = NULL;
 		struct leaves_toplevel *toplevel = toplevel_at(server,
 			mx, my, &surface, &sx, &sy);
 
-		if (toplevel) {
-			/* Click on app window — focus it */
+		if (toplevel && !surface) {
+			/* Click on title bar decoration */
+			int rel_x = (int)mx - toplevel->x;
+			int rel_y = (int)my - toplevel->y;
+
+			if (rel_y < TITLEBAR_H) {
+				int btn_r = toplevel->width - 10;
+				int btn_t = (TITLEBAR_H - 12) / 2;
+				int btn_b = btn_t + 12;
+
+				/* Close button (rightmost) */
+				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
+						rel_y >= btn_t && rel_y < btn_b) {
+					wlr_xdg_toplevel_send_close(toplevel->xdg_toplevel);
+					goto done_press;
+				}
+				btn_r -= 12 + 8;
+				/* Maximize button */
+				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
+						rel_y >= btn_t && rel_y < btn_b) {
+					toggle_maximize(toplevel);
+					goto done_press;
+				}
+				btn_r -= 12 + 8;
+				/* Minimize button */
+				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
+						rel_y >= btn_t && rel_y < btn_b) {
+					/* TODO: minimize to taskbar */
+					goto done_press;
+				}
+
+				/* Title bar drag area — start window move */
+				server->cursor_mode = CURSOR_MOVE;
+				server->grabbed_toplevel = toplevel;
+				server->grab_x = (int)mx - toplevel->x;
+				server->grab_y = (int)my - toplevel->y;
+			}
+
 			server->focus_mode = FOCUS_APP;
 			input_clear_selection(&server->input);
 			if (server->status) server->status->dropdown_open = false;
 			focus_toplevel(server, toplevel);
-		} else if (mx < effective_panel_width(server)) {
+		} else if (toplevel && surface) {
+			/* Click on app window surface — focus it */
+			server->focus_mode = FOCUS_APP;
+			input_clear_selection(&server->input);
+			if (server->status) server->status->dropdown_open = false;
+			focus_toplevel(server, toplevel);
+		} else {
 			int oh = output_height(server);
 			int bar_y = oh - INPUT_HEIGHT;
 
@@ -1239,10 +1493,13 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 					pthread_mutex_lock(&server->feed->mutex);
 					server->feed->selected_card = card_idx;
 					/* Toggle expansion: click same card again to collapse */
-					if (card_idx >= 0 && card_idx == server->feed->expanded_card)
+					if (card_idx >= 0 && card_idx == server->feed->expanded_card) {
 						server->feed->expanded_card = -1;
-					else
+						server->feed->expanded_scroll = 0;
+					} else {
 						server->feed->expanded_card = card_idx;
+						server->feed->expanded_scroll = 0;
+					}
 					pthread_mutex_unlock(&server->feed->mutex);
 					server->lrenderer->card_sel.card_idx = -1;
 					server->card_text_drag = false;
@@ -1261,6 +1518,10 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 	}
 
 	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		if (server->cursor_mode != CURSOR_PASSTHROUGH) {
+			server->cursor_mode = CURSOR_PASSTHROUGH;
+			server->grabbed_toplevel = NULL;
+		}
 		server->input_drag = false;
 		server->card_text_drag = false;
 		/* Single click with no drag → degenerate anchor, clear it */
@@ -1282,8 +1543,25 @@ static void cursor_axis_handler(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
 
-	/* Scroll the panel feed when the cursor is over the panel area */
-	if (server->cursor->x < effective_panel_width(server) &&
+	/* Scroll within expanded card overlay */
+	if (server->feed->expanded_card >= 0 &&
+			event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+		pthread_mutex_lock(&server->feed->mutex);
+		server->feed->expanded_scroll += event->delta;
+		if (server->feed->expanded_scroll < 0)
+			server->feed->expanded_scroll = 0;
+		pthread_mutex_unlock(&server->feed->mutex);
+		schedule_panel_redraw(server);
+		return;
+	}
+
+	/* Scroll the panel feed when the cursor is over the desktop (not a window) */
+	double scroll_sx, scroll_sy;
+	struct wlr_surface *scroll_surface = NULL;
+	struct leaves_toplevel *scroll_tl = toplevel_at(server,
+		server->cursor->x, server->cursor->y,
+		&scroll_surface, &scroll_sx, &scroll_sy);
+	if (!scroll_tl &&
 			event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
 		pthread_mutex_lock(&server->feed->mutex);
 		/* Wayland delta: positive = scroll down (toward user).
@@ -1512,22 +1790,32 @@ int main(int argc, char *argv[]) {
 
 	/* Scene tree structure:
 	 *   scene root
-	 *     ├── panel_bg (solid rect, dark background)
-	 *     ├── panel_tree
-	 *     │   └── panel_scene_buf (Cairo-rendered panel)
-	 *     └── app_tree (positioned at x=PANEL_WIDTH)
-	 *         └── [xdg_surface nodes from client windows]
+	 *     ├── panel_bg    (full screen, desktop background)
+	 *     ├── panel_tree  → panel_scene_buf (Cairo: wallpaper + feed)
+	 *     ├── app_tree    (floating windows with SSD title bars)
+	 *     │   └── [frame_tree per window: titlebar rects + xdg_surface]
+	 *     └── taskbar_tree (full-width taskbar, always topmost)
+	 *         ├── taskbar_bg
+	 *         └── taskbar_scene_buf
 	 */
-	float panel_bg_color[4] = {1.0f, 1.0f, 1.0f, 1.0f}; /* match BG_BASE #FFFFFF */
+	float panel_bg_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 	server.panel_bg = wlr_scene_rect_create(&server.scene->tree,
-		PANEL_WIDTH, 1080, panel_bg_color);
+		1920, 1080, panel_bg_color);
 
 	server.panel_tree = wlr_scene_tree_create(&server.scene->tree);
 	server.panel_scene_buf = wlr_scene_buffer_create(server.panel_tree,
 		NULL);
 
 	server.app_tree = wlr_scene_tree_create(&server.scene->tree);
-	wlr_scene_node_set_position(&server.app_tree->node, PANEL_WIDTH, 0);
+	wlr_scene_node_set_position(&server.app_tree->node, 0, 0);
+
+	/* Taskbar overlay — full width at bottom, above app windows */
+	server.taskbar_tree = wlr_scene_tree_create(&server.scene->tree);
+	float taskbar_bg_color[4] = {0.96f, 0.96f, 0.96f, 1.0f};
+	server.taskbar_bg = wlr_scene_rect_create(server.taskbar_tree,
+		1920, INPUT_HEIGHT, taskbar_bg_color);
+	server.taskbar_scene_buf = wlr_scene_buffer_create(
+		server.taskbar_tree, NULL);
 
 	/* xdg-shell */
 	server.xdg_shell = wlr_xdg_shell_create(server.display, 6);
@@ -1648,8 +1936,14 @@ int main(int argc, char *argv[]) {
 		wl_display_destroy(server.display);
 		return 1;
 	}
-	setenv("WAYLAND_DISPLAY", socket, true);
+	setenv("WAYLAND_DISPLAY", socket, 1);
 	fprintf(stderr, "Leaves compositor running on %s\n", socket);
+
+	/* Store the socket name directly in the feed struct so feed threads
+	 * read the compositor's OWN socket, not an inherited env value. */
+	if (server.feed)
+		snprintf(server.feed->wayland_display,
+			sizeof(server.feed->wayland_display), "%s", socket);
 
 	/* Write display socket to ~/.leaves/wayland-display so the API server
 	 * and agents can discover which compositor to connect to. */

@@ -231,8 +231,18 @@ def _main() -> None:
     if wl_display:
         os.environ["WAYLAND_DISPLAY"] = wl_display
 
-    # Step 2: apply Landlock — restricts THIS process's FS access from here on
-    apply_landlock(goal_spec)
+    # Step 2: apply Landlock — restricts THIS process's FS access from here on.
+    # Skip for app-launch actions: the launched GUI app inherits Landlock
+    # restrictions and needs unrestricted FS access to function properly
+    # (GPU, /dev/shm, profile dirs, etc.).
+    _is_launch = all(
+        a.get("agent") == "system" and a.get("type", "").upper() == "WRITE"
+        for a in goal_spec.get("actions", [])
+    )
+    if not _is_launch:
+        apply_landlock(goal_spec)
+    else:
+        print("landlock: skipping for app launch", file=sys.stderr)
 
     # Step 3: project imports (Landlock already active)
     _root = str(pathlib.Path(__file__).parent.parent.resolve())

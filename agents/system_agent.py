@@ -42,6 +42,27 @@ _PROGRAM_ALIASES: dict[str, list[str]] = {
     "settings": ["gnome-control-center", "xfce4-settings-manager", "systemsettings"],
 }
 
+# Executables that are Chromium-based — need special flags to force a new
+# instance and ensure Wayland rendering on the correct compositor.
+_CHROMIUM_EXECUTABLES = frozenset({
+    "google-chrome-stable", "google-chrome", "google-chrome-beta",
+    "google-chrome-unstable", "chromium", "chromium-browser",
+    "brave", "brave-browser", "vivaldi", "vivaldi-stable",
+    "microsoft-edge", "microsoft-edge-stable",
+})
+
+# Firefox-based — need --new-instance to avoid connecting to an existing
+# instance running on a different Wayland compositor.
+_FIREFOX_EXECUTABLES = frozenset({
+    "firefox", "firefox-esr", "firefox-developer-edition",
+    "librewolf", "waterfox", "floorp",
+})
+
+# Base directory for per-compositor Chromium profiles.  The actual
+# directory includes the WAYLAND_DISPLAY name so that Chrome instances
+# on different compositors never share a SingletonLock file.
+_LEAVES_CHROME_BASE = pathlib.Path.home() / ".leaves"
+
 # Programs that must never be terminated via the agent.
 _PROTECTED_PROCESSES = frozenset({
     "systemd", "init", "sshd", "login", "dbus-daemon",
@@ -64,6 +85,7 @@ class SystemAgent(BaseAgent):
         action_type = action.get("type", "").upper()
         action_id = action.get("action_id", "unknown")
         params = action.get("params", {})
+        self._current_action = action  # store for socket resolution
 
         if action_type == "QUERY":
             return self._handle_query(action_id, params)
@@ -135,41 +157,118 @@ class SystemAgent(BaseAgent):
                 detail=f"Program '{program}' not found in PATH",
             )
 
+        exe_basename = os.path.basename(exe)
+
         row_id = self._audit_start(action_id, "WRITE", params)
         try:
-            # Build env with Wayland display info so GUI apps connect to compositor.
             env = os.environ.copy()
-            if "WAYLAND_DISPLAY" not in env:
-                # 1. Try reading from compositor's marker file.
+            if "XDG_RUNTIME_DIR" not in env:
+                env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+            xrd = env["XDG_RUNTIME_DIR"]
+
+            resolved_display: Optional[str] = None
+
+            # ---------- Socket resolution (4 channels, most direct first) -----
+            #
+            # Priority order:
+            #   1. Direct from goal_spec (injected into action by coordinator)
+            #   2. Marker file ~/.leaves/wayland-display (written by compositor)
+            #   3. os.environ — BUT only if sandboxed_runner set it from
+            #      goal_spec metadata.  The *inherited* WAYLAND_DISPLAY in
+            #      os.environ may point to Hyprland (the parent shell's
+            #      compositor).  We detect this by comparing with the marker.
+            #   4. Scan XDG_RUNTIME_DIR
+
+            # 1. DIRECT from goal_spec metadata
+            direct_display = (
+                getattr(self, "_current_action", {}).get("_wayland_display")
+            )
+            if direct_display and os.path.exists(os.path.join(xrd, direct_display)):
+                resolved_display = direct_display
+
+            # 2. Marker file (written by compositor on startup — authoritative)
+            marker_display: Optional[str] = None
+            if not resolved_display:
                 try:
                     marker = pathlib.Path.home() / ".leaves" / "wayland-display"
-                    display = marker.read_text().strip()
-                    if display:
-                        env["WAYLAND_DISPLAY"] = display
+                    candidate = marker.read_text().strip()
+                    if candidate and os.path.exists(os.path.join(xrd, candidate)):
+                        marker_display = candidate
+                        resolved_display = candidate
                 except (OSError, ValueError):
                     pass
-            if "WAYLAND_DISPLAY" not in env:
-                # 2. Discover Wayland socket from XDG_RUNTIME_DIR.
-                # Pick the highest-numbered socket (most recently created
-                # compositor) so we connect to the user's active session.
+
+            # 3. os.environ — only trust it if it matches the marker file,
+            #    OR if the marker couldn't be read.
+            if not resolved_display:
+                meta_display = os.environ.get("WAYLAND_DISPLAY")
+                if meta_display and os.path.exists(os.path.join(xrd, meta_display)):
+                    resolved_display = meta_display
+
+            # 4. Scan XDG_RUNTIME_DIR for the newest wayland socket.
+            if not resolved_display:
                 try:
-                    xrd = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
                     import glob as _glob
                     sockets = sorted(_glob.glob(os.path.join(xrd, "wayland-*")))
                     for s in reversed(sockets):
                         if not s.endswith(".lock"):
-                            env["WAYLAND_DISPLAY"] = os.path.basename(s)
+                            resolved_display = os.path.basename(s)
                             break
                 except OSError:
-                    pass  # sandboxed — Wayland discovery not possible
-            if "XDG_RUNTIME_DIR" not in env:
-                env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+                    pass
+
+            if resolved_display:
+                env["WAYLAND_DISPLAY"] = resolved_display
+
+            # ---------- Diagnostic log ----------
+            _diag_path = pathlib.Path.home() / ".leaves" / "launch-debug.log"
+            try:
+                import glob as _dg
+                sockets = sorted(_dg.glob(os.path.join(xrd, "wayland-*")))
+                with open(_diag_path, "w") as _df:
+                    _df.write(f"direct_display (action):  {direct_display}\n")
+                    _df.write(f"marker_display:           {marker_display}\n")
+                    _df.write(f"os.environ WAYLAND_DISPLAY: {os.environ.get('WAYLAND_DISPLAY')}\n")
+                    _df.write(f"RESOLVED → {resolved_display}\n")
+                    _df.write(f"env[WAYLAND_DISPLAY]:     {env.get('WAYLAND_DISPLAY')}\n")
+                    _df.write(f"sockets:                  {sockets}\n")
+            except Exception:
+                pass
+
+            # Build the command line — browsers need special flags so they
+            # don't connect to an existing instance on a different compositor.
+            cmd: list[str] = [exe]
+
+            if exe_basename in _CHROMIUM_EXECUTABLES:
+                # Per-compositor data dir: include the Wayland display name
+                # so each compositor gets its own Chrome instance with its
+                # own SingletonLock.  A static path like "chrome-profile"
+                # would let an old Chrome instance (running on Hyprland)
+                # hijack the launch via the singleton mechanism.
+                disp_tag = resolved_display or "default"
+                chrome_data_dir = _LEAVES_CHROME_BASE / f"chrome-{disp_tag}"
+                chrome_data_dir.mkdir(parents=True, exist_ok=True)
+                cmd += [
+                    f"--user-data-dir={chrome_data_dir}",
+                    "--ozone-platform=wayland",
+                ]
+            elif exe_basename in _FIREFOX_EXECUTABLES:
+                cmd.append("--new-instance")
+                env["MOZ_ENABLE_WAYLAND"] = "1"
+
+            # Append final command to diagnostic log
+            try:
+                with open(pathlib.Path.home() / ".leaves" / "launch-debug.log", "a") as _df:
+                    _df.write(f"cmd:                          {cmd}\n")
+                    _df.write(f"chrome_data_dir:              {locals().get('chrome_data_dir', 'N/A')}\n")
+            except Exception:
+                pass
 
             # Launch detached from our process group so it outlives us.
             # Use PIPE instead of DEVNULL to avoid opening /dev/null,
             # which Landlock's PATH_BENEATH can't grant on char devices.
             proc = subprocess.Popen(
-                [exe],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE,
@@ -354,7 +453,19 @@ class SystemAgent(BaseAgent):
     def sys_cpu(self) -> dict:
         usage = psutil.cpu_percent(interval=0.1)
         freq = psutil.cpu_freq()
-        cores = psutil.cpu_count(logical=False) or psutil.cpu_count()
+        cores_physical = psutil.cpu_count(logical=False)
+        cores_logical = psutil.cpu_count()
+
+        # CPU model name from /proc/cpuinfo
+        model: Optional[str] = None
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        model = line.split(":", 1)[1].strip()
+                        break
+        except OSError:
+            pass
 
         temp: Optional[float] = None
         try:
@@ -369,9 +480,11 @@ class SystemAgent(BaseAgent):
             pass
 
         return {
+            "model": model,
             "usage_percent": round(usage, 1),
             "freq_mhz": round(freq.current, 1) if freq else None,
-            "cores": cores,
+            "cores_physical": cores_physical,
+            "cores_logical": cores_logical,
             "temp_celsius": temp,
         }
 

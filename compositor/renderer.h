@@ -26,11 +26,11 @@ struct card_text_hit {
 
 	/* Result region (may be empty) */
 	int result_y, result_h;
-	char result[3584];
+	char result[8192];
 	int result_len;
 
 	/* Combined text for copy: title + \n + result */
-	char text[4096];
+	char text[8704];
 	int text_len;
 };
 
@@ -78,6 +78,14 @@ struct leaves_renderer {
 	int  overlay_cancel_w,  overlay_cancel_h;
 	int  overlay_confirm_x, overlay_confirm_y;
 	int  overlay_confirm_w, overlay_confirm_h;
+
+	/* Expanded-card overlay close button hit rect */
+	bool expanded_overlay_valid;
+	int  expanded_close_x, expanded_close_y;
+	int  expanded_close_w, expanded_close_h;
+	/* Expanded overlay content area (for scroll clipping) */
+	int  expanded_content_x, expanded_content_y;
+	int  expanded_content_w, expanded_content_h;
 
 	int  dropdown_x, dropdown_y, dropdown_w, dropdown_h;
 

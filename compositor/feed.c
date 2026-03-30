@@ -322,6 +322,8 @@ struct leaves_feed *feed_create(const char *api_base) {
 	}
 	feed->selected_card = -1;
 	feed->expanded_card = -1;
+	feed->expanded_scroll = 0;
+	feed->expanded_content_h = 0;
 	snprintf(feed->api_base, sizeof(feed->api_base), "%s", api_base);
 	return feed;
 }
@@ -566,7 +568,11 @@ static void *submit_thread(void *arg) {
 
 	char escaped[1024];
 	json_escape(sa->text, escaped, sizeof(escaped));
-	const char *wl_display = getenv("WAYLAND_DISPLAY");
+	/* Use the socket name stored directly by the compositor — NOT getenv,
+	 * which can return a stale/inherited value from the parent process
+	 * (e.g. Hyprland's wayland-1 on a different TTY). */
+	const char *wl_display = feed->wayland_display[0]
+		? feed->wayland_display : NULL;
 	char body[1400];
 	if (wl_display)
 		snprintf(body, sizeof(body),

@@ -311,45 +311,75 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
         agent = action.get("agent", "")
         atype = action.get("type", "").upper()
         if agent == "system":
+            qt = action.get("params", {}).get("query_type", "")
             if "launched" in r:
                 parts.append(f"Launched {r['launched']} (PID {r.get('pid', '?')})")
             elif "terminated" in r:
                 parts.append(f"Terminated {r.get('target', '?')} ({r.get('count', 0)} process{'es' if r.get('count', 1) != 1 else ''})")
-            elif "percent" in r:
-                qt = action.get("params", {}).get("query_type", "")
-                if qt == "memory":
-                    parts.append(f"RAM: {r.get('used_gb', '?')} GB used / {r.get('total_gb', '?')} GB total ({r.get('percent', '?')}%)")
-                elif qt == "cpu":
-                    s = f"CPU: {r.get('usage_percent', '?')}%"
-                    if r.get("temp_celsius"):
-                        s += f", {r['temp_celsius']}°C"
-                    parts.append(s)
-                elif qt == "disk":
-                    parts.append(f"Disk: {r.get('used_gb', '?')} GB used / {r.get('total_gb', '?')} GB total ({r.get('percent', '?')}%)")
-                else:
-                    parts.append(f"{qt}: {r.get('percent', '?')}%")
-            elif "uptime_seconds" in r:
+            elif qt == "cpu" or "usage_percent" in r:
+                lines = []
+                if r.get("model"):
+                    lines.append(r["model"])
+                usage = r.get("usage_percent")
+                freq = r.get("freq_mhz")
+                phys = r.get("cores_physical") or r.get("cores")
+                logi = r.get("cores_logical")
+                temp = r.get("temp_celsius")
+                if phys and logi and phys != logi:
+                    lines.append(f"{phys} cores / {logi} threads")
+                elif phys:
+                    lines.append(f"{phys} cores")
+                if freq:
+                    lines.append(f"{freq} MHz")
+                if usage is not None:
+                    lines.append(f"Usage: {usage}%")
+                if temp:
+                    lines.append(f"Temp: {temp}°C")
+                parts.append("\n".join(lines) if lines else "CPU info unavailable")
+            elif qt == "memory" or ("percent" in r and "total_gb" in r and "available_gb" in r):
+                parts.append(
+                    f"RAM: {r.get('used_gb', '?')} GB used / "
+                    f"{r.get('total_gb', '?')} GB total ({r.get('percent', '?')}%)\n"
+                    f"Available: {r.get('available_gb', '?')} GB"
+                )
+            elif qt == "disk" or ("percent" in r and "free_gb" in r):
+                parts.append(
+                    f"Disk ({r.get('path', '/')}):\n"
+                    f"{r.get('used_gb', '?')} GB used / "
+                    f"{r.get('total_gb', '?')} GB total ({r.get('percent', '?')}%)\n"
+                    f"Free: {r.get('free_gb', '?')} GB"
+                )
+            elif qt == "uptime" or "uptime_seconds" in r:
                 h = int(r["uptime_seconds"]) // 3600
                 m = (int(r["uptime_seconds"]) % 3600) // 60
-                parts.append(f"Uptime: {h}h {m}m")
-            elif "processes" in r:
-                top3 = r["processes"][:3]
-                names = ", ".join(p.get("name", "?") for p in top3)
-                parts.append(f"{r.get('count', '?')} processes (top: {names})")
+                parts.append(f"Uptime: {h}h {m}m\nBoot: {r.get('boot_time_iso', '?')}")
+            elif qt == "processes" or "processes" in r:
+                procs = r.get("processes", [])
+                lines = [f"{r.get('count', len(procs))} processes:"]
+                for p in procs[:10]:
+                    lines.append(
+                        f"  {p.get('name', '?'):20s}  "
+                        f"CPU {p.get('cpu_percent', 0):5.1f}%  "
+                        f"MEM {p.get('memory_mb', 0):7.1f} MB"
+                    )
+                parts.append("\n".join(lines))
+            else:
+                # Unknown system result — show as key-value pairs
+                lines = [f"  {k}: {v}" for k, v in r.items() if k != "error"]
+                parts.append("\n".join(lines) if lines else str(r))
         elif agent == "file":
             if atype == "QUERY" and "files" in r:
                 n = r.get("count", len(r["files"]))
                 if n == 0:
                     parts.append("No files found")
                 else:
-                    # Show up to 50 files with one per line for readability
-                    sample = r["files"][:50]
+                    # Show all files — the compositor's expanded card
+                    # view handles scrolling for large result sets.
                     names = "\n".join(
                         f"  {f.get('name', f)}" if isinstance(f, dict) else f"  {f}"
-                        for f in sample
+                        for f in r["files"]
                     )
-                    suffix = f"\n  … +{n - 50} more" if n > 50 else ""
-                    parts.append(f"{n} file(s):\n{names}{suffix}")
+                    parts.append(f"{n} file(s):\n{names}")
             elif atype == "READ" and "content" in r:
                 length = r.get("content_length", len(r.get("content", "")))
                 parts.append(f"Read {length} chars")

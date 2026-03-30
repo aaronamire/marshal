@@ -365,7 +365,7 @@ def match(user_text: str) -> Layer0Result:
                 is_implemented=True,
                 agent="system",
                 category="system_task",
-                preview_required=True,
+                preview_required=False,
             )
     # App terminate — "close firefox", "kill 1234"
     for pattern in _APP_TERMINATE_RULES:

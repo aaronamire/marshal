@@ -47,8 +47,9 @@ typedef struct {
 	LeavesSearchHit search_hits[MAX_SEARCH_HITS];
 	int search_hit_count;
 
-	/* Result summary — human-readable text shown in the card */
-	char result_summary[4096];
+	/* Result summary — human-readable text shown in the card.
+	 * 64 KB to hold full file listings (500 files × long names). */
+	char result_summary[65536];
 
 	/* Injection detection — populated from execution response */
 	bool injection_detected;
@@ -118,7 +119,10 @@ struct leaves_feed {
 	int confirm_card_idx;   /* which card is awaiting confirmation */
 	int selected_card;      /* index of card selected for copy, or -1 */
 	int expanded_card;      /* index of card expanded for full detail, or -1 */
+	float expanded_scroll;  /* scroll offset within expanded card overlay */
+	int expanded_content_h; /* measured content height of expanded card */
 	char api_base[256];
+	char wayland_display[64];  /* set directly by compositor, not getenv */
 	LeavesBriefing briefing;
 	LeavesWatcher watchers[MAX_WATCHERS];
 	int watcher_count;
