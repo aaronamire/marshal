@@ -18,6 +18,8 @@ libcurl = dependency('libcurl')
 cjson = dependency('libcjson')
 drm = dependency('libdrm')
 jpeg = dependency('libjpeg')
+xcb = dependency('xcb')
+xcb_icccm = dependency('xcb-icccm')
 math = meson.get_compiler('c').find_library('m')
 threads = dependency('threads')
 
@@ -32,6 +34,14 @@ xdg_shell_header = custom_target('xdg-shell-protocol-header',
   command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+# Generate wlr-layer-shell protocol header (enum definitions for layer shell)
+layer_shell_xml = meson.current_source_dir() / 'protocols/wlr-layer-shell-unstable-v1.xml'
+layer_shell_header = custom_target('wlr-layer-shell-protocol-header',
+  input : layer_shell_xml,
+  output : 'wlr-layer-shell-unstable-v1-protocol.h',
+  command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
 executable('leaves-compositor',
   'compositor.c',
   'renderer.c',
@@ -40,6 +50,7 @@ executable('leaves-compositor',
   'spring.c',
   'status.c',
   xdg_shell_header,
+  layer_shell_header,
   dependencies : [
     wlroots,
     wayland_server,
@@ -50,6 +61,8 @@ executable('leaves-compositor',
     cjson,
     drm,
     jpeg,
+    xcb,
+    xcb_icccm,
     math,
     threads,
   ],

@@ -36,6 +36,14 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
+#include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_text_input_v3.h>
+#include <wlr/types/wlr_input_method_v2.h>
+#include <wlr/xwayland/xwayland.h>
 #include <wlr/backend/session.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
@@ -154,6 +162,48 @@ struct leaves_toplevel {
 	struct wl_listener request_fullscreen;
 };
 
+/* ── Layer surface (layer shell) ── */
+
+struct leaves_layer_surface {
+	struct leaves_server *server;
+	struct wlr_layer_surface_v1 *layer_surface;
+	struct wlr_scene_layer_surface_v1 *scene;
+
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+};
+
+/* ── XWayland surface ── */
+
+struct leaves_xwayland_surface {
+	struct wl_list link;  /* leaves_server.toplevels — shares list with xdg */
+	struct leaves_server *server;
+	struct wlr_xwayland_surface *xsurface;
+
+	/* SSD frame tree (same pattern as leaves_toplevel) */
+	struct wlr_scene_tree *frame_tree;
+	struct wlr_scene_tree *scene_tree;
+	struct wlr_scene_rect *titlebar_bg;
+	struct wlr_scene_rect *btn_close;
+	struct wlr_scene_rect *btn_max;
+	struct wlr_scene_rect *btn_min;
+
+	int x, y;
+	int width, height;
+	bool maximized;
+	int saved_x, saved_y, saved_w, saved_h;
+
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener destroy;
+	struct wl_listener request_configure;
+	struct wl_listener request_maximize;
+	struct wl_listener request_fullscreen;
+	struct wl_listener set_geometry;
+};
+
 /* ── Output ── */
 
 struct leaves_output {
@@ -185,6 +235,7 @@ struct leaves_server {
 	struct wlr_session *session;
 	struct wlr_renderer *renderer;
 	struct wlr_allocator *allocator;
+	struct wlr_compositor *compositor;
 	struct wlr_output_layout *output_layout;
 
 	/* Scene graph */
@@ -201,9 +252,37 @@ struct leaves_server {
 	/* Wayland protocols */
 	struct wlr_xdg_shell *xdg_shell;
 	struct wlr_xdg_decoration_manager_v1 *decoration_mgr;
+	struct wlr_presentation *presentation;
+	struct wlr_screencopy_manager_v1 *screencopy_mgr;
+	struct wlr_xdg_output_manager_v1 *xdg_output_mgr;
+	struct wlr_fractional_scale_manager_v1 *fractional_scale_mgr;
+
+	/* Layer shell */
+	struct wlr_layer_shell_v1 *layer_shell;
+	struct wlr_scene_tree *layer_trees[4]; /* bg, bottom, top, overlay */
+
+	/* Text input / IME */
+	struct wlr_text_input_manager_v3 *text_input_mgr;
+	struct wlr_input_method_manager_v2 *input_method_mgr;
+	struct wlr_input_method_v2 *input_method;
+	struct wlr_text_input_v3 *active_text_input;
+
+	/* XWayland */
+	struct wlr_xwayland *xwayland;
 
 	/* Listeners (decoration) */
 	struct wl_listener new_decoration;
+
+	/* Listeners (layer shell) */
+	struct wl_listener new_layer_surface;
+
+	/* Listeners (text input / IME) */
+	struct wl_listener new_text_input;
+	struct wl_listener new_input_method;
+
+	/* Listeners (XWayland) */
+	struct wl_listener xwayland_ready;
+	struct wl_listener xwayland_new_surface;
 
 	/* Cursor */
 	struct wlr_cursor *cursor;
@@ -1742,6 +1821,454 @@ static void server_new_decoration(struct wl_listener *listener, void *data) {
 	wl_signal_add(&decoration->events.destroy, &deco->destroy);
 }
 
+/* ── Layer shell handlers ── */
+
+static void layer_surface_map(struct wl_listener *listener, void *data) {
+	struct leaves_layer_surface *ls =
+		wl_container_of(listener, ls, map);
+	wlr_scene_node_set_enabled(&ls->scene->tree->node, true);
+}
+
+static void layer_surface_unmap(struct wl_listener *listener, void *data) {
+	struct leaves_layer_surface *ls =
+		wl_container_of(listener, ls, unmap);
+	wlr_scene_node_set_enabled(&ls->scene->tree->node, false);
+}
+
+static void layer_surface_commit(struct wl_listener *listener, void *data) {
+	struct leaves_layer_surface *ls =
+		wl_container_of(listener, ls, commit);
+	if (ls->layer_surface->initial_commit) {
+		/* Let wlroots arrange the layer surface on its output */
+		struct leaves_output *out;
+		wl_list_for_each(out, &ls->server->outputs, link) {
+			struct wlr_output *wo = out->wlr_output;
+			int ow, oh;
+			wlr_output_effective_resolution(wo, &ow, &oh);
+			struct wlr_box full = { .x = 0, .y = 0,
+				.width = ow, .height = oh };
+			wlr_scene_layer_surface_v1_configure(ls->scene, &full, &full);
+			break;
+		}
+	}
+}
+
+static void layer_surface_destroy(struct wl_listener *listener, void *data) {
+	struct leaves_layer_surface *ls =
+		wl_container_of(listener, ls, destroy);
+	wl_list_remove(&ls->map.link);
+	wl_list_remove(&ls->unmap.link);
+	wl_list_remove(&ls->commit.link);
+	wl_list_remove(&ls->destroy.link);
+	free(ls);
+}
+
+static void server_new_layer_surface(struct wl_listener *listener, void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, new_layer_surface);
+	struct wlr_layer_surface_v1 *layer_surface = data;
+
+	/* Assign to first output if client didn't specify */
+	if (!layer_surface->output) {
+		struct leaves_output *out;
+		wl_list_for_each(out, &server->outputs, link) {
+			layer_surface->output = out->wlr_output;
+			break;
+		}
+		if (!layer_surface->output) {
+			wlr_layer_surface_v1_destroy(layer_surface);
+			return;
+		}
+	}
+
+	enum zwlr_layer_shell_v1_layer layer = layer_surface->pending.layer;
+	if (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY)
+		layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
+
+	struct wlr_scene_tree *parent = server->layer_trees[layer];
+
+	struct leaves_layer_surface *ls = calloc(1, sizeof(*ls));
+	ls->server = server;
+	ls->layer_surface = layer_surface;
+	ls->scene = wlr_scene_layer_surface_v1_create(parent, layer_surface);
+	ls->scene->tree->node.data = ls;
+
+	ls->map.notify = layer_surface_map;
+	wl_signal_add(&layer_surface->surface->events.map, &ls->map);
+	ls->unmap.notify = layer_surface_unmap;
+	wl_signal_add(&layer_surface->surface->events.unmap, &ls->unmap);
+	ls->commit.notify = layer_surface_commit;
+	wl_signal_add(&layer_surface->surface->events.commit, &ls->commit);
+	ls->destroy.notify = layer_surface_destroy;
+	wl_signal_add(&layer_surface->events.destroy, &ls->destroy);
+}
+
+/* ── Text input / IME relay ── */
+
+static void handle_text_input_enable(struct wl_listener *listener, void *data) {
+	/* Forward enable to input method */
+	struct wlr_text_input_v3 *text_input = data;
+	struct leaves_server *server = text_input->seat->data;
+	if (!server || !server->input_method) return;
+	server->active_text_input = text_input;
+	wlr_input_method_v2_send_activate(server->input_method);
+
+	/* Forward content type and surrounding text */
+	wlr_input_method_v2_send_content_type(server->input_method,
+		text_input->current.content_type.hint,
+		text_input->current.content_type.purpose);
+	if (text_input->current.surrounding.text) {
+		wlr_input_method_v2_send_surrounding_text(server->input_method,
+			text_input->current.surrounding.text,
+			text_input->current.surrounding.cursor,
+			text_input->current.surrounding.anchor);
+	}
+	wlr_input_method_v2_send_done(server->input_method);
+}
+
+static void handle_text_input_commit(struct wl_listener *listener, void *data) {
+	struct wlr_text_input_v3 *text_input = data;
+	struct leaves_server *server = text_input->seat->data;
+	if (!server || !server->input_method) return;
+	if (server->active_text_input != text_input) return;
+
+	/* Forward updated state to input method */
+	if (text_input->current.surrounding.text) {
+		wlr_input_method_v2_send_surrounding_text(server->input_method,
+			text_input->current.surrounding.text,
+			text_input->current.surrounding.cursor,
+			text_input->current.surrounding.anchor);
+	}
+	wlr_input_method_v2_send_content_type(server->input_method,
+		text_input->current.content_type.hint,
+		text_input->current.content_type.purpose);
+	wlr_input_method_v2_send_done(server->input_method);
+}
+
+static void handle_text_input_disable(struct wl_listener *listener,
+		void *data) {
+	struct wlr_text_input_v3 *text_input = data;
+	struct leaves_server *server = text_input->seat->data;
+	if (!server || !server->input_method) return;
+	if (server->active_text_input == text_input) {
+		wlr_input_method_v2_send_deactivate(server->input_method);
+		wlr_input_method_v2_send_done(server->input_method);
+		server->active_text_input = NULL;
+	}
+}
+
+static void handle_text_input_destroy(struct wl_listener *listener,
+		void *data) {
+	struct wlr_text_input_v3 *text_input = data;
+	struct leaves_server *server = text_input->seat->data;
+	if (!server) return;
+	if (server->active_text_input == text_input)
+		server->active_text_input = NULL;
+}
+
+struct leaves_text_input {
+	struct wl_listener enable;
+	struct wl_listener commit;
+	struct wl_listener disable;
+	struct wl_listener destroy;
+};
+
+static void server_new_text_input(struct wl_listener *listener, void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, new_text_input);
+	struct wlr_text_input_v3 *text_input = data;
+
+	struct leaves_text_input *ti = calloc(1, sizeof(*ti));
+	if (!ti) return;
+
+	/* Store server pointer in seat->data for the per-input-event callbacks */
+	server->seat->data = server;
+
+	ti->enable.notify = handle_text_input_enable;
+	wl_signal_add(&text_input->events.enable, &ti->enable);
+	ti->commit.notify = handle_text_input_commit;
+	wl_signal_add(&text_input->events.commit, &ti->commit);
+	ti->disable.notify = handle_text_input_disable;
+	wl_signal_add(&text_input->events.disable, &ti->disable);
+	ti->destroy.notify = handle_text_input_destroy;
+	wl_signal_add(&text_input->events.destroy, &ti->destroy);
+}
+
+/* Input method commit: forward committed string to text input */
+static void handle_input_method_commit(struct wl_listener *listener,
+		void *data) {
+	struct wlr_input_method_v2 *im = data;
+	struct leaves_server *server = im->seat->data;
+	if (!server || !server->active_text_input) return;
+
+	struct wlr_text_input_v3 *ti = server->active_text_input;
+	if (im->current.commit_text) {
+		wlr_text_input_v3_send_commit_string(ti,
+			im->current.commit_text);
+	}
+	if (im->current.preedit.text) {
+		wlr_text_input_v3_send_preedit_string(ti,
+			im->current.preedit.text,
+			im->current.preedit.cursor_begin,
+			im->current.preedit.cursor_end);
+	}
+	if (im->current.delete.before_length || im->current.delete.after_length) {
+		wlr_text_input_v3_send_delete_surrounding_text(ti,
+			im->current.delete.before_length,
+			im->current.delete.after_length);
+	}
+	wlr_text_input_v3_send_done(ti);
+}
+
+static void handle_input_method_destroy(struct wl_listener *listener,
+		void *data) {
+	struct wlr_input_method_v2 *im = data;
+	struct leaves_server *server = im->seat->data;
+	if (server) server->input_method = NULL;
+}
+
+struct leaves_input_method {
+	struct wl_listener commit;
+	struct wl_listener destroy;
+};
+
+static void server_new_input_method(struct wl_listener *listener, void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, new_input_method);
+	struct wlr_input_method_v2 *im = data;
+
+	/* Only one input method at a time */
+	if (server->input_method) {
+		wlr_input_method_v2_send_unavailable(im);
+		return;
+	}
+	server->input_method = im;
+	server->seat->data = server;
+
+	struct leaves_input_method *lim = calloc(1, sizeof(*lim));
+	if (!lim) return;
+
+	lim->commit.notify = handle_input_method_commit;
+	wl_signal_add(&im->events.commit, &lim->commit);
+	lim->destroy.notify = handle_input_method_destroy;
+	wl_signal_add(&im->events.destroy, &lim->destroy);
+}
+
+/* ── XWayland handlers ── */
+
+static void update_xwayland_decorations(struct leaves_xwayland_surface *xs);
+
+static void xwayland_surface_map(struct wl_listener *listener, void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, map);
+	struct leaves_server *server = xs->server;
+
+	wl_list_insert(&server->toplevels, &xs->link);
+	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
+	update_xwayland_decorations(xs);
+
+	/* Focus the new X11 window */
+	server->focus_mode = FOCUS_APP;
+	wlr_scene_node_raise_to_top(&xs->frame_tree->node);
+	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+	if (keyboard) {
+		wlr_seat_keyboard_notify_enter(server->seat,
+			xs->xsurface->surface,
+			keyboard->keycodes, keyboard->num_keycodes,
+			&keyboard->modifiers);
+	}
+	wlr_xwayland_surface_activate(xs->xsurface, true);
+	schedule_panel_redraw(server);
+}
+
+static void xwayland_surface_unmap(struct wl_listener *listener, void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, unmap);
+	struct leaves_server *server = xs->server;
+
+	wl_list_remove(&xs->link);
+
+	if (!wl_list_empty(&server->toplevels)) {
+		/* Focus next toplevel (could be xdg or xwayland) */
+		struct leaves_toplevel *next = wl_container_of(
+			server->toplevels.next, next, link);
+		focus_toplevel(server, next);
+	} else {
+		server->focus_mode = FOCUS_NONE;
+		wlr_seat_keyboard_clear_focus(server->seat);
+		schedule_panel_redraw(server);
+	}
+}
+
+static void xwayland_surface_destroy(struct wl_listener *listener, void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, destroy);
+
+	wl_list_remove(&xs->map.link);
+	wl_list_remove(&xs->unmap.link);
+	wl_list_remove(&xs->destroy.link);
+	wl_list_remove(&xs->request_configure.link);
+	wl_list_remove(&xs->request_maximize.link);
+	wl_list_remove(&xs->request_fullscreen.link);
+	wl_list_remove(&xs->set_geometry.link);
+
+	if (xs->server->grabbed_toplevel ==
+			(struct leaves_toplevel *)xs) {
+		xs->server->cursor_mode = CURSOR_PASSTHROUGH;
+		xs->server->grabbed_toplevel = NULL;
+	}
+
+	if (xs->scene_tree) {
+		wlr_scene_node_reparent(&xs->scene_tree->node,
+			xs->server->app_tree);
+		wlr_scene_node_set_enabled(&xs->scene_tree->node, false);
+	}
+	if (xs->frame_tree)
+		wlr_scene_node_destroy(&xs->frame_tree->node);
+
+	free(xs);
+}
+
+static void xwayland_surface_request_configure(struct wl_listener *listener,
+		void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, request_configure);
+	struct wlr_xwayland_surface_configure_event *ev = data;
+	wlr_xwayland_surface_configure(xs->xsurface,
+		ev->x, ev->y, ev->width, ev->height);
+	xs->x = ev->x;
+	xs->y = ev->y;
+	xs->width = ev->width;
+	xs->height = ev->height;
+	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
+	update_xwayland_decorations(xs);
+}
+
+static void xwayland_surface_request_maximize(struct wl_listener *listener,
+		void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, request_maximize);
+	struct leaves_server *server = xs->server;
+	int ow = output_width(server);
+	int oh = output_height(server);
+
+	if (!xs->maximized) {
+		xs->saved_x = xs->x; xs->saved_y = xs->y;
+		xs->saved_w = xs->width; xs->saved_h = xs->height;
+		xs->maximized = true;
+		xs->x = 0; xs->y = 0;
+		xs->width = ow;
+		xs->height = oh - INPUT_HEIGHT - TITLEBAR_H;
+	} else {
+		xs->maximized = false;
+		xs->x = xs->saved_x; xs->y = xs->saved_y;
+		xs->width = xs->saved_w; xs->height = xs->saved_h;
+	}
+	wlr_xwayland_surface_configure(xs->xsurface,
+		xs->x, xs->y + TITLEBAR_H, xs->width, xs->height);
+	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
+	update_xwayland_decorations(xs);
+	schedule_panel_redraw(server);
+}
+
+static void xwayland_surface_request_fullscreen(struct wl_listener *listener,
+		void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, request_fullscreen);
+	if (!xs->maximized)
+		xwayland_surface_request_maximize(listener, data);
+}
+
+static void xwayland_surface_set_geometry(struct wl_listener *listener,
+		void *data) {
+	struct leaves_xwayland_surface *xs =
+		wl_container_of(listener, xs, set_geometry);
+	update_xwayland_decorations(xs);
+}
+
+static void update_xwayland_decorations(struct leaves_xwayland_surface *xs) {
+	int w = xs->width > 0 ? xs->width : 800;
+	wlr_scene_rect_set_size(xs->titlebar_bg, w, TITLEBAR_H);
+	wlr_scene_node_set_position(&xs->btn_close->node, w - 20, 10);
+	wlr_scene_node_set_position(&xs->btn_max->node, w - 40, 10);
+	wlr_scene_node_set_position(&xs->btn_min->node, w - 60, 10);
+}
+
+static void server_xwayland_new_surface(struct wl_listener *listener,
+		void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, xwayland_new_surface);
+	struct wlr_xwayland_surface *xsurface = data;
+
+	struct leaves_xwayland_surface *xs = calloc(1, sizeof(*xs));
+	xs->server = server;
+	xs->xsurface = xsurface;
+
+	/* Create SSD frame tree (same pattern as xdg toplevels) */
+	xs->frame_tree = wlr_scene_tree_create(server->app_tree);
+	xs->frame_tree->node.data = xs;
+
+	float tb_color[4] = {0.898f, 0.898f, 0.898f, 1.0f};
+	xs->titlebar_bg = wlr_scene_rect_create(
+		xs->frame_tree, 800, TITLEBAR_H, tb_color);
+
+	float close_color[4] = {0.937f, 0.267f, 0.267f, 1.0f};
+	xs->btn_close = wlr_scene_rect_create(
+		xs->frame_tree, 12, 12, close_color);
+
+	float max_color[4] = {0.133f, 0.784f, 0.251f, 1.0f};
+	xs->btn_max = wlr_scene_rect_create(
+		xs->frame_tree, 12, 12, max_color);
+
+	float min_color[4] = {1.0f, 0.741f, 0.180f, 1.0f};
+	xs->btn_min = wlr_scene_rect_create(
+		xs->frame_tree, 12, 12, min_color);
+
+	/* XWayland surface scene node below title bar */
+	xs->scene_tree = wlr_scene_subsurface_tree_create(
+		xs->frame_tree, xsurface->surface);
+	wlr_scene_node_set_position(&xs->scene_tree->node, 0, TITLEBAR_H);
+	xs->scene_tree->node.data = xs;
+
+	/* Default floating position */
+	int ow = output_width(server);
+	int oh = output_height(server);
+	int usable_h = oh - INPUT_HEIGHT;
+	xs->width  = xsurface->width > 0 ? xsurface->width : ow * 7 / 10;
+	xs->height = xsurface->height > 0 ? xsurface->height : usable_h * 7 / 10;
+	xs->x = (ow - xs->width) / 2;
+	xs->y = (usable_h - xs->height - TITLEBAR_H) / 2;
+
+	xs->map.notify = xwayland_surface_map;
+	wl_signal_add(&xsurface->surface->events.map, &xs->map);
+	xs->unmap.notify = xwayland_surface_unmap;
+	wl_signal_add(&xsurface->surface->events.unmap, &xs->unmap);
+	xs->destroy.notify = xwayland_surface_destroy;
+	wl_signal_add(&xsurface->events.destroy, &xs->destroy);
+	xs->request_configure.notify = xwayland_surface_request_configure;
+	wl_signal_add(&xsurface->events.request_configure,
+		&xs->request_configure);
+	xs->request_maximize.notify = xwayland_surface_request_maximize;
+	wl_signal_add(&xsurface->events.request_maximize,
+		&xs->request_maximize);
+	xs->request_fullscreen.notify = xwayland_surface_request_fullscreen;
+	wl_signal_add(&xsurface->events.request_fullscreen,
+		&xs->request_fullscreen);
+	xs->set_geometry.notify = xwayland_surface_set_geometry;
+	wl_signal_add(&xsurface->events.set_geometry, &xs->set_geometry);
+}
+
+static void server_xwayland_ready(struct wl_listener *listener, void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, xwayland_ready);
+	/* Set DISPLAY so child processes can find the XWayland socket */
+	if (server->xwayland) {
+		setenv("DISPLAY", server->xwayland->display_name, 1);
+		fprintf(stderr, "XWayland ready on %s\n",
+			server->xwayland->display_name);
+	}
+}
+
 /* ── Main ── */
 
 int main(int argc, char *argv[]) {
@@ -1777,7 +2304,8 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Wayland compositor globals — required for clients */
-	wlr_compositor_create(server.display, 6, server.renderer);
+	server.compositor =
+		wlr_compositor_create(server.display, 6, server.renderer);
 	wlr_data_device_manager_create(server.display);
 
 	/* Output layout */
@@ -1788,16 +2316,25 @@ int main(int argc, char *argv[]) {
 	server.scene_layout = wlr_scene_attach_output_layout(server.scene,
 		server.output_layout);
 
-	/* Scene tree structure:
+	/* Scene tree structure (z-order, bottom to top):
 	 *   scene root
-	 *     ├── panel_bg    (full screen, desktop background)
-	 *     ├── panel_tree  → panel_scene_buf (Cairo: wallpaper + feed)
-	 *     ├── app_tree    (floating windows with SSD title bars)
-	 *     │   └── [frame_tree per window: titlebar rects + xdg_surface]
-	 *     └── taskbar_tree (full-width taskbar, always topmost)
-	 *         ├── taskbar_bg
-	 *         └── taskbar_scene_buf
+	 *     ├── layer_background  (desktop widgets: background layer)
+	 *     ├── panel_bg          (full screen, desktop background)
+	 *     ├── panel_tree        → panel_scene_buf (Cairo: wallpaper + feed)
+	 *     ├── layer_bottom      (layer shell bottom)
+	 *     ├── app_tree          (floating windows with SSD title bars)
+	 *     │   └── [frame_tree per window: titlebar rects + xdg/xwayland surface]
+	 *     ├── taskbar_tree      (full-width taskbar, above app windows)
+	 *     │   ├── taskbar_bg
+	 *     │   └── taskbar_scene_buf
+	 *     ├── layer_top         (notifications, screen keyboard)
+	 *     └── layer_overlay     (OSDs, auth dialogs, lock screen)
 	 */
+
+	/* Layer shell: background */
+	server.layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] =
+		wlr_scene_tree_create(&server.scene->tree);
+
 	float panel_bg_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 	server.panel_bg = wlr_scene_rect_create(&server.scene->tree,
 		1920, 1080, panel_bg_color);
@@ -1805,6 +2342,10 @@ int main(int argc, char *argv[]) {
 	server.panel_tree = wlr_scene_tree_create(&server.scene->tree);
 	server.panel_scene_buf = wlr_scene_buffer_create(server.panel_tree,
 		NULL);
+
+	/* Layer shell: bottom */
+	server.layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] =
+		wlr_scene_tree_create(&server.scene->tree);
 
 	server.app_tree = wlr_scene_tree_create(&server.scene->tree);
 	wlr_scene_node_set_position(&server.app_tree->node, 0, 0);
@@ -1816,6 +2357,12 @@ int main(int argc, char *argv[]) {
 		1920, INPUT_HEIGHT, taskbar_bg_color);
 	server.taskbar_scene_buf = wlr_scene_buffer_create(
 		server.taskbar_tree, NULL);
+
+	/* Layer shell: top and overlay (above taskbar) */
+	server.layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_TOP] =
+		wlr_scene_tree_create(&server.scene->tree);
+	server.layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
+		wlr_scene_tree_create(&server.scene->tree);
 
 	/* xdg-shell */
 	server.xdg_shell = wlr_xdg_shell_create(server.display, 6);
@@ -1832,6 +2379,55 @@ int main(int argc, char *argv[]) {
 	server.new_decoration.notify = server_new_decoration;
 	wl_signal_add(&server.decoration_mgr->events.new_toplevel_decoration,
 		&server.new_decoration);
+
+	/* presentation-time: frame timing for video players / games */
+	server.presentation = wlr_presentation_create(server.display,
+		server.backend);
+
+	/* screencopy: screenshots and screen sharing */
+	server.screencopy_mgr =
+		wlr_screencopy_manager_v1_create(server.display);
+
+	/* xdg-output: logical output info for HiDPI */
+	server.xdg_output_mgr = wlr_xdg_output_manager_v1_create(
+		server.display, server.output_layout);
+
+	/* fractional-scale: HiDPI fractional scaling */
+	server.fractional_scale_mgr =
+		wlr_fractional_scale_manager_v1_create(server.display, 1);
+
+	/* layer-shell: notifications, lock screen, overlays, desktop widgets */
+	server.layer_shell = wlr_layer_shell_v1_create(server.display, 4);
+	server.new_layer_surface.notify = server_new_layer_surface;
+	wl_signal_add(&server.layer_shell->events.new_surface,
+		&server.new_layer_surface);
+
+	/* text-input + input-method: IME support for non-Latin scripts */
+	server.text_input_mgr =
+		wlr_text_input_manager_v3_create(server.display);
+	server.new_text_input.notify = server_new_text_input;
+	wl_signal_add(&server.text_input_mgr->events.text_input,
+		&server.new_text_input);
+
+	server.input_method_mgr =
+		wlr_input_method_manager_v2_create(server.display);
+	server.new_input_method.notify = server_new_input_method;
+	wl_signal_add(&server.input_method_mgr->events.input_method,
+		&server.new_input_method);
+
+	/* XWayland: X11 application compatibility */
+	server.xwayland = wlr_xwayland_create(server.display,
+		server.compositor, true);
+	if (server.xwayland) {
+		server.xwayland_ready.notify = server_xwayland_ready;
+		wl_signal_add(&server.xwayland->events.ready,
+			&server.xwayland_ready);
+		server.xwayland_new_surface.notify = server_xwayland_new_surface;
+		wl_signal_add(&server.xwayland->events.new_surface,
+			&server.xwayland_new_surface);
+	} else {
+		fprintf(stderr, "Warning: XWayland not available\n");
+	}
 
 	/* Cursor */
 	server.cursor = wlr_cursor_create();
