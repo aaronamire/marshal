@@ -43,6 +43,7 @@
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/types/wlr_input_method_v2.h>
+#include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/xwayland/xwayland.h>
 #include <wlr/backend/session.h>
 #include <wlr/util/log.h>
@@ -2461,6 +2462,13 @@ int main(int argc, char *argv[]) {
 	server.request_set_selection.notify = handle_request_set_selection;
 	wl_signal_add(&server.seat->events.request_set_selection,
 		&server.request_set_selection);
+
+	/* Primary selection: middle-click paste for X11 and Wayland apps */
+	wlr_primary_selection_v1_device_manager_create(server.display);
+
+	/* Tell XWayland about the seat so X11 apps receive keyboard input */
+	if (server.xwayland)
+		wlr_xwayland_set_seat(server.xwayland, server.seat);
 
 	/* Input devices */
 	server.new_output.notify = server_new_output;
