@@ -23,6 +23,9 @@ from typing import Any
 from agents.file_agent import FileAgent
 from agents.system_agent import SystemAgent
 from agents.web_agent import WebAgent
+from agents.audio_agent import AudioAgent
+from agents.network_agent import NetworkAgent
+from agents.power_agent import PowerAgent
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
 from db.audit import get_db, log_error, log_intent_created, log_state_transition, complete_intent
@@ -33,6 +36,9 @@ _AGENT_MAP: dict[str, type] = {
     "file": FileAgent,
     "system": SystemAgent,
     "web": WebAgent,
+    "audio": AudioAgent,
+    "network": NetworkAgent,
+    "power": PowerAgent,
 }
 
 

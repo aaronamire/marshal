@@ -36,8 +36,8 @@ _PROGRAM_ALIASES: dict[str, list[str]] = {
     "file manager": ["nautilus", "thunar", "dolphin", "pcmanfm", "nemo"],
     "text editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
     "editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
-    "terminal": ["foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
-    "term": ["foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
+    "terminal": ["leaves-terminal", "foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
+    "term": ["leaves-terminal", "foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
     "calculator": ["gnome-calculator", "kcalc", "galculator", "qalculate-gtk"],
     "settings": ["gnome-control-center", "xfce4-settings-manager", "systemsettings"],
 }

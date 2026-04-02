@@ -252,6 +252,121 @@ _terminate_rule(r'^\s*kill\s+(?:pid\s+)?(\d+)\s*$')
 
 
 # ---------------------------------------------------------------------------
+# Audio rules (agent="audio", category="audio_task")
+# ---------------------------------------------------------------------------
+
+_AUDIO_RULES: list = []
+
+
+def _audio_rule(pattern: str, action_type: str, extractor) -> None:
+    _AUDIO_RULES.append(
+        (re.compile(pattern, re.IGNORECASE), action_type, extractor))
+
+
+# Volume queries
+_audio_rule(r'\b(?:what(?:\'s|\s+is)\s+(?:the\s+)?)?volume\b', "QUERY",
+            lambda m: {"query_type": "volume"})
+_audio_rule(r'\b(?:audio|sound)\s*(?:status|info|devices?)\b', "QUERY",
+            lambda m: {"query_type": "status"})
+_audio_rule(r'\blist\s+(?:audio\s+)?(?:devices?|sinks?|outputs?|speakers?)\b', "QUERY",
+            lambda m: {"query_type": "devices"})
+
+# Volume set — "set volume to 50", "volume 80%", "turn volume to 30"
+_audio_rule(
+    r'^\s*(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?\s*$', "WRITE",
+    lambda m: {"audio_action": "set_volume", "level": int(m.group(1))})
+_audio_rule(
+    r'^\s*(?:turn|set)\s+(?:the\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?\s*$', "WRITE",
+    lambda m: {"audio_action": "set_volume", "level": int(m.group(1))})
+
+# Volume up/down — "volume up", "turn it up", "louder"
+_audio_rule(r'^\s*(?:volume\s+up|turn\s+(?:it\s+)?up|louder)\s*$', "WRITE",
+            lambda m: {"audio_action": "set_volume", "level": "up"})
+_audio_rule(r'^\s*(?:volume\s+down|turn\s+(?:it\s+)?down|quieter|softer)\s*$', "WRITE",
+            lambda m: {"audio_action": "set_volume", "level": "down"})
+
+# Mute
+_audio_rule(r'^\s*mute\s*(?:audio|sound|volume)?\s*$', "WRITE",
+            lambda m: {"audio_action": "mute"})
+_audio_rule(r'^\s*unmute\s*(?:audio|sound|volume)?\s*$', "WRITE",
+            lambda m: {"audio_action": "unmute"})
+_audio_rule(r'^\s*toggle\s+mute\s*$', "WRITE",
+            lambda m: {"audio_action": "toggle_mute"})
+
+
+# ---------------------------------------------------------------------------
+# Network rules (agent="network", category="network_task")
+# ---------------------------------------------------------------------------
+
+_NETWORK_RULES: list = []
+
+
+def _network_rule(pattern: str, action_type: str, extractor) -> None:
+    _NETWORK_RULES.append(
+        (re.compile(pattern, re.IGNORECASE), action_type, extractor))
+
+
+# Status queries
+_network_rule(r'\b(?:wifi|wi-fi|network)\s*(?:status|info)\b', "QUERY",
+              lambda m: {"query_type": "status"})
+_network_rule(r'\bam\s+i\s+(?:connected|online)\b', "QUERY",
+              lambda m: {"query_type": "status"})
+_network_rule(r'\b(?:what(?:\'s|\s+is)\s+(?:my\s+)?(?:wifi|wi-fi|network|ssid|connection))\b', "QUERY",
+              lambda m: {"query_type": "status"})
+
+# Scan
+_network_rule(r'\b(?:scan|list|show)\s+(?:(?:available\s+)?(?:wifi|wi-fi|wireless)\s+)?networks?\b', "QUERY",
+              lambda m: {"query_type": "scan"})
+_network_rule(r'\b(?:available|nearby)\s+(?:wifi|wi-fi|networks?)\b', "QUERY",
+              lambda m: {"query_type": "scan"})
+
+# Connect — "connect to MyNetwork", "join WiFi MySSID"
+_network_rule(r'^\s*(?:connect|join)\s+(?:to\s+)?(?:wifi\s+|wi-fi\s+)?(\S+)\s*$', "WRITE",
+              lambda m: {"network_action": "connect", "ssid": m.group(1)})
+
+# Disconnect
+_network_rule(r'^\s*disconnect\s*(?:from\s+)?(?:wifi|wi-fi|network)?\s*$', "WRITE",
+              lambda m: {"network_action": "disconnect"})
+
+
+# ---------------------------------------------------------------------------
+# Power rules (agent="power", category="power_task")
+# ---------------------------------------------------------------------------
+
+_POWER_RULES: list = []
+
+
+def _power_rule(pattern: str, action_type: str, extractor) -> None:
+    _POWER_RULES.append(
+        (re.compile(pattern, re.IGNORECASE), action_type, extractor))
+
+
+# Battery query
+_power_rule(r'\b(?:battery|charge)\s*(?:status|level|info|life)?\b', "QUERY",
+            lambda m: {"query_type": "battery"})
+_power_rule(r'\bhow\s+much\s+(?:battery|charge)\b', "QUERY",
+            lambda m: {"query_type": "battery"})
+
+# Brightness query
+_power_rule(r'\b(?:what(?:\'s|\s+is)\s+(?:the\s+)?)?(?:screen\s+)?brightness\b', "QUERY",
+            lambda m: {"query_type": "brightness"})
+
+# Brightness set — "set brightness to 50", "brightness 80%"
+_power_rule(r'^\s*(?:set\s+)?(?:screen\s+)?brightness\s+(?:to\s+)?(\d{1,3})\s*%?\s*$', "WRITE",
+            lambda m: {"power_action": "set_brightness", "level": int(m.group(1))})
+
+# Suspend/hibernate
+_power_rule(r'^\s*(?:suspend|sleep)\s*$', "WRITE",
+            lambda m: {"power_action": "suspend"})
+_power_rule(r'^\s*hibernate\s*$', "WRITE",
+            lambda m: {"power_action": "hibernate"})
+
+# Lock screen
+_power_rule(r'^\s*lock\s*(?:the\s+)?(?:screen|session)?\s*$', "WRITE",
+            lambda m: {"power_action": "lock"})
+
+
+# ---------------------------------------------------------------------------
 # Briefing rules — "good morning", "what changed", "briefing"
 # Returns agent="briefing", category="briefing" so callers can dispatch directly.
 # ---------------------------------------------------------------------------
@@ -290,8 +405,7 @@ def _not_impl(pattern: str) -> None:
 _not_impl(r'^\s*(?:write|send|compose|draft)\b.+\b(?:email|e-mail|message|mail)\b')
 _not_impl(r'^\s*(?:send|compose|draft)\b.+\bto\s+(?!~|/|\.)[\w]')  # "to <person>" not "to ~/path"
 
-# system — hardware controls not handled by SystemAgent
-_not_impl(r'\b(?:battery|wifi|wi-fi|brightness|volume)\b')
+# system — hardware controls now routed to dedicated agents (audio, network, power)
 
 # web — now implemented by WebAgent (NOT_IMPL patterns removed)
 
@@ -349,6 +463,67 @@ def match(user_text: str) -> Layer0Result:
                 is_implemented=True,
                 agent="system",
                 category="system_task",
+            )
+    # Audio — volume, mute, devices
+    for pattern, action_type, extractor in _AUDIO_RULES:
+        m = pattern.search(user_text) if action_type == "QUERY" else pattern.match(user_text)
+        if m:
+            try:
+                params = extractor(m)
+            except Exception:
+                continue
+            destructive = action_type == "WRITE" and params.get("audio_action") not in ("set_volume",)
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type=action_type,
+                params={**params, "destructive": destructive},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="audio",
+                category="audio_task",
+                preview_required=False,
+            )
+    # Network — wifi status, scan, connect, disconnect
+    for pattern, action_type, extractor in _NETWORK_RULES:
+        m = pattern.search(user_text) if action_type == "QUERY" else pattern.match(user_text)
+        if m:
+            try:
+                params = extractor(m)
+            except Exception:
+                continue
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type=action_type,
+                params={**params, "destructive": False},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="network",
+                category="network_task",
+                preview_required=False,
+            )
+    # Power — battery, brightness, suspend, hibernate, lock
+    for pattern, action_type, extractor in _POWER_RULES:
+        m = pattern.search(user_text) if action_type == "QUERY" else pattern.match(user_text)
+        if m:
+            try:
+                params = extractor(m)
+            except Exception:
+                continue
+            destructive = action_type == "WRITE" and params.get("power_action") in ("suspend", "hibernate")
+            latency_ms = (time.monotonic() - t0) * 1000
+            return Layer0Result(
+                matched=True,
+                action_type=action_type,
+                params={**params, "destructive": destructive},
+                confidence=0.95,
+                latency_ms=latency_ms,
+                is_implemented=True,
+                agent="power",
+                category="power_task",
             )
     # App launch — "open firefox", "launch gimp"
     for pattern in _APP_LAUNCH_RULES:
