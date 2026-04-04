@@ -50,6 +50,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <drm_fourcc.h>
 
+#include <systemd/sd-bus.h>
+
 #include "renderer.h"
 #include "feed.h"
 #include "input.h"
@@ -312,6 +314,11 @@ struct leaves_server {
 	/* System status bar */
 	struct leaves_status *status;
 
+	/* logind PrepareForSleep → auto-lock */
+	sd_bus *logind_bus;
+	sd_bus_slot *sleep_slot;
+	struct wl_event_source *logind_event;
+
 	/* Taskbar overlay (above app windows, always visible) */
 	struct wlr_scene_tree *taskbar_tree;
 	struct wlr_scene_rect *taskbar_bg;
@@ -548,6 +555,70 @@ static int status_timer_cb(void *data) {
 	schedule_panel_redraw(server);
 	wl_event_source_timer_update(server->status_timer, 1000);
 	return 0;
+}
+
+/* ── logind PrepareForSleep: auto-lock before suspend ── */
+
+static int prepare_for_sleep_cb(sd_bus_message *msg, void *userdata,
+		sd_bus_error *ret_error) {
+	(void)ret_error;
+	struct leaves_server *server = userdata;
+	int going_to_sleep = 0;
+	if (sd_bus_message_read(msg, "b", &going_to_sleep) < 0)
+		return 0;
+	if (going_to_sleep) {
+		/* Launch locker before the system actually suspends */
+		pid_t pid = fork();
+		if (pid == 0) {
+			execl("/usr/local/bin/leaves-locker",
+				"leaves-locker", NULL);
+			execlp("leaves-locker", "leaves-locker", NULL);
+			_exit(127);
+		}
+		/* Brief delay to let the locker grab input before sleep completes */
+		if (pid > 0)
+			usleep(200000); /* 200 ms */
+	}
+	(void)server;
+	return 0;
+}
+
+static int logind_bus_dispatch(int fd, uint32_t mask, void *data) {
+	(void)fd;
+	(void)mask;
+	struct leaves_server *server = data;
+	while (sd_bus_process(server->logind_bus, NULL) > 0)
+		;
+	return 0;
+}
+
+static void setup_logind_sleep_monitor(struct leaves_server *server) {
+	if (sd_bus_default_system(&server->logind_bus) < 0) {
+		fprintf(stderr, "logind: cannot connect to system bus\n");
+		return;
+	}
+
+	int r = sd_bus_match_signal(server->logind_bus,
+		&server->sleep_slot,
+		"org.freedesktop.login1",
+		"/org/freedesktop/login1",
+		"org.freedesktop.login1.Manager",
+		"PrepareForSleep",
+		prepare_for_sleep_cb, server);
+	if (r < 0) {
+		fprintf(stderr, "logind: failed to subscribe to PrepareForSleep\n");
+		sd_bus_unref(server->logind_bus);
+		server->logind_bus = NULL;
+		return;
+	}
+
+	int fd = sd_bus_get_fd(server->logind_bus);
+	if (fd >= 0) {
+		server->logind_event = wl_event_loop_add_fd(
+			server->event_loop, fd,
+			WL_EVENT_READABLE, logind_bus_dispatch, server);
+	}
+	fprintf(stderr, "logind: PrepareForSleep monitor active\n");
 }
 
 /* ── Wakeup pipe ── */
@@ -2554,6 +2625,9 @@ int main(int argc, char *argv[]) {
 		status_timer_cb, &server);
 	wl_event_source_timer_update(server.status_timer, 1000);
 
+	/* logind: lock screen before suspend */
+	setup_logind_sleep_monitor(&server);
+
 	/* Start backend */
 	if (!wlr_backend_start(server.backend)) {
 		fprintf(stderr, "Failed to start backend\n");
@@ -2604,6 +2678,12 @@ int main(int argc, char *argv[]) {
 
 	/* Cleanup */
 	wl_display_destroy_clients(server.display);
+	if (server.logind_event)
+		wl_event_source_remove(server.logind_event);
+	if (server.sleep_slot)
+		sd_bus_slot_unref(server.sleep_slot);
+	if (server.logind_bus)
+		sd_bus_unref(server.logind_bus);
 	wlr_scene_node_destroy(&server.scene->tree.node);
 	wlr_cursor_destroy(server.cursor);
 	wlr_xcursor_manager_destroy(server.cursor_mgr);

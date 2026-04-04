@@ -20,6 +20,8 @@ drm = dependency('libdrm')
 jpeg = dependency('libjpeg')
 xcb = dependency('xcb')
 xcb_icccm = dependency('xcb-icccm')
+alsa = dependency('alsa')
+libsystemd = dependency('libsystemd')
 math = meson.get_compiler('c').find_library('m')
 threads = dependency('threads')
 
@@ -63,6 +65,8 @@ executable('leaves-compositor',
     jpeg,
     xcb,
     xcb_icccm,
+    alsa,
+    libsystemd,
     math,
     threads,
   ],

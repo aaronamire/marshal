@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "status.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -5,11 +6,14 @@
 #include <time.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <alloca.h>
+#include <alsa/asoundlib.h>
 
 struct leaves_status *status_create(void) {
 	struct leaves_status *s = calloc(1, sizeof(*s));
 	if (!s) return NULL;
 	s->battery_pct = -1;
+	s->volume_pct  = -1;
 	snprintf(s->kb_layout, sizeof(s->kb_layout), "US");
 	status_update_clock(s);
 	status_poll(s);
@@ -182,8 +186,57 @@ static void poll_bluetooth(struct leaves_status *s) {
 	closedir(dir);
 }
 
+/* ── Volume (ALSA mixer — works with PipeWire's ALSA compat layer) ── */
+
+static void poll_volume(struct leaves_status *s) {
+	snd_mixer_t *mixer = NULL;
+	snd_mixer_selem_id_t *sid = NULL;
+
+	s->volume_pct = -1;
+	s->volume_muted = false;
+
+	if (snd_mixer_open(&mixer, 0) < 0) return;
+	if (snd_mixer_attach(mixer, "default") < 0) goto out;
+	if (snd_mixer_selem_register(mixer, NULL, NULL) < 0) goto out;
+	if (snd_mixer_load(mixer) < 0) goto out;
+
+	snd_mixer_selem_id_alloca(&sid);
+	snd_mixer_selem_id_set_index(sid, 0);
+
+	/* Try common master element names */
+	static const char *names[] = { "Master", "PCM", "Speaker", NULL };
+	snd_mixer_elem_t *elem = NULL;
+	for (int i = 0; names[i]; i++) {
+		snd_mixer_selem_id_set_name(sid, names[i]);
+		elem = snd_mixer_find_selem(mixer, sid);
+		if (elem) break;
+	}
+	if (!elem) goto out;
+
+	/* Volume percentage */
+	long vmin, vmax, vol;
+	if (snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax) == 0 &&
+			vmax > vmin &&
+			snd_mixer_selem_get_playback_volume(elem,
+				SND_MIXER_SCHN_MONO, &vol) == 0) {
+		s->volume_pct = (int)((vol - vmin) * 100 / (vmax - vmin));
+	}
+
+	/* Mute state */
+	int sw = 1;
+	if (snd_mixer_selem_has_playback_switch(elem) &&
+			snd_mixer_selem_get_playback_switch(elem,
+				SND_MIXER_SCHN_MONO, &sw) == 0) {
+		s->volume_muted = (sw == 0);
+	}
+
+out:
+	snd_mixer_close(mixer);
+}
+
 void status_poll(struct leaves_status *s) {
 	poll_battery(s);
 	poll_wifi(s);
 	poll_bluetooth(s);
+	poll_volume(s);
 }

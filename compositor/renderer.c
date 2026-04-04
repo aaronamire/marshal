@@ -1431,6 +1431,48 @@ static void draw_bt_icon(cairo_t *cr, double cx, double cy, bool enabled) {
 	cairo_stroke(cr);
 }
 
+static void draw_volume_icon(cairo_t *cr, int x, int cy, int pct, bool muted) {
+	struct color c = muted ? TEXT_TERTIARY : TEXT_SECONDARY;
+	set_color(cr, c);
+	cairo_set_line_width(cr, 1.3);
+
+	/* Speaker body: small rectangle */
+	int bw = 5, bh = 6;
+	int by = cy - bh / 2;
+	cairo_rectangle(cr, x, by, bw, bh);
+	cairo_fill(cr);
+
+	/* Speaker cone: triangle */
+	cairo_move_to(cr, x + bw, by - 2);
+	cairo_line_to(cr, x + bw + 5, by - 5);
+	cairo_line_to(cr, x + bw + 5, by + bh + 5);
+	cairo_line_to(cr, x + bw, by + bh + 2);
+	cairo_close_path(cr);
+	cairo_fill(cr);
+
+	if (muted) {
+		/* X mark */
+		set_color(cr, ACCENT_RED);
+		cairo_set_line_width(cr, 1.5);
+		int mx = x + bw + 8;
+		cairo_move_to(cr, mx, cy - 3);
+		cairo_line_to(cr, mx + 6, cy + 3);
+		cairo_stroke(cr);
+		cairo_move_to(cr, mx + 6, cy - 3);
+		cairo_line_to(cr, mx, cy + 3);
+		cairo_stroke(cr);
+	} else {
+		/* Sound waves — 1 to 3 arcs depending on volume */
+		int waves = pct < 33 ? 1 : pct < 66 ? 2 : 3;
+		double wx = x + bw + 7;
+		for (int i = 0; i < waves; i++) {
+			double r = 3.0 + i * 3.0;
+			cairo_arc(cr, wx, cy, r, -M_PI * 0.35, M_PI * 0.35);
+			cairo_stroke(cr);
+		}
+	}
+}
+
 static void draw_taskbar(struct leaves_renderer *r,
 		struct leaves_input *input, struct leaves_feed *feed) {
 	cairo_t *cr = r->cr;
@@ -1564,6 +1606,24 @@ static void draw_taskbar(struct leaves_renderer *r,
 		rx -= SPACE_S;
 	}
 
+	/* Volume icon */
+	if (st && st->volume_pct >= 0) {
+		char vstr[8];
+		snprintf(vstr, sizeof(vstr), "%d%%", st->volume_muted ? 0 : st->volume_pct);
+		PangoLayout *vpl = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(vpl, vstr, -1);
+		int vpw, vph;
+		pango_layout_get_pixel_size(vpl, &vpw, &vph);
+		rx -= vpw;
+		cairo_move_to(cr, rx, bar_cy - vph / 2);
+		set_color(cr, st->volume_muted ? TEXT_TERTIARY : TEXT_SECONDARY);
+		pango_cairo_show_layout(cr, vpl);
+		g_object_unref(vpl);
+		rx -= 20 + SPACE_XS;
+		draw_volume_icon(cr, rx, bar_cy, st->volume_pct, st->volume_muted);
+		rx -= SPACE_S;
+	}
+
 	/* Bluetooth icon */
 	if (st && st->bt_available) {
 		rx -= 8;
@@ -1652,6 +1712,8 @@ static void draw_dropdown(struct leaves_renderer *r,
 	rows += 2;
 	/* Bluetooth section: label + status */
 	if (s->bt_available) rows += 2;
+	/* Volume section: label + bar */
+	if (s->volume_pct >= 0) rows += 2;
 	/* Battery section: label + bar */
 	if (s->battery_pct >= 0) rows += 2;
 
@@ -1764,6 +1826,53 @@ static void draw_dropdown(struct leaves_renderer *r,
 		set_color(cr, TEXT_SECONDARY);
 		pango_cairo_show_layout(cr, st);
 		g_object_unref(st);
+		cy += row_h;
+	}
+
+	/* ── Volume section ── */
+	if (s->volume_pct >= 0) {
+		/* Separator */
+		set_color(cr, BORDER_SEPARATOR);
+		cairo_rectangle(cr, cx, cy, cw, 1);
+		cairo_fill(cr);
+
+		PangoLayout *lbl = create_layout(cr, r->font_status, 0);
+		char vol_str[32];
+		snprintf(vol_str, sizeof(vol_str), "Volume  %d%%",
+			s->volume_muted ? 0 : s->volume_pct);
+		pango_layout_set_text(lbl, vol_str, -1);
+		int lw, lh;
+		pango_layout_get_pixel_size(lbl, &lw, &lh);
+		cairo_move_to(cr, cx, cy + (row_h - lh) / 2);
+		set_color(cr, TEXT_PRIMARY);
+		pango_cairo_show_layout(cr, lbl);
+		g_object_unref(lbl);
+		cy += row_h;
+
+		/* Volume bar */
+		int bar_w = cw;
+		int bar_h = 6;
+		int bar_y = cy + (row_h - bar_h) / 2;
+		rounded_rect(cr, cx, bar_y, bar_w, bar_h, 3);
+		set_color(cr, FILL_CARD);
+		cairo_fill(cr);
+
+		int fill = s->volume_muted ? 0 : bar_w * s->volume_pct / 100;
+		if (fill > 0) {
+			rounded_rect(cr, cx, bar_y, fill, bar_h, 3);
+			set_color(cr, ACCENT_BLUE);
+			cairo_fill(cr);
+		}
+
+		/* Muted / active label */
+		PangoLayout *vsl = create_layout(cr, r->font_timing, 0);
+		pango_layout_set_text(vsl,
+			s->volume_muted ? "Muted" : "Active", -1);
+		pango_layout_get_pixel_size(vsl, &lw, &lh);
+		cairo_move_to(cr, cx + bar_w - lw, bar_y + bar_h + 2);
+		set_color(cr, TEXT_TERTIARY);
+		pango_cairo_show_layout(cr, vsl);
+		g_object_unref(vsl);
 		cy += row_h;
 	}
 

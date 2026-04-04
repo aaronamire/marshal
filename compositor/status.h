@@ -22,6 +22,10 @@ struct leaves_status {
 	bool bt_available;
 	bool bt_enabled;
 
+	/* Volume (ALSA mixer) */
+	int  volume_pct;        /* 0–100, or -1 = unavailable */
+	bool volume_muted;
+
 	/* Keyboard layout */
 	char kb_layout[8];      /* "US", "RU", etc. */
 
