@@ -570,6 +570,9 @@ static int prepare_for_sleep_cb(sd_bus_message *msg, void *userdata,
 		/* Launch locker before the system actually suspends */
 		pid_t pid = fork();
 		if (pid == 0) {
+			int maxfd = sysconf(_SC_OPEN_MAX);
+			for (int fd = 3; fd < maxfd && fd < 1024; fd++)
+				close(fd);
 			execl("/usr/local/bin/leaves-locker",
 				"leaves-locker", NULL);
 			execlp("leaves-locker", "leaves-locker", NULL);
@@ -892,15 +895,25 @@ static void focus_toplevel(struct leaves_server *server,
 	}
 
 	/* Activate and focus new toplevel */
+	wl_list_remove(&toplevel->link);
+	wl_list_insert(&server->toplevels, &toplevel->link);
 	wlr_scene_node_raise_to_top(&toplevel->frame_tree->node);
 	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
 
+	/* Set keyboard on seat before notify_enter — wlroots uses the seat's
+	 * current keyboard to send keymap + modifiers to the entering surface.
+	 * Without this, the client may never receive a keymap event. */
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
 	if (keyboard) {
+		wlr_seat_set_keyboard(server->seat, keyboard);
 		wlr_seat_keyboard_notify_enter(server->seat,
 			toplevel->xdg_toplevel->base->surface,
 			keyboard->keycodes, keyboard->num_keycodes,
 			&keyboard->modifiers);
+		fprintf(stderr, "[focus] keyboard enter sent to surface=%p\n",
+			(void *)toplevel->xdg_toplevel->base->surface);
+	} else {
+		fprintf(stderr, "[focus] WARNING: no keyboard on seat!\n");
 	}
 }
 
@@ -1035,6 +1048,22 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	int nsyms = xkb_state_key_get_syms(
 		keyboard->wlr_keyboard->xkb_state, keycode, &syms);
 
+	/* Get the unmodified (layout-level-0) keysym for compositor bindings.
+	 * xkb_state_key_get_syms() returns keysyms with ALL modifiers applied,
+	 * which can transform keys when Super/Logo is held on some XKB configs.
+	 * Compositor shortcuts need the base key, not the modified one. */
+	xkb_keysym_t raw_sym = xkb_state_key_get_one_sym(
+		keyboard->wlr_keyboard->xkb_state, keycode);
+	/* Also get the layout-only sym (no modifiers) as a final fallback */
+	const xkb_keysym_t *layout_syms;
+	int layout_nsyms = xkb_keymap_key_get_syms_by_level(
+		xkb_state_get_keymap(keyboard->wlr_keyboard->xkb_state),
+		keycode,
+		xkb_state_key_get_layout(keyboard->wlr_keyboard->xkb_state,
+			keycode),
+		0, &layout_syms);
+	xkb_keysym_t base_sym = (layout_nsyms > 0) ? layout_syms[0] : raw_sym;
+
 	bool handled = false;
 
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
@@ -1059,70 +1088,77 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 					break;
 				}
 			}
+		}
 
-			/* ── Super+Return: launch terminal ── */
-			if ((server->modifiers & MOD_SUPER) &&
-					syms[i] == XKB_KEY_Return) {
-				if (fork() == 0) {
-					execl("/usr/local/bin/leaves-terminal",
-						"leaves-terminal", NULL);
-					execlp("leaves-terminal",
-						"leaves-terminal", NULL);
-					_exit(127);
-				}
-				handled = true;
-				break;
-			}
+		/* Use base_sym for compositor shortcuts — immune to modifier
+		 * remapping (Super on some XKB configs can transform keysyms). */
 
-			/* ── Super+L: lock screen ── */
-			if ((server->modifiers & MOD_SUPER) &&
-					syms[i] == XKB_KEY_l) {
-				/* Launch leaves-locker as a Wayland client */
-				if (fork() == 0) {
-					execl("/usr/local/bin/leaves-locker",
-						"leaves-locker", NULL);
-					/* Fallback to PATH search */
-					execlp("leaves-locker",
-						"leaves-locker", NULL);
-					_exit(127);
-				}
-				handled = true;
-				break;
+		/* ── Super+Return: launch terminal ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_Return || raw_sym == XKB_KEY_Return)) {
+			pid_t pid = fork();
+			if (pid == 0) {
+				/* Close inherited server FDs so the client
+				 * connects cleanly via WAYLAND_DISPLAY */
+				int maxfd = sysconf(_SC_OPEN_MAX);
+				for (int fd = 3; fd < maxfd && fd < 1024; fd++)
+					close(fd);
+				execl("/usr/local/bin/leaves-terminal",
+					"leaves-terminal", NULL);
+				execlp("leaves-terminal",
+					"leaves-terminal", NULL);
+				_exit(127);
 			}
+			handled = true;
+		}
 
-			/* ── Super+Q: close focused app window ── */
-			if ((server->modifiers & MOD_SUPER) &&
-					syms[i] == XKB_KEY_q) {
-				if (!wl_list_empty(&server->toplevels)) {
-					struct leaves_toplevel *top = wl_container_of(
-						server->toplevels.next, top, link);
-					wlr_xdg_toplevel_send_close(top->xdg_toplevel);
-				}
-				handled = true;
-				break;
+		/* ── Super+L: lock screen ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_l || raw_sym == XKB_KEY_l)) {
+			pid_t pid = fork();
+			if (pid == 0) {
+				int maxfd = sysconf(_SC_OPEN_MAX);
+				for (int fd = 3; fd < maxfd && fd < 1024; fd++)
+					close(fd);
+				execl("/usr/local/bin/leaves-locker",
+					"leaves-locker", NULL);
+				execlp("leaves-locker",
+					"leaves-locker", NULL);
+				_exit(127);
 			}
+			handled = true;
+		}
 
-			/* ── Super+Space: cycle focus: NONE → PANEL → APP → NONE ── */
-			if ((server->modifiers & MOD_SUPER) &&
-					syms[i] == XKB_KEY_space) {
-				if (server->focus_mode == FOCUS_NONE) {
-					server->focus_mode = FOCUS_PANEL;
-					wlr_seat_keyboard_clear_focus(server->seat);
-				} else if (server->focus_mode == FOCUS_PANEL &&
-						!wl_list_empty(&server->toplevels)) {
-					server->focus_mode = FOCUS_APP;
-					struct leaves_toplevel *top = wl_container_of(
-						server->toplevels.next, top, link);
-					focus_toplevel(server, top);
-				} else {
-					/* FOCUS_APP → NONE, or PANEL with no apps → NONE */
-					server->focus_mode = FOCUS_NONE;
-					wlr_seat_keyboard_clear_focus(server->seat);
-				}
-				schedule_panel_redraw(server);
-				handled = true;
-				break;
+		/* ── Super+Q: close focused app window ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_q || raw_sym == XKB_KEY_q)) {
+			if (!wl_list_empty(&server->toplevels)) {
+				struct leaves_toplevel *top = wl_container_of(
+					server->toplevels.next, top, link);
+				wlr_xdg_toplevel_send_close(top->xdg_toplevel);
 			}
+			handled = true;
+		}
+
+		/* ── Super+Space: cycle focus: NONE → PANEL → APP → NONE ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_space || raw_sym == XKB_KEY_space)) {
+			if (server->focus_mode == FOCUS_NONE) {
+				server->focus_mode = FOCUS_PANEL;
+				wlr_seat_keyboard_clear_focus(server->seat);
+			} else if (server->focus_mode == FOCUS_PANEL &&
+					!wl_list_empty(&server->toplevels)) {
+				server->focus_mode = FOCUS_APP;
+				struct leaves_toplevel *top = wl_container_of(
+					server->toplevels.next, top, link);
+				focus_toplevel(server, top);
+			} else {
+				/* FOCUS_APP → NONE, or PANEL with no apps → NONE */
+				server->focus_mode = FOCUS_NONE;
+				wlr_seat_keyboard_clear_focus(server->seat);
+			}
+			schedule_panel_redraw(server);
+			handled = true;
 		}
 	}
 
@@ -1269,6 +1305,12 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 		wlr_seat_keyboard_notify_key(server->seat, event->time_msec,
 			event->keycode, event->state);
+		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			struct wlr_surface *focused =
+				server->seat->keyboard_state.focused_surface;
+			fprintf(stderr, "[key] code=%u focus_mode=%d focused_surface=%p\n",
+				event->keycode, server->focus_mode, (void *)focused);
+		}
 	}
 }
 
@@ -1816,6 +1858,12 @@ static void server_new_input(struct wl_listener *listener, void *data) {
 	} else if (device->type == WLR_INPUT_DEVICE_POINTER) {
 		wlr_cursor_attach_input_device(server->cursor, device);
 	}
+
+	/* Advertise seat capabilities to clients */
+	uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+	if (wlr_seat_get_keyboard(server->seat))
+		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+	wlr_seat_set_capabilities(server->seat, caps);
 }
 
 /* ── New output ── */

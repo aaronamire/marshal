@@ -553,7 +553,8 @@ int main(int argc, char *argv[]) {
 
 	wl_registry = wl_display_get_registry(wl_display);
 	wl_registry_add_listener(wl_registry, &registry_listener, NULL);
-	wl_display_roundtrip(wl_display);
+	wl_display_roundtrip(wl_display);  /* globals */
+	wl_display_roundtrip(wl_display);  /* initial events (seat caps, etc.) */
 
 	if (!layer_shell) {
 		fprintf(stderr, "leaves-locker: compositor lacks layer-shell support\n");

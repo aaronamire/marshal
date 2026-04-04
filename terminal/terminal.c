@@ -553,12 +553,15 @@ static void kbd_keymap(void *data, struct wl_keyboard *kbd,
 
 	if (term.xkb_keymap)
 		term.xkb_state = xkb_state_new(term.xkb_keymap);
+	fprintf(stderr, "[term] kbd_keymap: keymap=%p state=%p\n",
+		(void *)term.xkb_keymap, (void *)term.xkb_state);
 }
 
 static void kbd_enter(void *data, struct wl_keyboard *kbd, uint32_t serial,
 		struct wl_surface *surface, struct wl_array *keys) {
 	(void)data; (void)kbd; (void)serial; (void)surface; (void)keys;
 	term.cursor_visible = true;
+	fprintf(stderr, "[term] kbd_enter: xkb_state=%p\n", (void *)term.xkb_state);
 }
 
 static void kbd_leave(void *data, struct wl_keyboard *kbd, uint32_t serial,
@@ -570,11 +573,16 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 		uint32_t time, uint32_t key, uint32_t state) {
 	(void)data; (void)kbd; (void)serial; (void)time;
 
-	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !term.xkb_state)
+	if (!term.xkb_state) {
+		fprintf(stderr, "[term] kbd_key: NO xkb_state, dropping key=%u\n", key);
+		return;
+	}
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
 		return;
 
 	uint32_t keycode = key + 8;
 	xkb_keysym_t sym = xkb_state_key_get_one_sym(term.xkb_state, keycode);
+	fprintf(stderr, "[term] kbd_key: key=%u sym=0x%x\n", key, sym);
 
 	/* Check for Ctrl modifier */
 	bool ctrl = xkb_state_mod_name_is_active(term.xkb_state,
@@ -630,10 +638,13 @@ static const struct wl_keyboard_listener keyboard_listener = {
 static void seat_capabilities(void *data, struct wl_seat *seat,
 		uint32_t caps) {
 	(void)data;
+	fprintf(stderr, "[term] seat_capabilities: caps=0x%x keyboard=%d\n",
+		caps, !!(caps & WL_SEAT_CAPABILITY_KEYBOARD));
 	if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
 		if (wl_keyboard) wl_keyboard_destroy(wl_keyboard);
 		wl_keyboard = wl_seat_get_keyboard(seat);
 		wl_keyboard_add_listener(wl_keyboard, &keyboard_listener, NULL);
+		fprintf(stderr, "[term] keyboard listener attached\n");
 	}
 }
 
@@ -799,7 +810,11 @@ int main(int argc, char *argv[]) {
 
 	wl_registry = wl_display_get_registry(wl_display);
 	wl_registry_add_listener(wl_registry, &registry_listener, NULL);
-	wl_display_roundtrip(wl_display);
+	wl_display_roundtrip(wl_display);  /* globals: wl_seat, wl_compositor, … */
+	wl_display_roundtrip(wl_display);  /* initial events: seat capabilities, ��� */
+
+	fprintf(stderr, "[term] after roundtrips: seat=%p keyboard=%p\n",
+		(void *)wl_seat, (void *)wl_keyboard);
 
 	if (!wl_compositor || !wl_shm || !xdg_wm_base) {
 		fprintf(stderr, "Missing required Wayland globals\n");
