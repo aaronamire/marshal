@@ -464,8 +464,8 @@ def match(user_text: str) -> Layer0Result:
                 agent="system",
                 category="system_task",
             )
-    # Audio — volume, mute, devices
-    for pattern, action_type, extractor in _AUDIO_RULES:
+    # Audio — volume, mute, devices (WRITE rules first to avoid QUERY search stealing)
+    for pattern, action_type, extractor in sorted(_AUDIO_RULES, key=lambda r: r[1] != "WRITE"):
         m = pattern.search(user_text) if action_type == "QUERY" else pattern.match(user_text)
         if m:
             try:
@@ -505,8 +505,8 @@ def match(user_text: str) -> Layer0Result:
                 category="network_task",
                 preview_required=False,
             )
-    # Power — battery, brightness, suspend, hibernate, lock
-    for pattern, action_type, extractor in _POWER_RULES:
+    # Power — battery, brightness, suspend, hibernate, lock (WRITE first)
+    for pattern, action_type, extractor in sorted(_POWER_RULES, key=lambda r: r[1] != "WRITE"):
         m = pattern.search(user_text) if action_type == "QUERY" else pattern.match(user_text)
         if m:
             try:

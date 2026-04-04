@@ -1,0 +1,27 @@
+XDG Desktop Portal Integration for Leaves OS
+=============================================
+
+Setup:
+1. Install xdg-desktop-portal and xdg-desktop-portal-wlr:
+   sudo pacman -S xdg-desktop-portal xdg-desktop-portal-wlr
+
+2. Install portal config:
+   sudo cp leaves.portal /usr/share/xdg-desktop-portal/portals/
+   sudo cp leaves-portals.conf /usr/share/xdg-desktop-portal/
+
+3. Add screencopy protocol to compositor (see below).
+
+4. Start portal services before the compositor:
+   systemctl --user enable xdg-desktop-portal.service
+   systemctl --user enable xdg-desktop-portal-wlr.service
+
+Alternatively, start from the session boot script (session-start.sh).
+
+Screencopy Protocol:
+The compositor must implement zwlr-screencopy-unstable-v1 for screen
+sharing to work. The protocol XML is in compositor/protocols/ and the
+implementation belongs in compositor/compositor.c.
+
+Environment variables (set by session-start.sh):
+  XDG_CURRENT_DESKTOP=leaves
+  XDG_SESSION_TYPE=wayland

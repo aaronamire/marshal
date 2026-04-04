@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="wlr_input_inhibit_unstable_v1">
+  <copyright>
+    Copyright © 2018 Drew DeVault
+
+    Permission to use, copy, modify, distribute, and sell this
+    software and its documentation for any purpose is hereby granted
+    without fee, provided that the above copyright notice appear in
+    all copies and that both that copyright notice and this permission
+    notice appear in supporting documentation, and that the name of
+    the copyright holder not be used in advertising or publicity
+    pertaining to distribution of the software without specific,
+    written prior permission.  The copyright holder makes no
+    representations about the suitability of this software for any
+    purpose.  It is provided "as is" without express or implied
+    warranty.
+  </copyright>
+
+  <interface name="zwlr_input_inhibit_manager_v1" version="1">
+    <description summary="inhibits input events to other clients">
+      Clients can use this interface to prevent input events from being sent to
+      any surfaces but its own, which is useful for example in lock screen
+      software. It is assumed that access to this interface will be locked down
+      to whitelisted clients by the compositor.
+    </description>
+
+    <request name="get_inhibitor">
+      <description summary="inhibit input to other clients">
+        Activates the input inhibitor. As long as the inhibitor is active, the
+        compositor will not send input events to other clients.
+      </description>
+      <arg name="id" type="new_id" interface="zwlr_input_inhibitor_v1"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the input inhibitor manager"/>
+    </request>
+  </interface>
+
+  <interface name="zwlr_input_inhibitor_v1" version="1">
+    <description summary="inhibits input to other clients">
+      While this object exists, input to clients other than the owner of the
+      inhibitor resource will not receive input events. The client that owns
+      this resource will continue to receive input events normally. This object
+      will be destroyed by the compositor when the client that created it dies.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the input inhibitor object">
+        Destroy the inhibitor and allow other clients to receive input.
+      </description>
+    </request>
+  </interface>
+</protocol>

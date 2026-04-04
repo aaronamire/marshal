@@ -989,6 +989,36 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				}
 			}
 
+			/* ── Super+Return: launch terminal ── */
+			if ((server->modifiers & MOD_SUPER) &&
+					syms[i] == XKB_KEY_Return) {
+				if (fork() == 0) {
+					execl("/usr/local/bin/leaves-terminal",
+						"leaves-terminal", NULL);
+					execlp("leaves-terminal",
+						"leaves-terminal", NULL);
+					_exit(127);
+				}
+				handled = true;
+				break;
+			}
+
+			/* ── Super+L: lock screen ── */
+			if ((server->modifiers & MOD_SUPER) &&
+					syms[i] == XKB_KEY_l) {
+				/* Launch leaves-locker as a Wayland client */
+				if (fork() == 0) {
+					execl("/usr/local/bin/leaves-locker",
+						"leaves-locker", NULL);
+					/* Fallback to PATH search */
+					execlp("leaves-locker",
+						"leaves-locker", NULL);
+					_exit(127);
+				}
+				handled = true;
+				break;
+			}
+
 			/* ── Super+Q: close focused app window ── */
 			if ((server->modifiers & MOD_SUPER) &&
 					syms[i] == XKB_KEY_q) {
