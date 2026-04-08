@@ -3,4 +3,5 @@ Name=Leaves OS
 Comment=AI-native operating system
 Exec=/home/xan/dev/leaves-os/scripts/start-session.sh
 Type=Application
-DesktopNames=Leaves
+DesktopNames=leaves
+Keywords=wayland;compositor;ai;

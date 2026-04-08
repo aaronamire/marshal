@@ -1,0 +1,126 @@
+#!/bin/sh
+# leaves-open — XDG-compliant file/URL opener for Leaves OS.
+# Drop-in replacement for xdg-open. Reads mimeapps.list to determine
+# the default application for a given MIME type, then launches it.
+#
+# Usage: leaves-open <file-or-url>
+#
+# Falls back to xdg-open if installed and we can't resolve the type.
+
+set -e
+
+if [ $# -lt 1 ]; then
+    echo "Usage: leaves-open <file-or-url>" >&2
+    exit 1
+fi
+
+TARGET="$1"
+
+# ── URL handling ──
+case "$TARGET" in
+    http://*|https://*|ftp://*)
+        MIME="x-scheme-handler/$(echo "$TARGET" | sed 's|://.*||')"
+        ;;
+    mailto:*)
+        MIME="x-scheme-handler/mailto"
+        ;;
+    *)
+        # File — resolve MIME type
+        if [ ! -e "$TARGET" ]; then
+            echo "leaves-open: '$TARGET' not found" >&2
+            exit 1
+        fi
+        MIME=$(file --brief --mime-type "$TARGET" 2>/dev/null || echo "")
+        if [ -z "$MIME" ]; then
+            # Fallback: extension-based lookup via xdg-mime
+            if command -v xdg-mime >/dev/null 2>&1; then
+                MIME=$(xdg-mime query filetype "$TARGET" 2>/dev/null || echo "")
+            fi
+        fi
+        ;;
+esac
+
+if [ -z "$MIME" ]; then
+    echo "leaves-open: cannot determine type of '$TARGET'" >&2
+    exit 1
+fi
+
+# ── Find default application for this MIME type ──
+# Search order: user mimeapps.list → system mimeapps.list → Leaves defaults
+find_desktop_entry() {
+    local mime="$1"
+    local entry=""
+
+    # 1. User overrides
+    local user_mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    if [ -f "$user_mimeapps" ]; then
+        entry=$(grep "^${mime}=" "$user_mimeapps" 2>/dev/null | head -1 | cut -d= -f2 | cut -d';' -f1)
+        [ -n "$entry" ] && echo "$entry" && return
+    fi
+
+    # 2. Desktop-specific overrides
+    local desktop_mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/leaves-mimeapps.list"
+    if [ -f "$desktop_mimeapps" ]; then
+        entry=$(grep "^${mime}=" "$desktop_mimeapps" 2>/dev/null | head -1 | cut -d= -f2 | cut -d';' -f1)
+        [ -n "$entry" ] && echo "$entry" && return
+    fi
+
+    # 3. System defaults
+    for dir in /usr/share/applications /usr/local/share/applications; do
+        local sys_mimeapps="$dir/mimeapps.list"
+        if [ -f "$sys_mimeapps" ]; then
+            entry=$(grep "^${mime}=" "$sys_mimeapps" 2>/dev/null | head -1 | cut -d= -f2 | cut -d';' -f1)
+            [ -n "$entry" ] && echo "$entry" && return
+        fi
+    done
+}
+
+DESKTOP_ENTRY=$(find_desktop_entry "$MIME")
+
+if [ -z "$DESKTOP_ENTRY" ]; then
+    # Last resort: fall back to xdg-open
+    if command -v xdg-open >/dev/null 2>&1; then
+        exec xdg-open "$TARGET"
+    fi
+    echo "leaves-open: no application found for '$MIME'" >&2
+    exit 1
+fi
+
+# ── Locate the .desktop file ──
+find_desktop_file() {
+    local name="$1"
+    for dir in \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/applications" \
+        /usr/share/applications \
+        /usr/local/share/applications; do
+        if [ -f "$dir/$name" ]; then
+            echo "$dir/$name"
+            return
+        fi
+    done
+}
+
+DESKTOP_FILE=$(find_desktop_file "$DESKTOP_ENTRY")
+
+if [ -z "$DESKTOP_FILE" ]; then
+    echo "leaves-open: desktop entry '$DESKTOP_ENTRY' not found" >&2
+    exit 1
+fi
+
+# ── Extract Exec and launch ──
+EXEC_LINE=$(grep -m1 '^Exec=' "$DESKTOP_FILE" | cut -d= -f2-)
+
+if [ -z "$EXEC_LINE" ]; then
+    echo "leaves-open: no Exec line in '$DESKTOP_FILE'" >&2
+    exit 1
+fi
+
+# Replace field codes with the target
+EXEC_LINE=$(echo "$EXEC_LINE" | sed \
+    -e "s|%f|\"$TARGET\"|g" \
+    -e "s|%F|\"$TARGET\"|g" \
+    -e "s|%u|\"$TARGET\"|g" \
+    -e "s|%U|\"$TARGET\"|g" \
+    -e 's|%[dDnNickvm]||g')
+
+exec sh -c "$EXEC_LINE"

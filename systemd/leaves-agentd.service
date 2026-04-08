@@ -1,0 +1,25 @@
+[Unit]
+Description=Leaves OS agent daemon (agentd)
+After=leaves-inference.service
+Requires=leaves-inference.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/leaves-os
+ExecStart=%h/dev/leaves-os/.os/bin/python3 -m agentd
+Restart=on-failure
+RestartSec=3
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/dev/leaves-os
+
+# Resource limits
+MemoryMax=1G
+
+# Security hardening
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateTmp=true
+ReadWritePaths=%h %t
+
+[Install]
+WantedBy=leaves-session.target

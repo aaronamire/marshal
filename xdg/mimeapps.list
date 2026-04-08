@@ -1,0 +1,61 @@
+[Default Applications]
+# Leaves OS default application associations.
+# Install to ~/.config/mimeapps.list or ~/.config/leaves-mimeapps.list
+
+# Web browser
+x-scheme-handler/http=firefox.desktop
+x-scheme-handler/https=firefox.desktop
+x-scheme-handler/about=firefox.desktop
+text/html=firefox.desktop
+
+# File manager
+inode/directory=org.gnome.Nautilus.desktop
+
+# Text editor
+text/plain=org.gnome.TextEditor.desktop
+text/x-csrc=org.gnome.TextEditor.desktop
+text/x-chdr=org.gnome.TextEditor.desktop
+text/x-python=org.gnome.TextEditor.desktop
+text/x-java=org.gnome.TextEditor.desktop
+text/x-shellscript=org.gnome.TextEditor.desktop
+text/markdown=org.gnome.TextEditor.desktop
+text/xml=org.gnome.TextEditor.desktop
+application/json=org.gnome.TextEditor.desktop
+application/x-yaml=org.gnome.TextEditor.desktop
+application/toml=org.gnome.TextEditor.desktop
+
+# PDF
+application/pdf=org.gnome.Evince.desktop
+
+# Images
+image/png=org.gnome.Loupe.desktop
+image/jpeg=org.gnome.Loupe.desktop
+image/gif=org.gnome.Loupe.desktop
+image/webp=org.gnome.Loupe.desktop
+image/svg+xml=org.gnome.Loupe.desktop
+image/bmp=org.gnome.Loupe.desktop
+
+# Video
+video/mp4=mpv.desktop
+video/x-matroska=mpv.desktop
+video/webm=mpv.desktop
+video/x-msvideo=mpv.desktop
+
+# Audio
+audio/mpeg=mpv.desktop
+audio/ogg=mpv.desktop
+audio/flac=mpv.desktop
+audio/x-wav=mpv.desktop
+
+# Archives
+application/zip=org.gnome.FileRoller.desktop
+application/x-tar=org.gnome.FileRoller.desktop
+application/gzip=org.gnome.FileRoller.desktop
+application/x-7z-compressed=org.gnome.FileRoller.desktop
+application/x-rar-compressed=org.gnome.FileRoller.desktop
+
+# Email
+x-scheme-handler/mailto=thunderbird.desktop
+
+# Terminal
+leaves/terminal=leaves-terminal.desktop

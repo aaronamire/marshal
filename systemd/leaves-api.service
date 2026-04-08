@@ -1,0 +1,25 @@
+[Unit]
+Description=Leaves OS API server (FastAPI)
+After=leaves-agentd.service
+Requires=leaves-agentd.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/leaves-os
+ExecStart=%h/dev/leaves-os/.os/bin/uvicorn api.server:app --host 127.0.0.1 --port 8765 --workers 1
+Restart=on-failure
+RestartSec=3
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/dev/leaves-os
+
+# Resource limits
+MemoryMax=512M
+
+# Security hardening
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateTmp=true
+ReadWritePaths=%h %t
+
+[Install]
+WantedBy=leaves-session.target

@@ -68,6 +68,11 @@
 #define MOD_CTRL  (1 << 0)
 #define MOD_ALT   (1 << 1)
 #define MOD_SUPER (1 << 2)
+#define MOD_SHIFT (1 << 3)
+
+/* ── Workspaces ── */
+
+#define NUM_WORKSPACES 4
 
 /* ── Focus mode ── */
 
@@ -155,6 +160,9 @@ struct leaves_toplevel {
 	int x, y;
 	int width, height;     /* client surface size, excl. title bar */
 	bool maximized;
+	bool fullscreen;
+	bool minimized;
+	int workspace;         /* 0..NUM_WORKSPACES-1 */
 	int saved_x, saved_y, saved_w, saved_h;
 
 	struct wl_listener map;
@@ -196,6 +204,9 @@ struct leaves_xwayland_surface {
 	int x, y;
 	int width, height;
 	bool maximized;
+	bool fullscreen;
+	bool minimized;
+	int workspace;         /* 0..NUM_WORKSPACES-1 */
 	int saved_x, saved_y, saved_w, saved_h;
 
 	struct wl_listener map;
@@ -324,6 +335,9 @@ struct leaves_server {
 	struct wlr_scene_rect *taskbar_bg;
 	struct wlr_scene_buffer *taskbar_scene_buf;
 
+	/* Workspaces */
+	int active_workspace;  /* 0..NUM_WORKSPACES-1 */
+
 	/* Floating window management */
 	enum leaves_cursor_mode cursor_mode;
 	struct leaves_toplevel *grabbed_toplevel;
@@ -360,6 +374,316 @@ static void update_panel_buffer(struct leaves_server *server);
 static void focus_toplevel(struct leaves_server *server,
 	struct leaves_toplevel *toplevel);
 static void relayout_toplevels(struct leaves_server *server);
+static int output_width(struct leaves_server *server);
+static int output_height(struct leaves_server *server);
+static void update_titlebar_decorations(struct leaves_toplevel *toplevel);
+static void toggle_maximize(struct leaves_toplevel *toplevel);
+
+/* ── Workspace helpers ── */
+
+/* Show/hide toplevels based on workspace. */
+static void workspace_update_visibility(struct leaves_server *server) {
+	struct leaves_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		bool visible = (toplevel->workspace == server->active_workspace)
+			&& !toplevel->minimized;
+		wlr_scene_node_set_enabled(&toplevel->frame_tree->node, visible);
+	}
+}
+
+static void switch_workspace(struct leaves_server *server, int ws) {
+	if (ws < 0 || ws >= NUM_WORKSPACES) return;
+	if (ws == server->active_workspace) return;
+
+	server->active_workspace = ws;
+	workspace_update_visibility(server);
+
+	/* Focus the top window on the new workspace, or clear focus */
+	struct leaves_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->workspace == ws && !toplevel->minimized) {
+			server->focus_mode = FOCUS_APP;
+			focus_toplevel(server, toplevel);
+			schedule_panel_redraw(server);
+			return;
+		}
+	}
+	server->focus_mode = FOCUS_NONE;
+	wlr_seat_keyboard_clear_focus(server->seat);
+	schedule_panel_redraw(server);
+}
+
+static void move_focused_to_workspace(struct leaves_server *server, int ws) {
+	if (ws < 0 || ws >= NUM_WORKSPACES) return;
+	if (wl_list_empty(&server->toplevels)) return;
+
+	/* Find the focused toplevel on the current workspace */
+	struct leaves_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->workspace == server->active_workspace &&
+				!toplevel->minimized)
+			break;
+	}
+	if (&toplevel->link == &server->toplevels) return;
+
+	toplevel->workspace = ws;
+
+	/* Hide it (it's now on a different workspace) */
+	wlr_scene_node_set_enabled(&toplevel->frame_tree->node, false);
+
+	/* Focus next window on current workspace */
+	struct leaves_toplevel *next;
+	wl_list_for_each(next, &server->toplevels, link) {
+		if (next->workspace == server->active_workspace &&
+				!next->minimized) {
+			focus_toplevel(server, next);
+			schedule_panel_redraw(server);
+			return;
+		}
+	}
+	server->focus_mode = FOCUS_NONE;
+	wlr_seat_keyboard_clear_focus(server->seat);
+	schedule_panel_redraw(server);
+}
+
+/* ── Window snap/fullscreen helpers ── */
+
+static void snap_left(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+	int ow = output_width(server);
+	int oh = output_height(server);
+	int usable_h = oh - INPUT_HEIGHT;
+
+	if (!toplevel->maximized && !toplevel->fullscreen) {
+		toplevel->saved_x = toplevel->x;
+		toplevel->saved_y = toplevel->y;
+		toplevel->saved_w = toplevel->width;
+		toplevel->saved_h = toplevel->height;
+	}
+	toplevel->maximized = false;
+	toplevel->fullscreen = false;
+
+	toplevel->x = 0;
+	toplevel->y = 0;
+	toplevel->width  = ow / 2;
+	toplevel->height = usable_h - TITLEBAR_H;
+
+	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		toplevel->width, toplevel->height);
+	wlr_scene_node_set_position(&toplevel->frame_tree->node,
+		toplevel->x, toplevel->y);
+	update_titlebar_decorations(toplevel);
+	wlr_scene_node_set_enabled(&toplevel->titlebar_bg->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_close->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_max->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_min->node, true);
+	wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, TITLEBAR_H);
+	schedule_panel_redraw(server);
+}
+
+static void snap_right(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+	int ow = output_width(server);
+	int oh = output_height(server);
+	int usable_h = oh - INPUT_HEIGHT;
+
+	if (!toplevel->maximized && !toplevel->fullscreen) {
+		toplevel->saved_x = toplevel->x;
+		toplevel->saved_y = toplevel->y;
+		toplevel->saved_w = toplevel->width;
+		toplevel->saved_h = toplevel->height;
+	}
+	toplevel->maximized = false;
+	toplevel->fullscreen = false;
+
+	toplevel->x = ow / 2;
+	toplevel->y = 0;
+	toplevel->width  = ow - ow / 2;
+	toplevel->height = usable_h - TITLEBAR_H;
+
+	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		toplevel->width, toplevel->height);
+	wlr_scene_node_set_position(&toplevel->frame_tree->node,
+		toplevel->x, toplevel->y);
+	update_titlebar_decorations(toplevel);
+	wlr_scene_node_set_enabled(&toplevel->titlebar_bg->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_close->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_max->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_min->node, true);
+	wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, TITLEBAR_H);
+	schedule_panel_redraw(server);
+}
+
+static void enter_fullscreen(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+	int ow = output_width(server);
+	int oh = output_height(server);
+
+	if (!toplevel->maximized && !toplevel->fullscreen) {
+		toplevel->saved_x = toplevel->x;
+		toplevel->saved_y = toplevel->y;
+		toplevel->saved_w = toplevel->width;
+		toplevel->saved_h = toplevel->height;
+	}
+
+	toplevel->fullscreen = true;
+	toplevel->maximized = false;
+	toplevel->x = 0;
+	toplevel->y = 0;
+	toplevel->width  = ow;
+	toplevel->height = oh;  /* full screen, covers taskbar */
+
+	/* Hide SSD decorations */
+	wlr_scene_node_set_enabled(&toplevel->titlebar_bg->node, false);
+	wlr_scene_node_set_enabled(&toplevel->btn_close->node, false);
+	wlr_scene_node_set_enabled(&toplevel->btn_max->node, false);
+	wlr_scene_node_set_enabled(&toplevel->btn_min->node, false);
+
+	/* Surface starts at y=0 (no titlebar) */
+	wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+
+	wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, true);
+	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		toplevel->width, toplevel->height);
+	wlr_scene_node_set_position(&toplevel->frame_tree->node, 0, 0);
+
+	/* Raise above taskbar */
+	wlr_scene_node_raise_to_top(&toplevel->frame_tree->node);
+	schedule_panel_redraw(server);
+}
+
+static void leave_fullscreen(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+
+	toplevel->fullscreen = false;
+	toplevel->x = toplevel->saved_x;
+	toplevel->y = toplevel->saved_y;
+	toplevel->width  = toplevel->saved_w;
+	toplevel->height = toplevel->saved_h;
+
+	/* Restore SSD decorations */
+	wlr_scene_node_set_enabled(&toplevel->titlebar_bg->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_close->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_max->node, true);
+	wlr_scene_node_set_enabled(&toplevel->btn_min->node, true);
+	wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, TITLEBAR_H);
+
+	wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, false);
+	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		toplevel->width, toplevel->height);
+	wlr_scene_node_set_position(&toplevel->frame_tree->node,
+		toplevel->x, toplevel->y);
+	update_titlebar_decorations(toplevel);
+	schedule_panel_redraw(server);
+}
+
+static void restore_window(struct leaves_toplevel *toplevel) {
+	if (toplevel->fullscreen) {
+		leave_fullscreen(toplevel);
+	} else if (toplevel->maximized) {
+		toggle_maximize(toplevel);
+	}
+	/* else already in floating state */
+}
+
+static void minimize_window(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+
+	toplevel->minimized = true;
+	wlr_scene_node_set_enabled(&toplevel->frame_tree->node, false);
+
+	/* Focus next visible window on this workspace */
+	struct leaves_toplevel *next;
+	wl_list_for_each(next, &server->toplevels, link) {
+		if (next != toplevel &&
+				next->workspace == server->active_workspace &&
+				!next->minimized) {
+			focus_toplevel(server, next);
+			schedule_panel_redraw(server);
+			return;
+		}
+	}
+	server->focus_mode = FOCUS_NONE;
+	wlr_seat_keyboard_clear_focus(server->seat);
+	schedule_panel_redraw(server);
+}
+
+static void unminimize_window(struct leaves_toplevel *toplevel) {
+	struct leaves_server *server = toplevel->server;
+
+	toplevel->minimized = false;
+	wlr_scene_node_set_enabled(&toplevel->frame_tree->node, true);
+	server->focus_mode = FOCUS_APP;
+	focus_toplevel(server, toplevel);
+	schedule_panel_redraw(server);
+}
+
+/* Cycle focus to the next visible window on the current workspace. */
+static void cycle_window(struct leaves_server *server) {
+	if (wl_list_empty(&server->toplevels)) return;
+
+	/* Find the first non-head toplevel on the current workspace */
+	struct leaves_toplevel *toplevel;
+	struct leaves_toplevel *target = NULL;
+	wl_list_for_each_reverse(toplevel, &server->toplevels, link) {
+		if (toplevel->workspace == server->active_workspace &&
+				!toplevel->minimized) {
+			target = toplevel;
+			break;
+		}
+	}
+	if (!target) return;
+
+	server->focus_mode = FOCUS_APP;
+	focus_toplevel(server, target);
+	schedule_panel_redraw(server);
+}
+
+/* Launch a subprocess (fire-and-forget, close inherited FDs). */
+static void launch_subprocess(const char *path, char *const argv[]) {
+	pid_t pid = fork();
+	if (pid == 0) {
+		int maxfd = sysconf(_SC_OPEN_MAX);
+		for (int fd = 3; fd < maxfd && fd < 1024; fd++)
+			close(fd);
+		execvp(path, argv);
+		_exit(127);
+	}
+}
+
+/* Take a screenshot via grim. */
+static void take_screenshot(bool region) {
+	/* Ensure ~/Pictures/screenshots/ exists */
+	const char *home = getenv("HOME");
+	if (!home) return;
+
+	char dir[512];
+	snprintf(dir, sizeof(dir), "%s/Pictures", home);
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), "%s/Pictures/screenshots", home);
+	mkdir(dir, 0755);
+
+	char filename[768];
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+	snprintf(filename, sizeof(filename),
+		"%s/Pictures/screenshots/%04d-%02d-%02d_%02d%02d%02d.png",
+		home,
+		tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+		tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+	if (region) {
+		/* grim -g "$(slurp)" <filename> — needs a shell for command substitution */
+		char cmd[1024];
+		snprintf(cmd, sizeof(cmd),
+			"grim -g \"$(slurp)\" '%s'", filename);
+		char *argv[] = { "sh", "-c", cmd, NULL };
+		launch_subprocess("sh", argv);
+	} else {
+		char *argv[] = { "grim", filename, NULL };
+		launch_subprocess("grim", argv);
+	}
+}
 
 /* ── Panel dimensions ── */
 
@@ -744,6 +1068,7 @@ static void toplevel_map(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, toplevel, map);
 	struct leaves_server *server = toplevel->server;
 
+	toplevel->workspace = server->active_workspace;
 	wl_list_insert(&server->toplevels, &toplevel->link);
 
 	/* Position the floating frame */
@@ -873,10 +1198,10 @@ static void toplevel_request_fullscreen(struct wl_listener *listener,
 		void *data) {
 	struct leaves_toplevel *toplevel =
 		wl_container_of(listener, toplevel, request_fullscreen);
-	/* Treat fullscreen same as maximize for now */
-	if (!toplevel->maximized)
-		toggle_maximize(toplevel);
-	wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, false);
+	if (toplevel->fullscreen)
+		leave_fullscreen(toplevel);
+	else
+		enter_fullscreen(toplevel);
 }
 
 static void focus_toplevel(struct leaves_server *server,
@@ -1140,20 +1465,123 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 			handled = true;
 		}
 
+		/* ── Super+1..4: switch workspace ── */
+		/* ── Super+Shift+1..4: move focused window to workspace ── */
+		if (!handled && (server->modifiers & MOD_SUPER)) {
+			int ws = -1;
+			if (base_sym == XKB_KEY_1 || raw_sym == XKB_KEY_1) ws = 0;
+			else if (base_sym == XKB_KEY_2 || raw_sym == XKB_KEY_2) ws = 1;
+			else if (base_sym == XKB_KEY_3 || raw_sym == XKB_KEY_3) ws = 2;
+			else if (base_sym == XKB_KEY_4 || raw_sym == XKB_KEY_4) ws = 3;
+
+			if (ws >= 0) {
+				if (server->modifiers & MOD_SHIFT)
+					move_focused_to_workspace(server, ws);
+				else
+					switch_workspace(server, ws);
+				handled = true;
+			}
+		}
+
+		/* ── Super+Tab: cycle windows on current workspace ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_Tab || raw_sym == XKB_KEY_Tab)) {
+			cycle_window(server);
+			handled = true;
+		}
+
+		/* ── Super+Left/Right/Up/Down: window snapping ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				!wl_list_empty(&server->toplevels)) {
+			struct leaves_toplevel *top = wl_container_of(
+				server->toplevels.next, top, link);
+			if (top->workspace == server->active_workspace &&
+					!top->minimized) {
+				if (base_sym == XKB_KEY_Left || raw_sym == XKB_KEY_Left) {
+					snap_left(top);
+					handled = true;
+				} else if (base_sym == XKB_KEY_Right || raw_sym == XKB_KEY_Right) {
+					snap_right(top);
+					handled = true;
+				} else if (base_sym == XKB_KEY_Up || raw_sym == XKB_KEY_Up) {
+					if (!top->maximized) toggle_maximize(top);
+					handled = true;
+				} else if (base_sym == XKB_KEY_Down || raw_sym == XKB_KEY_Down) {
+					restore_window(top);
+					handled = true;
+				}
+			}
+		}
+
+		/* ── Super+F: toggle fullscreen ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_f || raw_sym == XKB_KEY_f)) {
+			if (!wl_list_empty(&server->toplevels)) {
+				struct leaves_toplevel *top = wl_container_of(
+					server->toplevels.next, top, link);
+				if (top->workspace == server->active_workspace) {
+					if (top->fullscreen)
+						leave_fullscreen(top);
+					else
+						enter_fullscreen(top);
+				}
+			}
+			handled = true;
+		}
+
+		/* ── Super+M: minimize focused window ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(base_sym == XKB_KEY_m || raw_sym == XKB_KEY_m)) {
+			if (!wl_list_empty(&server->toplevels)) {
+				struct leaves_toplevel *top = wl_container_of(
+					server->toplevels.next, top, link);
+				if (top->workspace == server->active_workspace &&
+						!top->minimized)
+					minimize_window(top);
+			}
+			handled = true;
+		}
+
+		/* ── Print Screen: screenshot ── */
+		if (!handled && (base_sym == XKB_KEY_Print || raw_sym == XKB_KEY_Print)) {
+			take_screenshot(false);
+			handled = true;
+		}
+
+		/* ── Super+Shift+S: region screenshot ── */
+		if (!handled && (server->modifiers & MOD_SUPER) &&
+				(server->modifiers & MOD_SHIFT) &&
+				(base_sym == XKB_KEY_s || raw_sym == XKB_KEY_s)) {
+			take_screenshot(true);
+			handled = true;
+		}
+
 		/* ── Super+Space: cycle focus: NONE → PANEL → APP → NONE ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_space || raw_sym == XKB_KEY_space)) {
 			if (server->focus_mode == FOCUS_NONE) {
 				server->focus_mode = FOCUS_PANEL;
 				wlr_seat_keyboard_clear_focus(server->seat);
-			} else if (server->focus_mode == FOCUS_PANEL &&
-					!wl_list_empty(&server->toplevels)) {
-				server->focus_mode = FOCUS_APP;
-				struct leaves_toplevel *top = wl_container_of(
-					server->toplevels.next, top, link);
-				focus_toplevel(server, top);
+			} else if (server->focus_mode == FOCUS_PANEL) {
+				/* Find top visible window on current workspace */
+				struct leaves_toplevel *top = NULL;
+				struct leaves_toplevel *t;
+				wl_list_for_each(t, &server->toplevels, link) {
+					if (t->workspace == server->active_workspace &&
+							!t->minimized) {
+						top = t;
+						break;
+					}
+				}
+				if (top) {
+					server->focus_mode = FOCUS_APP;
+					focus_toplevel(server, top);
+				} else {
+					server->focus_mode = FOCUS_NONE;
+					wlr_seat_keyboard_clear_focus(server->seat);
+				}
 			} else {
-				/* FOCUS_APP → NONE, or PANEL with no apps → NONE */
+				/* FOCUS_APP → NONE */
 				server->focus_mode = FOCUS_NONE;
 				wlr_seat_keyboard_clear_focus(server->seat);
 			}
@@ -1343,6 +1771,11 @@ static void keyboard_handle_modifiers(struct wl_listener *listener,
 		XKB_MOD_NAME_LOGO);
 	if (logo_idx != XKB_MOD_INVALID && (mod_mask & (1 << logo_idx)))
 		server->modifiers |= MOD_SUPER;
+
+	xkb_mod_index_t shift_idx = xkb_keymap_mod_get_index(keymap,
+		XKB_MOD_NAME_SHIFT);
+	if (shift_idx != XKB_MOD_INVALID && (mod_mask & (1 << shift_idx)))
+		server->modifiers |= MOD_SHIFT;
 
 	/* Track keyboard layout for status bar */
 	if (server->status) {
@@ -1605,7 +2038,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 				/* Minimize button */
 				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
 						rel_y >= btn_t && rel_y < btn_b) {
-					/* TODO: minimize to taskbar */
+					minimize_window(toplevel);
 					goto done_press;
 				}
 

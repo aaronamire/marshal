@@ -1,0 +1,15 @@
+[Unit]
+Description=Leaves OS notification daemon
+After=leaves-compositor.service
+PartOf=leaves-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/local/bin/leaves-notifyd
+Restart=on-failure
+RestartSec=3
+Environment=HOME=%h
+
+[Install]
+WantedBy=leaves-session.target

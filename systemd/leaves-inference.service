@@ -1,0 +1,25 @@
+[Unit]
+Description=Leaves OS inference server (llama.cpp)
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/dev/leaves-os/scripts/start-inference.sh
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+
+# Resource limits
+MemoryMax=3G
+CPUQuota=100%
+
+# Security hardening
+ProtectHome=read-only
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateTmp=true
+ReadWritePaths=%h/.leaves
+
+[Install]
+WantedBy=leaves-session.target
