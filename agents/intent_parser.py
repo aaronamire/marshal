@@ -109,7 +109,7 @@ class IntentParser:
         # --- Layer 1: instant classification (3-8ms) ---
         # Fires the callback so UI can update before Layer 2 runs.
         # Any failure is silently swallowed — never blocks Layer 2.
-        IMPLEMENTED_CATEGORIES = {"file_task", "system_task", "web_task"}
+        IMPLEMENTED_CATEGORIES = {"file_task", "system_task", "web_task", "audio_task", "network_task", "power_task"}
         if self._classifier is not None:
             try:
                 l1 = self._classifier.classify(user_text)
@@ -351,8 +351,8 @@ class IntentParser:
     def _check_actions_present(self, goal_spec: dict[str, Any]) -> None:
         """Raise NOT_IMPLEMENTED for unimplemented categories; INFERENCE_BAD_RESPONSE
         when the model returns empty actions for a supported category."""
-        IMPLEMENTED_CATEGORIES = {"file_task", "system_task", "web_task"}
-        IMPLEMENTED_AGENTS = {"file", "system", "web"}
+        IMPLEMENTED_CATEGORIES = {"file_task", "system_task", "web_task", "audio_task", "network_task", "power_task"}
+        IMPLEMENTED_AGENTS = {"file", "system", "web", "audio", "network", "power"}
         actions = goal_spec.get("actions", [])
         category = goal_spec.get("category", "")
 

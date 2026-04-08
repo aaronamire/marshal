@@ -21,7 +21,7 @@
     "category": {
       "type": "string",
       "description": "Top-level intent category.",
-      "enum": ["file_task", "email_task", "web_task", "system_task", "writing_task"]
+      "enum": ["file_task", "email_task", "web_task", "system_task", "writing_task", "audio_task", "network_task", "power_task"]
     },
     "actions": {
       "type": "array",
@@ -44,7 +44,7 @@
           },
           "agent": {
             "type": "string",
-            "enum": ["file", "email", "web", "system", "writing"],
+            "enum": ["file", "email", "web", "system", "writing", "audio", "network", "power"],
             "description": "Which agent handles this action."
           },
           "params": {

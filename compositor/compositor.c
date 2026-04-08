@@ -15,6 +15,7 @@
 #include <pthread.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <linux/input-event-codes.h>
 
 #include <wayland-server-core.h>
@@ -44,6 +45,7 @@
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/types/wlr_input_method_v2.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
+#include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/xwayland/xwayland.h>
 #include <wlr/backend/session.h>
 #include <wlr/util/log.h>
@@ -324,6 +326,16 @@ struct leaves_server {
 
 	/* System status bar */
 	struct leaves_status *status;
+
+	/* Session lock (ext-session-lock-v1) */
+	struct wlr_session_lock_manager_v1 *session_lock_mgr;
+	struct wlr_session_lock_v1 *active_session_lock;
+	struct wlr_scene_tree *lock_tree; /* above everything when locked */
+	bool locked;
+	struct wl_listener new_session_lock;
+	struct wl_listener session_lock_new_surface;
+	struct wl_listener session_lock_unlock;
+	struct wl_listener session_lock_destroy;
 
 	/* logind PrepareForSleep → auto-lock */
 	sd_bus *logind_bus;
@@ -1393,7 +1405,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		for (int i = 0; i < nsyms; i++) {
-			/* ── VT switch: Ctrl+Alt+F1..F12 ── */
+			/* ── VT switch: Ctrl+Alt+F1..F12 (always allowed, even locked) ── */
 			if ((server->modifiers & MOD_CTRL) &&
 					(server->modifiers & MOD_ALT)) {
 				if (syms[i] >= XKB_KEY_XF86Switch_VT_1 &&
@@ -1414,6 +1426,10 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				}
 			}
 		}
+
+		/* Session locked: only VT switch and emergency exit pass through */
+		if (!handled && server->locked)
+			handled = true;
 
 		/* Use base_sym for compositor shortcuts — immune to modifier
 		 * remapping (Super on some XKB configs can transform keysyms). */
@@ -1939,6 +1955,13 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 	struct leaves_server *server =
 		wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
+
+	/* Session locked: let the lock surface client handle pointer events */
+	if (server->locked) {
+		wlr_seat_pointer_notify_button(server->seat, event->time_msec,
+			event->button, event->state);
+		return;
+	}
 
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec,
 		event->button, event->state);
@@ -2852,6 +2875,143 @@ static void server_xwayland_ready(struct wl_listener *listener, void *data) {
 	}
 }
 
+/* ── Session lock (ext-session-lock-v1) ── */
+
+struct leaves_lock_surface {
+	struct leaves_server *server;
+	struct wlr_session_lock_surface_v1 *lock_surface;
+	struct wlr_scene_tree *scene_tree;
+	struct wl_listener map;
+	struct wl_listener destroy;
+	struct wl_listener surface_commit;
+};
+
+static void lock_surface_configure(struct leaves_lock_surface *ls) {
+	struct wlr_output *output = ls->lock_surface->output;
+	wlr_session_lock_surface_v1_configure(ls->lock_surface,
+		output->width, output->height);
+}
+
+static void lock_surface_handle_map(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct leaves_lock_surface *ls = wl_container_of(listener, ls, map);
+	/* Check if all outputs have a mapped lock surface — if so, send locked */
+	struct leaves_server *server = ls->server;
+	if (server->active_session_lock && !server->locked) {
+		wlr_session_lock_v1_send_locked(server->active_session_lock);
+		server->locked = true;
+	}
+}
+
+static void lock_surface_handle_destroy(struct wl_listener *listener,
+		void *data) {
+	(void)data;
+	struct leaves_lock_surface *ls = wl_container_of(listener, ls, destroy);
+	wl_list_remove(&ls->map.link);
+	wl_list_remove(&ls->destroy.link);
+	wl_list_remove(&ls->surface_commit.link);
+	free(ls);
+}
+
+static void lock_surface_handle_commit(struct wl_listener *listener,
+		void *data) {
+	(void)data;
+	struct leaves_lock_surface *ls =
+		wl_container_of(listener, ls, surface_commit);
+	if (!ls->lock_surface->configured)
+		return;
+}
+
+static void handle_session_lock_new_surface(struct wl_listener *listener,
+		void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, session_lock_new_surface);
+	struct wlr_session_lock_surface_v1 *lock_surface = data;
+
+	struct leaves_lock_surface *ls = calloc(1, sizeof(*ls));
+	if (!ls) return;
+
+	ls->server = server;
+	ls->lock_surface = lock_surface;
+	ls->scene_tree = wlr_scene_subsurface_tree_create(server->lock_tree,
+		lock_surface->surface);
+
+	ls->map.notify = lock_surface_handle_map;
+	wl_signal_add(&lock_surface->surface->events.map, &ls->map);
+	ls->destroy.notify = lock_surface_handle_destroy;
+	wl_signal_add(&lock_surface->events.destroy, &ls->destroy);
+	ls->surface_commit.notify = lock_surface_handle_commit;
+	wl_signal_add(&lock_surface->surface->events.commit,
+		&ls->surface_commit);
+
+	lock_surface_configure(ls);
+}
+
+static void handle_session_lock_unlock(struct wl_listener *listener,
+		void *data) {
+	(void)data;
+	struct leaves_server *server =
+		wl_container_of(listener, server, session_lock_unlock);
+	wl_list_remove(&server->session_lock_new_surface.link);
+	wl_list_remove(&server->session_lock_unlock.link);
+	wl_list_remove(&server->session_lock_destroy.link);
+	server->active_session_lock = NULL;
+	server->locked = false;
+	wlr_scene_node_set_enabled(&server->lock_tree->node, false);
+}
+
+static void handle_session_lock_destroy(struct wl_listener *listener,
+		void *data) {
+	(void)data;
+	struct leaves_server *server =
+		wl_container_of(listener, server, session_lock_destroy);
+	wl_list_remove(&server->session_lock_new_surface.link);
+	wl_list_remove(&server->session_lock_unlock.link);
+	wl_list_remove(&server->session_lock_destroy.link);
+	server->active_session_lock = NULL;
+	/* If client crashed while locked, scene stays up to prevent peek-through.
+	 * User recovers via VT switch.  Clearing locked here so a new locker
+	 * can reconnect. */
+	server->locked = false;
+	wlr_scene_node_set_enabled(&server->lock_tree->node, false);
+}
+
+static void handle_new_session_lock(struct wl_listener *listener, void *data) {
+	struct leaves_server *server =
+		wl_container_of(listener, server, new_session_lock);
+	struct wlr_session_lock_v1 *lock = data;
+
+	if (server->active_session_lock) {
+		wlr_session_lock_v1_destroy(lock);
+		return;
+	}
+
+	server->active_session_lock = lock;
+	server->locked = false;
+
+	/* Show the lock layer above everything */
+	wlr_scene_node_set_enabled(&server->lock_tree->node, true);
+
+	server->session_lock_new_surface.notify =
+		handle_session_lock_new_surface;
+	wl_signal_add(&lock->events.new_surface,
+		&server->session_lock_new_surface);
+	server->session_lock_unlock.notify = handle_session_lock_unlock;
+	wl_signal_add(&lock->events.unlock, &server->session_lock_unlock);
+	server->session_lock_destroy.notify = handle_session_lock_destroy;
+	wl_signal_add(&lock->events.destroy, &server->session_lock_destroy);
+}
+
+/* ── SIGCHLD handler: reap zombie children from fork() calls ── */
+
+static int sigchld_handler(int signal_number, void *data) {
+	(void)signal_number;
+	(void)data;
+	while (waitpid(-1, NULL, WNOHANG) > 0)
+		;
+	return 0;
+}
+
 /* ── Main ── */
 
 int main(int argc, char *argv[]) {
@@ -2946,6 +3106,17 @@ int main(int argc, char *argv[]) {
 		wlr_scene_tree_create(&server.scene->tree);
 	server.layer_trees[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] =
 		wlr_scene_tree_create(&server.scene->tree);
+
+	/* Session lock: above overlay, hidden until a lock client connects */
+	server.lock_tree = wlr_scene_tree_create(&server.scene->tree);
+	wlr_scene_node_set_enabled(&server.lock_tree->node, false);
+
+	/* ext-session-lock-v1: allows leaves-locker to inhibit input */
+	server.session_lock_mgr =
+		wlr_session_lock_manager_v1_create(server.display);
+	server.new_session_lock.notify = handle_new_session_lock;
+	wl_signal_add(&server.session_lock_mgr->events.new_lock,
+		&server.new_session_lock);
 
 	/* xdg-shell */
 	server.xdg_shell = wlr_xdg_shell_create(server.display, 6);
@@ -3105,6 +3276,10 @@ int main(int argc, char *argv[]) {
 	server.status_timer = wl_event_loop_add_timer(server.event_loop,
 		status_timer_cb, &server);
 	wl_event_source_timer_update(server.status_timer, 1000);
+
+	/* Reap zombie children from fork() calls (terminal, locker, screenshot) */
+	wl_event_loop_add_signal(server.event_loop, SIGCHLD, sigchld_handler,
+		&server);
 
 	/* logind: lock screen before suspend */
 	setup_logind_sleep_monitor(&server);

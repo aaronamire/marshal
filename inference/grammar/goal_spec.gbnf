@@ -9,7 +9,7 @@ ws ::= [ \t\n\r]*
 goal-spec ::= "{" ws "\"intent_id\"" ws ":" ws string ws "," ws "\"natural_text\"" ws ":" ws string ws "," ws "\"category\"" ws ":" ws category ws "," ws "\"actions\"" ws ":" ws actions-array ws "," ws "\"authorization\"" ws ":" ws authorization ws "," ws "\"metadata\"" ws ":" ws metadata ws "}"
 
 # Closed enum — no other value accepted
-category ::= "\"file_task\"" | "\"email_task\"" | "\"web_task\"" | "\"system_task\"" | "\"writing_task\""
+category ::= "\"file_task\"" | "\"email_task\"" | "\"web_task\"" | "\"system_task\"" | "\"writing_task\"" | "\"audio_task\"" | "\"network_task\"" | "\"power_task\""
 
 # EXPLICIT typed array — max 3 actions (Phase 1).
 # Phase 0 was capped at 2: the 1B model at 7 tok/s filled the 512-token budget
@@ -28,7 +28,7 @@ action-id ::= "\"act-" [0-9]+ "\""
 
 action-type ::= "\"QUERY\"" | "\"READ\"" | "\"WRITE\"" | "\"DELETE\"" | "\"MOVE\"" | "\"COPY\"" | "\"SUMMARIZE\"" | "\"COMPOSE\""
 
-agent-type ::= "\"file\"" | "\"email\"" | "\"web\"" | "\"system\"" | "\"writing\""
+agent-type ::= "\"file\"" | "\"email\"" | "\"web\"" | "\"system\"" | "\"writing\"" | "\"audio\"" | "\"network\"" | "\"power\""
 
 # depends_on — explicit typed array, may be empty
 depends-on-array ::= "[" ws (action-id (ws "," ws action-id)*)? ws "]"
