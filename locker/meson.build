@@ -1,5 +1,5 @@
 project('leaves-locker', 'c',
-  version : '0.1.0',
+  version : '0.2.0',
   default_options : [
     'c_std=c11',
     'warning_level=2',
@@ -17,59 +17,25 @@ math = meson.get_compiler('c').find_library('m')
 wayland_scanner = find_program('wayland-scanner')
 wl_proto_dir = wayland_protocols.get_variable('pkgdatadir')
 
-# xdg-shell client protocol (needed by layer-shell which references xdg_popup)
-xdg_shell_xml = wl_proto_dir / 'stable/xdg-shell/xdg-shell.xml'
+# ext-session-lock-v1 (replaces layer-shell + input-inhibitor)
+ext_lock_xml = wl_proto_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml'
 
-xdg_shell_header = custom_target('xdg-shell-client-header',
-  input : xdg_shell_xml,
-  output : 'xdg-shell-client-protocol.h',
+ext_lock_header = custom_target('ext-session-lock-client-header',
+  input : ext_lock_xml,
+  output : 'ext-session-lock-v1-client-protocol.h',
   command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
 )
 
-xdg_shell_code = custom_target('xdg-shell-client-code',
-  input : xdg_shell_xml,
-  output : 'xdg-shell-protocol.c',
-  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
-)
-
-# Layer shell protocol (client side)
-compositor_layer_xml = meson.current_source_dir() / '../compositor/protocols/wlr-layer-shell-unstable-v1.xml'
-
-layer_shell_header = custom_target('layer-shell-client-header',
-  input : compositor_layer_xml,
-  output : 'wlr-layer-shell-unstable-v1-client-protocol.h',
-  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
-)
-
-layer_shell_code = custom_target('layer-shell-client-code',
-  input : compositor_layer_xml,
-  output : 'wlr-layer-shell-unstable-v1-protocol.c',
-  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
-)
-
-# Input inhibitor protocol
-inhibitor_xml = meson.current_source_dir() / 'protocols/wlr-input-inhibitor-unstable-v1.xml'
-
-inhibitor_header = custom_target('input-inhibitor-client-header',
-  input : inhibitor_xml,
-  output : 'wlr-input-inhibitor-unstable-v1-client-protocol.h',
-  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
-)
-
-inhibitor_code = custom_target('input-inhibitor-client-code',
-  input : inhibitor_xml,
-  output : 'wlr-input-inhibitor-unstable-v1-protocol.c',
+ext_lock_code = custom_target('ext-session-lock-client-code',
+  input : ext_lock_xml,
+  output : 'ext-session-lock-v1-protocol.c',
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
 executable('leaves-locker',
   'locker.c',
-  xdg_shell_header,
-  xdg_shell_code,
-  layer_shell_header,
-  layer_shell_code,
-  inhibitor_header,
-  inhibitor_code,
+  ext_lock_header,
+  ext_lock_code,
   dependencies : [
     wayland_client,
     cairo,

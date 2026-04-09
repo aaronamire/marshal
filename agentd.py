@@ -26,6 +26,7 @@ from agents.web_agent import WebAgent
 from agents.audio_agent import AudioAgent
 from agents.network_agent import NetworkAgent
 from agents.power_agent import PowerAgent
+from agents.writing_agent import WritingAgent
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
 from db.audit import get_db, log_error, log_intent_created, log_state_transition, complete_intent
@@ -39,6 +40,7 @@ _AGENT_MAP: dict[str, type] = {
     "audio": AudioAgent,
     "network": NetworkAgent,
     "power": PowerAgent,
+    "writing": WritingAgent,
 }
 
 
@@ -358,6 +360,7 @@ async def _handle_client(
 
 _watcher = None   # IntentWatcher instance, set in _run_server
 _indexer = None   # CortexIndexer instance, set in _run_server
+_event_watcher = None  # CompositorEventWatcher instance, set in _run_server
 
 _INDEX_INTERVAL_SECONDS = 1800  # 30 minutes between incremental re-indexes
 
@@ -436,8 +439,65 @@ def _fire_goalspec_sync(goal_spec: dict) -> None:
         print(f"agentd: watcher intent error — {e}", flush=True)
 
 
+async def _on_terminal_error(
+    app_id: str, exit_code: int, scrollback_path: pathlib.Path,
+) -> None:
+    """Synthesize a proactive intent card when a terminal exits with error."""
+    scrollback = ""
+    try:
+        if scrollback_path.exists():
+            scrollback = scrollback_path.read_text(errors="replace")[-2000:]
+    except OSError:
+        pass
+
+    if not scrollback:
+        return
+
+    intent_text = (
+        f"The terminal ({app_id}) just exited with error code {exit_code}. "
+        f"The last output was:\n{scrollback}\n"
+        f"What went wrong and what should I do next?"
+    )
+
+    import uuid as _uuid
+    import time as _time
+
+    goal_spec = {
+        "intent_id": str(_uuid.uuid4()),
+        "natural_text": intent_text,
+        "category": "system_task",
+        "actions": [{
+            "action_id": "act-1",
+            "type": "QUERY",
+            "agent": "system",
+            "params": {"query_type": "diagnostics", "exit_code": exit_code},
+            "destructive": False,
+        }],
+        "authorization": {
+            "resources": ["~"],
+            "preview_required": True,
+            "reversible": True,
+        },
+        "metadata": {
+            "confidence": 0.90,
+            "parse_latency_ms": 0.0,
+            "model": "proactive-terminal-error",
+            "proactive": True,
+            "source_app": app_id,
+        },
+    }
+
+    db = get_db()
+    log_intent_created(db, goal_spec["intent_id"], intent_text, goal_spec)
+    print(
+        f"agentd: proactive intent created for {app_id} "
+        f"exit code {exit_code}",
+        flush=True,
+    )
+
+
 async def _run_server() -> None:
-    global _CGROUP_AVAILABLE, _watcher
+    global _CGROUP_AVAILABLE, _watcher, _event_watcher
 
     # One-time cgroup v2 parent setup
     try:
@@ -478,6 +538,17 @@ async def _run_server() -> None:
         print(f"agentd: cortex indexer failed to initialize: {e}", flush=True)
         _indexer = None
 
+    # Start compositor event watcher
+    try:
+        from compositor.event_watcher import CompositorEventWatcher
+        _event_watcher = CompositorEventWatcher()
+        _event_watcher.on_nonzero_exit(_on_terminal_error)
+        await _event_watcher.start()
+        print("agentd: compositor event watcher started", flush=True)
+    except Exception as e:
+        print(f"agentd: compositor event watcher failed: {e}", flush=True)
+        _event_watcher = None
+
     server = await asyncio.start_unix_server(_handle_client, path=str(_SOCK_PATH))
     print(f"agentd listening on {_SOCK_PATH}", flush=True)
 
@@ -489,6 +560,8 @@ async def _run_server() -> None:
         async with server:
             await server.serve_forever()
     finally:
+        if _event_watcher is not None:
+            await _event_watcher.stop()
         if _watcher is not None:
             _watcher.stop()
         if _SOCK_PATH.exists():

@@ -14,8 +14,11 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
+#include <errno.h>
 #include <linux/input-event-codes.h>
 
 #include <wayland-server-core.h>
@@ -52,6 +55,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include <drm_fourcc.h>
 
+#include <cjson/cJSON.h>
 #include <systemd/sd-bus.h>
 
 #include "renderer.h"
@@ -337,6 +341,16 @@ struct leaves_server {
 	struct wl_listener session_lock_unlock;
 	struct wl_listener session_lock_destroy;
 
+	/* Compositor → agentd event broadcast */
+	int                    event_srv_fd;
+	struct wl_event_source *event_srv_src;
+	int                    event_clients[8];
+	int                    event_client_count;
+
+	/* PID → app_id mapping for child process tracking */
+	struct { pid_t pid; char app_id[64]; } child_pids[64];
+	int child_pid_count;
+
 	/* logind PrepareForSleep → auto-lock */
 	sd_bus *logind_bus;
 	sd_bus_slot *sleep_slot;
@@ -390,6 +404,11 @@ static int output_width(struct leaves_server *server);
 static int output_height(struct leaves_server *server);
 static void update_titlebar_decorations(struct leaves_toplevel *toplevel);
 static void toggle_maximize(struct leaves_toplevel *toplevel);
+static void emit_window_event(struct leaves_server *server,
+	const char *type, const char *app_id, const char *title,
+	pid_t pid, int workspace);
+static pid_t launch_subprocess_tracked(struct leaves_server *server,
+	const char *app_id, const char *path, char *const argv[]);
 
 /* ── Workspace helpers ── */
 
@@ -904,21 +923,13 @@ static int prepare_for_sleep_cb(sd_bus_message *msg, void *userdata,
 		return 0;
 	if (going_to_sleep) {
 		/* Launch locker before the system actually suspends */
-		pid_t pid = fork();
-		if (pid == 0) {
-			int maxfd = sysconf(_SC_OPEN_MAX);
-			for (int fd = 3; fd < maxfd && fd < 1024; fd++)
-				close(fd);
-			execl("/usr/local/bin/leaves-locker",
-				"leaves-locker", NULL);
-			execlp("leaves-locker", "leaves-locker", NULL);
-			_exit(127);
-		}
+		pid_t pid = launch_subprocess_tracked(server,
+			"leaves-locker", "leaves-locker",
+			(char *const[]){"leaves-locker", NULL});
 		/* Brief delay to let the locker grab input before sleep completes */
 		if (pid > 0)
 			usleep(200000); /* 200 ms */
 	}
-	(void)server;
 	return 0;
 }
 
@@ -1088,6 +1099,11 @@ static void toplevel_map(struct wl_listener *listener, void *data) {
 		toplevel->x, toplevel->y);
 	update_titlebar_decorations(toplevel);
 
+	emit_window_event(server, "window_opened",
+		toplevel->xdg_toplevel->app_id,
+		toplevel->xdg_toplevel->title, 0,
+		server->active_workspace);
+
 	/* Focus the new window */
 	server->focus_mode = FOCUS_APP;
 	focus_toplevel(server, toplevel);
@@ -1098,6 +1114,10 @@ static void toplevel_unmap(struct wl_listener *listener, void *data) {
 	struct leaves_toplevel *toplevel =
 		wl_container_of(listener, toplevel, unmap);
 	struct leaves_server *server = toplevel->server;
+
+	emit_window_event(server, "window_closed",
+		toplevel->xdg_toplevel->app_id, "",
+		0, toplevel->workspace);
 
 	wl_list_remove(&toplevel->link);
 
@@ -1236,6 +1256,10 @@ static void focus_toplevel(struct leaves_server *server,
 	wl_list_insert(&server->toplevels, &toplevel->link);
 	wlr_scene_node_raise_to_top(&toplevel->frame_tree->node);
 	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
+
+	emit_window_event(server, "window_focused",
+		toplevel->xdg_toplevel->app_id, "", 0,
+		toplevel->workspace);
 
 	/* Set keyboard on seat before notify_enter — wlroots uses the seat's
 	 * current keyboard to send keymap + modifiers to the entering surface.
@@ -1437,36 +1461,18 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		/* ── Super+Return: launch terminal ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_Return || raw_sym == XKB_KEY_Return)) {
-			pid_t pid = fork();
-			if (pid == 0) {
-				/* Close inherited server FDs so the client
-				 * connects cleanly via WAYLAND_DISPLAY */
-				int maxfd = sysconf(_SC_OPEN_MAX);
-				for (int fd = 3; fd < maxfd && fd < 1024; fd++)
-					close(fd);
-				execl("/usr/local/bin/leaves-terminal",
-					"leaves-terminal", NULL);
-				execlp("leaves-terminal",
-					"leaves-terminal", NULL);
-				_exit(127);
-			}
+			launch_subprocess_tracked(server, "leaves-terminal",
+				"leaves-terminal",
+				(char *const[]){"leaves-terminal", NULL});
 			handled = true;
 		}
 
 		/* ── Super+L: lock screen ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_l || raw_sym == XKB_KEY_l)) {
-			pid_t pid = fork();
-			if (pid == 0) {
-				int maxfd = sysconf(_SC_OPEN_MAX);
-				for (int fd = 3; fd < maxfd && fd < 1024; fd++)
-					close(fd);
-				execl("/usr/local/bin/leaves-locker",
-					"leaves-locker", NULL);
-				execlp("leaves-locker",
-					"leaves-locker", NULL);
-				_exit(127);
-			}
+			launch_subprocess_tracked(server, "leaves-locker",
+				"leaves-locker",
+				(char *const[]){"leaves-locker", NULL});
 			handled = true;
 		}
 
@@ -2673,6 +2679,10 @@ static void xwayland_surface_map(struct wl_listener *listener, void *data) {
 	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
 	update_xwayland_decorations(xs);
 
+	emit_window_event(server, "window_opened",
+		xs->xsurface->class, xs->xsurface->title,
+		xs->xsurface->pid, server->active_workspace);
+
 	/* Focus the new X11 window */
 	server->focus_mode = FOCUS_APP;
 	wlr_scene_node_raise_to_top(&xs->frame_tree->node);
@@ -2691,6 +2701,10 @@ static void xwayland_surface_unmap(struct wl_listener *listener, void *data) {
 	struct leaves_xwayland_surface *xs =
 		wl_container_of(listener, xs, unmap);
 	struct leaves_server *server = xs->server;
+
+	emit_window_event(server, "window_closed",
+		xs->xsurface->class, "", xs->xsurface->pid,
+		xs->workspace);
 
 	wl_list_remove(&xs->link);
 
@@ -3002,13 +3016,141 @@ static void handle_new_session_lock(struct wl_listener *listener, void *data) {
 	wl_signal_add(&lock->events.destroy, &server->session_lock_destroy);
 }
 
-/* ── SIGCHLD handler: reap zombie children from fork() calls ── */
+/* ── Event broadcast (compositor → agentd) ── */
+
+static int event_accept_cb(int fd, uint32_t mask, void *data) {
+	(void)mask;
+	struct leaves_server *server = data;
+	int client = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+	if (client < 0) return 0;
+	if (server->event_client_count < 8)
+		server->event_clients[server->event_client_count++] = client;
+	else
+		close(client);
+	return 0;
+}
+
+static void emit_event(struct leaves_server *server, const char *json) {
+	size_t len = strlen(json);
+	for (int i = 0; i < server->event_client_count; ) {
+		ssize_t n = write(server->event_clients[i], json, len);
+		if (n < 0 && (errno == EPIPE || errno == ECONNRESET ||
+				errno == EBADF)) {
+			close(server->event_clients[i]);
+			server->event_clients[i] =
+				server->event_clients[--server->event_client_count];
+		} else {
+			/* EAGAIN/EWOULDBLOCK: drop event for slow client */
+			i++;
+		}
+	}
+}
+
+static void emit_window_event(struct leaves_server *server,
+		const char *type, const char *app_id, const char *title,
+		pid_t pid, int workspace) {
+	cJSON *obj = cJSON_CreateObject();
+	cJSON_AddStringToObject(obj, "type", type);
+	cJSON_AddStringToObject(obj, "app_id", app_id ? app_id : "");
+	cJSON_AddStringToObject(obj, "title", title ? title : "");
+	if (pid > 0)
+		cJSON_AddNumberToObject(obj, "pid", (double)pid);
+	cJSON_AddNumberToObject(obj, "workspace", workspace);
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	double ms = ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+	cJSON_AddNumberToObject(obj, "ts_ms", ms);
+
+	char *s = cJSON_PrintUnformatted(obj);
+	if (s) {
+		size_t slen = strlen(s);
+		char *line = malloc(slen + 2);
+		if (line) {
+			memcpy(line, s, slen);
+			line[slen] = '\n';
+			line[slen + 1] = '\0';
+			emit_event(server, line);
+			free(line);
+		}
+		cJSON_free(s);
+	}
+	cJSON_Delete(obj);
+}
+
+/* ── Child process tracking ── */
+
+static pid_t launch_subprocess_tracked(struct leaves_server *server,
+		const char *app_id, const char *path, char *const argv[]) {
+	pid_t pid = fork();
+	if (pid == 0) {
+		int maxfd = sysconf(_SC_OPEN_MAX);
+		for (int fd = 3; fd < maxfd && fd < 1024; fd++)
+			close(fd);
+		execvp(path, argv);
+		_exit(127);
+	}
+	if (pid > 0 && server->child_pid_count < 64) {
+		int idx = server->child_pid_count++;
+		server->child_pids[idx].pid = pid;
+		strncpy(server->child_pids[idx].app_id, app_id,
+			sizeof(server->child_pids[idx].app_id) - 1);
+		server->child_pids[idx].app_id[63] = '\0';
+	}
+	return pid;
+}
+
+/* ── SIGCHLD handler: reap zombies + emit child_exited events ── */
 
 static int sigchld_handler(int signal_number, void *data) {
 	(void)signal_number;
-	(void)data;
-	while (waitpid(-1, NULL, WNOHANG) > 0)
-		;
+	struct leaves_server *server = data;
+	int status;
+	pid_t pid;
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+		const char *app_id = "";
+		for (int i = 0; i < server->child_pid_count; i++) {
+			if (server->child_pids[i].pid == pid) {
+				app_id = server->child_pids[i].app_id;
+				/* Emit event before removing from table */
+				if (strlen(app_id) > 0) {
+					cJSON *obj = cJSON_CreateObject();
+					cJSON_AddStringToObject(obj, "type",
+						"child_exited");
+					cJSON_AddStringToObject(obj, "app_id",
+						app_id);
+					cJSON_AddNumberToObject(obj, "pid",
+						(double)pid);
+					cJSON_AddNumberToObject(obj, "exit_code",
+						(double)exit_code);
+					struct timespec ts;
+					clock_gettime(CLOCK_MONOTONIC, &ts);
+					cJSON_AddNumberToObject(obj, "ts_ms",
+						ts.tv_sec * 1000.0 +
+						ts.tv_nsec / 1e6);
+					char *s = cJSON_PrintUnformatted(obj);
+					if (s) {
+						size_t slen = strlen(s);
+						char *line = malloc(slen + 2);
+						if (line) {
+							memcpy(line, s, slen);
+							line[slen] = '\n';
+							line[slen + 1] = '\0';
+							emit_event(server, line);
+							free(line);
+						}
+						cJSON_free(s);
+					}
+					cJSON_Delete(obj);
+				}
+				/* Remove from table */
+				server->child_pids[i] =
+					server->child_pids[
+						--server->child_pid_count];
+				break;
+			}
+		}
+	}
 	return 0;
 }
 
@@ -3293,21 +3435,21 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Set WAYLAND_DISPLAY so child processes can connect */
-	const char *socket = wl_display_add_socket_auto(server.display);
-	if (!socket) {
+	const char *wl_socket = wl_display_add_socket_auto(server.display);
+	if (!wl_socket) {
 		fprintf(stderr, "Failed to open Wayland socket\n");
 		wlr_backend_destroy(server.backend);
 		wl_display_destroy(server.display);
 		return 1;
 	}
-	setenv("WAYLAND_DISPLAY", socket, 1);
-	fprintf(stderr, "Leaves compositor running on %s\n", socket);
+	setenv("WAYLAND_DISPLAY", wl_socket, 1);
+	fprintf(stderr, "Leaves compositor running on %s\n", wl_socket);
 
 	/* Store the socket name directly in the feed struct so feed threads
 	 * read the compositor's OWN socket, not an inherited env value. */
 	if (server.feed)
 		snprintf(server.feed->wayland_display,
-			sizeof(server.feed->wayland_display), "%s", socket);
+			sizeof(server.feed->wayland_display), "%s", wl_socket);
 
 	/* Write display socket to ~/.leaves/wayland-display so the API server
 	 * and agents can discover which compositor to connect to. */
@@ -3321,8 +3463,43 @@ int main(int argc, char *argv[]) {
 				"%s/.leaves/wayland-display", home);
 			FILE *f = fopen(path, "w");
 			if (f) {
-				fprintf(f, "%s\n", socket);
+				fprintf(f, "%s\n", wl_socket);
 				fclose(f);
+			}
+		}
+	}
+
+	/* Compositor → agentd event broadcast socket */
+	{
+		const char *xdg = getenv("XDG_RUNTIME_DIR");
+		if (!xdg) xdg = "/tmp";
+		char sock_path[256];
+		snprintf(sock_path, sizeof(sock_path),
+			"%s/leaves-compositor-events.sock", xdg);
+		unlink(sock_path);
+
+		server.event_srv_fd = socket(AF_UNIX,
+			SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+		if (server.event_srv_fd >= 0) {
+			struct sockaddr_un addr = {.sun_family = AF_UNIX};
+			strncpy(addr.sun_path, sock_path,
+				sizeof(addr.sun_path) - 1);
+			if (bind(server.event_srv_fd,
+					(struct sockaddr *)&addr,
+					sizeof(addr)) == 0 &&
+					listen(server.event_srv_fd, 8) == 0) {
+				server.event_srv_src = wl_event_loop_add_fd(
+					server.event_loop,
+					server.event_srv_fd,
+					WL_EVENT_READABLE,
+					event_accept_cb, &server);
+				fprintf(stderr,
+					"Event socket: %s\n", sock_path);
+			} else {
+				close(server.event_srv_fd);
+				server.event_srv_fd = -1;
+				fprintf(stderr,
+					"Warning: event socket bind failed\n");
 			}
 		}
 	}
@@ -3333,6 +3510,12 @@ int main(int argc, char *argv[]) {
 	wl_display_run(server.display);
 
 	/* Cleanup */
+	/* Close event socket and all connected clients */
+	for (int i = 0; i < server.event_client_count; i++)
+		close(server.event_clients[i]);
+	if (server.event_srv_fd >= 0)
+		close(server.event_srv_fd);
+
 	wl_display_destroy_clients(server.display);
 	if (server.logind_event)
 		wl_event_source_remove(server.logind_event);
