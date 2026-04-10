@@ -66,6 +66,10 @@ echo "Starting llama-server on $HOST:$PORT with $THREADS threads..."
 echo "Model: $MODEL"
 echo ""
 
+# Ensure KV cache save directory exists (for --slot-save-path)
+KV_CACHE_DIR="$HOME/.leaves/kv-cache"
+mkdir -p "$KV_CACHE_DIR"
+
 exec "$LLAMA_SERVER" \
     --model "$MODEL" \
     --port "$PORT" \
@@ -76,4 +80,5 @@ exec "$LLAMA_SERVER" \
     --no-mmap \
     --log-disable \
     --spec-type ngram-simple \
-    --draft-max 8
+    --draft-max 8 \
+    --slot-save-path "$KV_CACHE_DIR"

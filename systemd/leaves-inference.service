@@ -19,7 +19,7 @@ ProtectHome=read-only
 ProtectSystem=strict
 NoNewPrivileges=true
 PrivateTmp=true
-ReadWritePaths=%h/.leaves
+ReadWritePaths=%h/.leaves %h/.leaves/kv-cache
 
 [Install]
 WantedBy=leaves-session.target

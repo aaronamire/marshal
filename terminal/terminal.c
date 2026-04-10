@@ -26,7 +26,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -74,6 +76,108 @@ static const struct rgba palette[18] = {
 
 #define FG_DEFAULT 16
 #define BG_DEFAULT 17
+
+/* ── Scrollback capture for proactive intents ──
+ *
+ * Captures the last SCROLLBACK_CAP bytes of raw PTY output in a ring buffer.
+ * On non-zero child exit, the buffer is stripped of ANSI escapes and written
+ * to ~/.leaves/terminal-scrollback.txt. The agentd compositor event watcher
+ * reads this file to synthesize diagnostic GoalSpecs.
+ */
+
+#define SCROLLBACK_FILE_CAP  (32 * 1024)  /* 32KB ring buffer (~500 lines) */
+
+static char scrollback_ring[SCROLLBACK_FILE_CAP];
+static size_t scrollback_wpos = 0;     /* next write position in ring */
+static size_t scrollback_total = 0;    /* total bytes ever written */
+
+static void scrollback_write(const char *data, size_t len) {
+	size_t orig = len;
+	while (len > 0) {
+		size_t space = SCROLLBACK_FILE_CAP - scrollback_wpos;
+		size_t chunk = len < space ? len : space;
+		memcpy(scrollback_ring + scrollback_wpos, data, chunk);
+		scrollback_wpos = (scrollback_wpos + chunk) % SCROLLBACK_FILE_CAP;
+		data += chunk;
+		len -= chunk;
+	}
+	scrollback_total += orig;
+}
+
+/* Strip ANSI escape sequences and control chars for clean LLM-readable text.
+ * Handles CSI sequences (ESC [ ... final_byte) and short escapes (ESC char). */
+static size_t strip_ansi(const char *src, size_t src_len,
+		char *dst, size_t dst_cap) {
+	size_t di = 0;
+	bool in_esc = false;
+	bool in_csi = false;
+	for (size_t si = 0; si < src_len && di < dst_cap - 1; si++) {
+		unsigned char c = (unsigned char)src[si];
+		if (in_esc) {
+			if (c == '[') { in_csi = true; in_esc = false; continue; }
+			in_esc = false;
+			continue;
+		}
+		if (in_csi) {
+			if (c >= 0x40 && c <= 0x7E) in_csi = false;
+			continue;
+		}
+		if (c == 0x1B) { in_esc = true; continue; }
+		/* Keep printable, newline, tab, CR, and UTF-8 continuation bytes */
+		if (c >= 0x20 || c == '\n' || c == '\t' || c == '\r' || c >= 0x80)
+			dst[di++] = (char)c;
+	}
+	dst[di] = '\0';
+	return di;
+}
+
+static void dump_scrollback(int exit_code) {
+	if (exit_code == 0) return;
+
+	const char *home = getenv("HOME");
+	if (!home) return;
+
+	char dir_path[PATH_MAX];
+	snprintf(dir_path, sizeof(dir_path), "%s/.leaves", home);
+	mkdir(dir_path, 0700);  /* ignore EEXIST */
+
+	/* Linearize ring buffer (oldest data first) */
+	size_t used = scrollback_total < SCROLLBACK_FILE_CAP
+		? scrollback_total : SCROLLBACK_FILE_CAP;
+	if (used == 0) return;
+
+	char *linear = malloc(used + 1);
+	if (!linear) return;
+
+	if (scrollback_total <= SCROLLBACK_FILE_CAP) {
+		/* Buffer never wrapped */
+		memcpy(linear, scrollback_ring, used);
+	} else {
+		/* Wrapped — oldest data starts at scrollback_wpos */
+		size_t tail = SCROLLBACK_FILE_CAP - scrollback_wpos;
+		memcpy(linear, scrollback_ring + scrollback_wpos, tail);
+		memcpy(linear + tail, scrollback_ring, scrollback_wpos);
+	}
+	linear[used] = '\0';
+
+	/* Strip ANSI escapes for clean text */
+	char *clean = malloc(used + 1);
+	if (!clean) { free(linear); return; }
+	size_t clean_len = strip_ansi(linear, used, clean, used + 1);
+	free(linear);
+
+	char file_path[PATH_MAX];
+	snprintf(file_path, sizeof(file_path),
+		"%s/.leaves/terminal-scrollback.txt", home);
+
+	int fd = open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd >= 0) {
+		/* Write may be partial on exotic FS — best-effort is fine */
+		(void)write(fd, clean, clean_len);
+		close(fd);
+	}
+	free(clean);
+}
 
 /* ── Wayland globals ── */
 
@@ -747,10 +851,19 @@ static bool setup_pty(void) {
 /* ── Signal handling ── */
 
 static volatile sig_atomic_t child_exited = 0;
+static volatile sig_atomic_t child_exit_code = 0;
 
 static void sigchld_handler(int sig) {
 	(void)sig;
-	child_exited = 1;
+	int status;
+	pid_t pid = waitpid(-1, &status, WNOHANG);
+	if (pid > 0) {
+		child_exited = 1;
+		if (WIFEXITED(status))
+			child_exit_code = WEXITSTATUS(status);
+		else if (WIFSIGNALED(status))
+			child_exit_code = 128 + WTERMSIG(status);
+	}
 }
 
 /* ── Main ── */
@@ -886,6 +999,7 @@ int main(int argc, char *argv[]) {
 			char buf[PTY_BUF_SIZE];
 			ssize_t n = read(term.pty_master, buf, sizeof(buf));
 			if (n > 0) {
+				scrollback_write(buf, n);
 				tsm_vte_input(term.vte, buf, n);
 				term.needs_redraw = true;
 			} else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
@@ -907,10 +1021,17 @@ int main(int argc, char *argv[]) {
 	}
 
 cleanup:
+	/* Dump scrollback for proactive intents before tearing down */
+	dump_scrollback(child_exit_code);
+
 	/* Clean up child */
 	if (term.child_pid > 0) {
-		kill(term.child_pid, SIGHUP);
-		waitpid(term.child_pid, NULL, WNOHANG);
+		if (!child_exited) {
+			/* Child still running (user closed window) — signal and reap */
+			kill(term.child_pid, SIGHUP);
+			waitpid(term.child_pid, NULL, WNOHANG);
+		}
+		/* If child_exited, SIGCHLD handler already reaped */
 	}
 	if (term.pty_master >= 0) close(term.pty_master);
 
@@ -942,5 +1063,7 @@ cleanup:
 	if (wl_registry) wl_registry_destroy(wl_registry);
 	if (wl_display) wl_display_disconnect(wl_display);
 
-	return 0;
+	/* Propagate child's exit code so the compositor sees non-zero exits
+	 * and emits child_exited events that trigger proactive intents. */
+	return child_exit_code;
 }

@@ -136,7 +136,7 @@ def assert_no_impossible_types(goal_spec: dict, intent: str):
             f"Model produced type: '{t}'\n"
             f"This type is not in the grammar enum — constraint is broken.\n"
             f"Check: is 'grammar' field sent in API requests?\n"
-            f"Check: does /v1/completions support grammar? (try /completion)\n"
+            f"Check: does /completion endpoint receive the grammar field?\n"
             f"GoalSpec: {json.dumps(goal_spec, indent=2)}"
         )
         assert t in VALID_ACTION_TYPES, (

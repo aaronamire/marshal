@@ -58,8 +58,21 @@
           },
           "depends_on": {
             "type": "array",
-            "items": {"type": "string", "pattern": "^act-[0-9]+$"},
-            "description": "action_ids this action depends on (for future DAG execution)."
+            "description": "Dependency edges for DAG execution. Each edge is either a bare action_id string (full dependency: wait for completion) or an object {id, mode} where mode is 'full' or 'stream'. Stream edges let the dependent action start as soon as the parent starts emitting partial messages, enabling pipelined execution.",
+            "items": {
+              "oneOf": [
+                {"type": "string", "pattern": "^act-[0-9]+$"},
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id"],
+                  "properties": {
+                    "id": {"type": "string", "pattern": "^act-[0-9]+$"},
+                    "mode": {"type": "string", "enum": ["full", "stream"]}
+                  }
+                }
+              ]
+            }
           }
         }
       }

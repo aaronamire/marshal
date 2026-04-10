@@ -1,10 +1,14 @@
 """
 Location-transparent inference client for Leaves OS.
 
-Uses an InferenceBackend ABC so that Phase 1 can swap in a remote API
-backend (Anthropic, OpenAI) without touching any calling code.
+Uses an InferenceBackend ABC so that callers never know which backend
+(local llama.cpp, remote API) is serving the request.
 
-Phase 0: LocalLlamaCppBackend only.
+Phase 0-2: LocalLlamaCppBackend via native /completion endpoint.
+           Prompt caching (cache_prompt=true) reuses the KV cache for the
+           common system-prompt prefix across requests, cutting prefill from
+           ~30s to ~2-4s on the i5-7200U.
+Phase 3:   add RemoteAPIBackend as fallback.
 """
 from __future__ import annotations
 
@@ -42,6 +46,8 @@ class InferenceResponse:
     content: str
     latency_ms: float
     tokens_predicted: int = 0
+    tokens_cached: int = 0     # prompt tokens reused from KV cache
+    prompt_tokens: int = 0     # prompt tokens actually computed (after cache hit)
     model: str = "unknown"
 
 
@@ -61,8 +67,8 @@ class InferenceBackend(ABC):
 
 class LocalLlamaCppBackend(InferenceBackend):
     """
-    Talks to a locally running llama.cpp server via its OpenAI-compatible HTTP API.
-    Server endpoint: POST /v1/completions  (grammar field only works here, not /completion)
+    Talks to a locally running llama.cpp server via its native HTTP API.
+    Server endpoint: POST /completion  (GBNF grammar + cache_prompt support)
     Health check:    GET  /health
     """
 
@@ -87,15 +93,17 @@ class LocalLlamaCppBackend(InferenceBackend):
                 detail=f"llama.cpp server not reachable at {self._base_url}",
             )
 
-        # /v1/completions uses OpenAI field names (max_tokens, not n_predict)
-        # and is the only endpoint that honours the per-request "grammar" field.
-        payload = {
-            "model": "local",
+        # Native /completion endpoint — supports cache_prompt for KV cache
+        # reuse across requests (the system prompt prefix is identical every
+        # time, so only the RAG examples + user intent need fresh prefill).
+        # Also supports grammar for GBNF-constrained decoding.
+        payload: dict = {
             "prompt": request.prompt,
-            "max_tokens": request.max_tokens,
+            "n_predict": request.max_tokens,
             "temperature": request.temperature,
             "stop": request.stop_tokens,
             "stream": request.stream,
+            "cache_prompt": True,
         }
         if request.grammar is not None:
             payload["grammar"] = request.grammar
@@ -103,7 +111,7 @@ class LocalLlamaCppBackend(InferenceBackend):
         t0 = time.monotonic()
         try:
             r = self._session.post(
-                f"{self._base_url}/v1/completions",
+                f"{self._base_url}/completion",
                 json=payload,
                 timeout=(TIMEOUT_CONNECT_SECONDS, TIMEOUT_READ_SECONDS),
             )
@@ -135,10 +143,9 @@ class LocalLlamaCppBackend(InferenceBackend):
                 cause=e,
             )
 
-        # OpenAI response format: {"choices": [{"text": "...", ...}], "usage": {...}}
-        try:
-            content = data["choices"][0]["text"]
-        except (KeyError, IndexError):
+        # Native response: {"content": "...", "tokens_cached": N, "timings": {...}}
+        content = data.get("content")
+        if content is None:
             raise LeavesError(
                 LeavesErrorCode.INFERENCE_BAD_RESPONSE,
                 detail=f"Unexpected response structure: {str(data)[:200]}",
@@ -146,16 +153,21 @@ class LocalLlamaCppBackend(InferenceBackend):
         if not content:
             raise LeavesError(
                 LeavesErrorCode.INFERENCE_BAD_RESPONSE,
-                detail="Server returned empty text in choices[0].",
+                detail="Server returned empty content.",
             )
 
+        timings = data.get("timings", {})
+        tokens_cached = data.get("tokens_cached", 0)
+        tokens_predicted = timings.get("predicted_n", 0)
+        prompt_tokens = timings.get("prompt_n", 0)
         model_name = data.get("model", "llama.cpp")
-        tokens_predicted = data.get("usage", {}).get("completion_tokens", 0)
 
         return InferenceResponse(
             content=content,
             latency_ms=latency_ms,
             tokens_predicted=tokens_predicted,
+            tokens_cached=tokens_cached,
+            prompt_tokens=prompt_tokens,
             model=model_name,
         )
 
@@ -163,8 +175,8 @@ class LocalLlamaCppBackend(InferenceBackend):
 class InferenceClient:
     """
     Thin wrapper that selects the active backend.
-    Phase 0: always uses LocalLlamaCppBackend.
-    Phase 1: add RemoteAnthropicBackend as fallback.
+    Phase 0-2: LocalLlamaCppBackend with prompt caching.
+    Phase 3:   add RemoteAPIBackend as fallback.
     """
 
     def __init__(self, backend: Optional[InferenceBackend] = None):

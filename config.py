@@ -13,12 +13,14 @@ INFERENCE_SERVER_URL = f"http://{INFERENCE_SERVER_HOST}:{INFERENCE_SERVER_PORT}"
 
 # Timeouts (seconds)
 # i5-7200U with --mlock --no-mmap --threads 2 generates ~20-30 tok/s.
-# ctx-size=4096: KV cache ~64MB (fine). System prompt alone is ~2000 tokens after
-# adding 3 extra few-shot examples. Prefill cost ~15ms/tok × 2000 tok = 30s,
-# plus 1024 output tokens at 20 tok/s = 51s → total ~81s worst-case. Use 120s.
-# Task 4 (prompt caching) will bring this back down to ~6s.
+# ctx-size=4096: KV cache ~64MB (fine). System prompt alone is ~2000 tokens.
+# With prompt caching (cache_prompt=true on /completion endpoint), the system
+# prompt KV cache is reused across requests. Only the RAG examples + user intent
+# (~300-500 tokens) need fresh prefill. Warm-cache latency: ~4-8s total.
+# Cold-cache (first request or after server restart): ~26-30s full prefill.
+# 90s timeout handles cold-cache + thermal throttling worst case.
 TIMEOUT_CONNECT_SECONDS = 5
-TIMEOUT_READ_SECONDS = 90    # 90s — INFERENCE_MAX_TOKENS=512 caps generation at ~26s; 90s handles thermal throttling
+TIMEOUT_READ_SECONDS = 90
 TIMEOUT_HARD_SECONDS = 360
 
 # Generation parameters

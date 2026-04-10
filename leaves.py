@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import signal
 import socket as _socket
 import subprocess
 import sys
@@ -28,6 +29,8 @@ from rich import box
 
 from agentd import AgentCoordinator
 from agents.intent_parser import IntentParser
+from agents.refs import resolve_refs
+from agents.session_memory import SessionMemory
 from agents.state_machine import IntentLifecycle, IntentState
 from config import (
     APP_NAME, APP_VERSION,
@@ -79,44 +82,112 @@ def _ensure_agentd() -> bool:
     return False
 
 
-def _send_goalspec(goal_spec: dict, from_state: str) -> tuple[dict, str]:
+def _send_goalspec(
+    goal_spec: dict,
+    from_state: str,
+    on_event=None,
+) -> tuple[dict, str]:
     """
     Send a GoalSpec to agentd and return (results, summary).
 
+    If `on_event` is provided, the request opts into the streaming protocol:
+    agentd will write zero or more {"event": ...} frames to the socket as
+    channel messages arrive from the runner, followed by a single
+    {"final": true, ...} frame. `on_event` is called once per event frame.
+
     Raises LeavesError if the daemon reports an execution failure.
-    Raises OSError / other exceptions on communication failure (caller falls back).
+    Raises OSError / other exceptions on communication failure
+    (caller falls back).
     """
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     s.settimeout(120.0)
     s.connect(str(_AGENTD_SOCK))
     try:
-        payload = json.dumps({"goal_spec": goal_spec, "from_state": from_state})
-        s.sendall(payload.encode() + b"\n")
+        request = {
+            "goal_spec": goal_spec,
+            "from_state": from_state,
+        }
+        if on_event is not None:
+            request["stream_events"] = True
+        s.sendall(json.dumps(request).encode() + b"\n")
+
+        # Read newline-delimited JSON frames until we see one with final=true.
         buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(4096)
-            if not chunk:
+        final_resp: dict | None = None
+        while final_resp is None:
+            # Pull at least one complete line.
+            while b"\n" not in buf:
+                chunk = s.recv(4096)
+                if not chunk:
+                    raise OSError("agentd closed connection without final frame")
+                buf += chunk
+            line, buf = buf.split(b"\n", 1)
+            if not line:
+                continue
+            try:
+                frame = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if frame.get("final"):
+                final_resp = frame
                 break
-            buf += chunk
+            event = frame.get("event")
+            if event is not None and on_event is not None:
+                try:
+                    on_event(event)
+                except Exception:
+                    pass
     finally:
         s.close()
 
-    resp = json.loads(buf.split(b"\n")[0])
-    if resp.get("ok"):
-        return resp["results"], resp["summary"]
+    assert final_resp is not None  # loop only exits when set
+    if final_resp.get("ok"):
+        return final_resp["results"], final_resp["summary"]
 
     # Daemon reported an execution failure — re-raise as LeavesError.
-    code_str = resp.get("code", "INTERNAL_ERROR")
+    code_str = final_resp.get("code", "INTERNAL_ERROR")
     try:
         code = LeavesErrorCode[code_str]
     except KeyError:
         code = LeavesErrorCode.INTERNAL_ERROR
-    raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
+    raise LeavesError(
+        code, detail=final_resp.get("detail") or final_resp.get("error"))
+
+
+def _send_cancel(intent_id: str) -> bool:
+    """
+    Open a fresh socket to agentd and send a cancel frame for `intent_id`.
+
+    Used by the SIGINT handler during EXECUTING. Best-effort: any failure
+    is silently swallowed because we are inside a signal handler context
+    and the worst case is the user has to wait for the in-flight intent
+    to finish naturally.
+    """
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect(str(_AGENTD_SOCK))
+        try:
+            s.sendall(json.dumps({"_cancel": intent_id}).encode() + b"\n")
+            line = s.recv(4096)
+            if not line:
+                return False
+            resp = json.loads(line.split(b"\n", 1)[0])
+            return bool(resp.get("_cancelled"))
+        finally:
+            s.close()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
 
 
 # Module-level singletons — initialized once in main()
 _db = None
 _parser: IntentParser | None = None
+_session: SessionMemory | None = None
+# The intent currently being executed; SIGINT handler reads this so it
+# knows what to ask agentd to cancel. Set just before _send_goalspec,
+# cleared on the post-execution path.
+_inflight_intent_id: str | None = None
 
 
 def _get_db():
@@ -438,6 +509,7 @@ def handle_intent(user_text: str) -> None:
     """
     db = _get_db()
     parser = _parser
+    session = _session
 
     # --- server availability ---
     if not parser._client.is_available():
@@ -463,8 +535,17 @@ def handle_intent(user_text: str) -> None:
     lifecycle = IntentLifecycle(intent_id="pending")
     try:
         lifecycle.transition(IntentState.PARSING)
+        history_block = session.to_prompt_block() if session is not None else None
         with console.status(f"[{LEAVES_DIM_COLOR}]Generating plan…[/{LEAVES_DIM_COLOR}]"):
-            goal_spec = parser.parse(user_text)
+            goal_spec = parser.parse(user_text, session_history=history_block)
+
+        # Resolve $prev[N].action_id.path references in action params
+        # against session memory BEFORE the spec leaves this process.
+        # The runner subprocess sees fully-expanded params.
+        if session is not None and len(session) > 0:
+            for action in goal_spec.get("actions", []):
+                if isinstance(action.get("params"), dict):
+                    action["params"] = resolve_refs(action["params"], session)
 
         intent_id = goal_spec["intent_id"]
         lifecycle = IntentLifecycle(intent_id=intent_id)
@@ -475,10 +556,19 @@ def handle_intent(user_text: str) -> None:
 
         confidence = goal_spec.get("metadata", {}).get("confidence", 0.0)
         latency = goal_spec.get("metadata", {}).get("parse_latency_ms", 0)
+        meta = goal_spec.get("metadata", {})
+        cached = meta.get("tokens_cached", 0)
+        computed = meta.get("prompt_tokens_computed", 0)
+        cache_tag = ""
+        if cached or computed:
+            total_prompt = cached + computed
+            hit_pct = (cached / total_prompt * 100) if total_prompt else 0
+            cache_tag = f" · cache {hit_pct:.0f}%"
         console.print(
             f"  [{LEAVES_DIM_COLOR}]Plan: "
             f"{len(goal_spec.get('actions', []))} action(s) via {goal_spec['category']} "
-            f"· L2 confidence {confidence:.0%} · {latency:.0f}ms[/{LEAVES_DIM_COLOR}]"
+            f"· L2 confidence {confidence:.0%} · {latency:.0f}ms"
+            f"{cache_tag}[/{LEAVES_DIM_COLOR}]"
         )
 
     except LeavesError as e:
@@ -505,10 +595,61 @@ def handle_intent(user_text: str) -> None:
 
     # --- EXECUTING (via agentd socket; in-process fallback) ---
     from_state_str = lifecycle.state.value
+
+    def _on_progress_event(event: dict) -> None:
+        """Render a single channel event as a dim status line."""
+        kind = event.get("kind", "?")
+        aid = event.get("action_id", "?")
+        data = event.get("data")
+        if kind == "progress":
+            label = ""
+            if isinstance(data, dict):
+                if "pct" in data:
+                    label = f"{data['pct']}%"
+                elif "message" in data:
+                    label = str(data["message"])
+                else:
+                    label = ", ".join(f"{k}={v}" for k, v in data.items())
+            console.print(
+                f"[{LEAVES_DIM_COLOR}]  ↳ {aid} {label}[/{LEAVES_DIM_COLOR}]")
+        elif kind == "partial":
+            preview = ""
+            if isinstance(data, dict):
+                preview = data.get("path") or data.get("message") or ""
+            elif isinstance(data, str):
+                preview = data
+            console.print(
+                f"[{LEAVES_DIM_COLOR}]  ⋯ {aid} {preview}[/{LEAVES_DIM_COLOR}]")
+        elif kind == "log":
+            console.print(
+                f"[{LEAVES_DIM_COLOR}]  · {aid} {data}[/{LEAVES_DIM_COLOR}]")
+
+    # Install a SIGINT handler for the duration of the EXECUTING window.
+    # Ctrl-C asks agentd to cancel the in-flight intent rather than tearing
+    # down the REPL. The handler is removed in the finally block.
+    global _inflight_intent_id
+    _inflight_intent_id = intent_id
+    _prev_sigint = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(_signum, _frame):
+        target = _inflight_intent_id
+        if target:
+            ok = _send_cancel(target)
+            tag = "cancel sent" if ok else "cancel failed"
+            console.print(
+                f"[{LEAVES_WARNING_COLOR}]  ⌃C — {tag}[/{LEAVES_WARNING_COLOR}]"
+            )
+
+    try:
+        signal.signal(signal.SIGINT, _on_sigint)
+    except (ValueError, OSError):
+        pass  # not on main thread / unsupported
+
     try:
         if _ensure_agentd():
             try:
-                results, summary = _send_goalspec(goal_spec, from_state_str)
+                results, summary = _send_goalspec(
+                    goal_spec, from_state_str, on_event=_on_progress_event)
                 # Daemon advanced its own lifecycle to EXECUTING; mirror that here
                 # so subsequent transitions (→DONE / →FAILED) remain valid.
                 lifecycle.transition(IntentState.EXECUTING)
@@ -529,6 +670,12 @@ def handle_intent(user_text: str) -> None:
             duration_ms=(time.monotonic() - t_start) * 1000,
         )
         return
+    finally:
+        _inflight_intent_id = None
+        try:
+            signal.signal(signal.SIGINT, _prev_sigint)
+        except (ValueError, OSError, TypeError):
+            pass
 
     # --- Render results ---
     for action in goal_spec.get("actions", []):
@@ -570,6 +717,19 @@ def handle_intent(user_text: str) -> None:
     log_state_transition(db, intent_id, "EXECUTING", "DONE")
     duration_ms = (time.monotonic() - t_start) * 1000
     complete_intent(db, intent_id, "DONE", summary, duration_ms=duration_ms)
+
+    # Record the completed turn so future intents can $prev-reference it.
+    if session is not None:
+        try:
+            session.record(
+                intent_id=intent_id,
+                natural_text=user_text,
+                goal_spec=goal_spec,
+                results=results,
+                summary=summary,
+            )
+        except Exception:
+            pass  # Memory is best-effort; never block the user
 
     reversible = auth.get("reversible", True)
     rev_str = "reversible" if reversible else "[red]irreversible[/red]"
@@ -975,9 +1135,17 @@ def cmd_briefing(hours: int = 12) -> None:
 # ---------------------------------------------------------------------------
 
 def repl() -> None:
-    global _parser
+    global _parser, _session
 
     _banner()
+
+    # Session memory: persists turns across REPL invocations within a
+    # 1h window so the model can $prev-reference prior results.
+    _session = SessionMemory()
+    if len(_session) > 0:
+        console.print(
+            f"[{LEAVES_DIM_COLOR}]Session: resumed {len(_session)} prior turn(s)[/{LEAVES_DIM_COLOR}]"
+        )
 
     # Try to load Layer 1 classifier
     classifier = None

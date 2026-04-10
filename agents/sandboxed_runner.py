@@ -250,9 +250,15 @@ def _main() -> None:
         sys.path.insert(0, _root)
 
     from agents.state_machine import IntentLifecycle, IntentState
+    from agents.cancel import cancel_event, install_handler as install_cancel_handler
     from agentd import AgentCoordinator
     from db.audit import get_db
     from errors import LeavesError
+
+    # Install SIGUSR1 → cancel_event handler. This must happen on the
+    # main thread before AgentCoordinator's worker threads spin up so
+    # they inherit a process where the signal is already wired.
+    install_cancel_handler()
 
     # Step 4: build lifecycle to the correct pre-execution state
     intent_id = goal_spec["intent_id"]
@@ -261,10 +267,49 @@ def _main() -> None:
     if from_state_str == "AWAITING_AUTH":
         lifecycle.transition(IntentState.AWAITING_AUTH)
 
+    # Step 4b: open the sidecar event pipe (if the parent supplied one) and
+    # build a channel-message hook that forwards JSON frames over it. The
+    # pipe fd is inherited from the parent and is therefore not subject to
+    # Landlock (which gates path access, not pre-opened fds).
+    event_writer = None
+    event_fd_str = os.environ.get("LEAVES_EVENT_FD")
+    if event_fd_str:
+        try:
+            event_fd = int(event_fd_str)
+            event_writer = os.fdopen(event_fd, "w", buffering=1)
+        except (ValueError, OSError):
+            event_writer = None
+
+    def _safe_data(data):
+        try:
+            json.dumps(data)
+            return data
+        except (TypeError, ValueError):
+            return repr(data)
+
+    def _on_channel_message(msg) -> None:
+        if event_writer is None:
+            return
+        try:
+            event_writer.write(json.dumps({
+                "action_id": msg.action_id,
+                "kind": msg.kind,
+                "data": _safe_data(msg.data),
+            }) + "\n")
+        except (ValueError, OSError, BrokenPipeError):
+            pass
+
     # Step 5: execute
     db = get_db()
     try:
-        results, summary = AgentCoordinator(db).execute(goal_spec, lifecycle)
+        coordinator = AgentCoordinator(
+            db,
+            on_channel_message=_on_channel_message,
+            cancel_event=cancel_event,
+        )
+        results, summary = coordinator.execute(goal_spec, lifecycle)
+        if cancel_event.is_set():
+            summary = (summary or "") + " (cancelled by user)"
         out: dict = {"ok": True, "results": results, "summary": summary}
     except LeavesError as e:
         out = {
@@ -275,6 +320,12 @@ def _main() -> None:
         }
     except Exception as e:
         out = {"ok": False, "code": "INTERNAL_ERROR", "error": str(e), "detail": None}
+    finally:
+        if event_writer is not None:
+            try:
+                event_writer.close()
+            except (ValueError, OSError):
+                pass
 
     sys.stdout.write(json.dumps(out) + "\n")
     sys.stdout.flush()
