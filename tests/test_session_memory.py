@@ -5,9 +5,7 @@ import json
 import time
 from pathlib import Path
 
-import pytest
-
-from agents.session_memory import SessionMemory, Turn
+from agents.session_memory import SessionMemory
 
 
 def _gs(action_id: str = "act-1") -> dict:
