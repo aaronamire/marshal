@@ -1,6 +1,9 @@
 """
 Abstract base class for all Leaves OS agents.
-Implemented: FileAgent, SystemAgent, WebAgent.
+
+The current set of implemented agents is declared in agents/registry.py
+(file, system, web, audio, network, power, writing). Do not maintain a
+duplicate list here — it will drift.
 """
 from __future__ import annotations
 

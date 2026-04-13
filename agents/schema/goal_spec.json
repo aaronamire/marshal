@@ -39,7 +39,7 @@
           },
           "type": {
             "type": "string",
-            "enum": ["QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY", "SUMMARIZE", "COMPOSE"],
+            "enum": ["QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY", "COMPOSE"],
             "description": "The kind of operation. QUERY and READ are non-destructive."
           },
           "agent": {

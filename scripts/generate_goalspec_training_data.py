@@ -40,12 +40,12 @@ For each request, output a JSON array of GoalSpec objects — no markdown, no ex
 GOALSPEC SCHEMA (do NOT include "intent_id"):
 {
   "natural_text": "<verbatim user intent>",
-  "category": "<file_task|email_task|web_task|system_task|writing_task>",
+  "category": "<file_task|web_task|system_task|writing_task|audio_task|network_task|power_task>",
   "actions": [
     {
       "action_id": "act-1",
       "type": "<QUERY|READ|WRITE|DELETE|MOVE|COPY|SUMMARIZE|COMPOSE>",
-      "agent": "<file|email|web|system|writing>",
+      "agent": "<file|web|system|writing|audio|network|power>",
       "params": { ... },
       "destructive": <true|false>,
       "depends_on": []

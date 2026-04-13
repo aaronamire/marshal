@@ -17,7 +17,7 @@ PROMPT='<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 You are an intent classifier for Leaves OS. 
 Return ONLY a JSON object. No explanation. No markdown.
 Format: {"category": "file_task", "confidence": 0.95}
-Categories: file_task, email_task, web_task, system_task, writing_task
+Categories: file_task, web_task, system_task, writing_task, audio_task, network_task, power_task
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 find all my tax PDFs from last year
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>'

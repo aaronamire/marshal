@@ -404,14 +404,22 @@ def _not_impl(pattern: str) -> None:
 # email — write/send/compose/draft + email/message/mail
 _not_impl(r'^\s*(?:write|send|compose|draft)\b.+\b(?:email|e-mail|message|mail)\b')
 _not_impl(r'^\s*(?:send|compose|draft)\b.+\bto\s+(?!~|/|\.)[\w]')  # "to <person>" not "to ~/path"
+# email — reply/forward are email/messaging verbs; no implemented agent uses them.
+_not_impl(r'^\s*reply\b')
+_not_impl(r'^\s*forward\b.+\bto\s+(?!~|/|\.)[\w]')  # "forward X to <person>", not "to ~/path"
+# email — inbox/mailbox mentions are always email. File-agent rules run first,
+# so legitimate paths like "read ~/inbox.txt" are already handled before this fires.
+_not_impl(r'\b(?:inbox|mailbox)\b')
+# email — check/read/open/search + email(s) / e-mail(s)
+_not_impl(r'\b(?:check|read|open|search)\b.+\be-?mails?\b')
+# email — mark ... email(s) (mark as read/unread/important)
+_not_impl(r'\bmark\b.+\be-?mails?\b')
 
 # system — hardware controls now routed to dedicated agents (audio, network, power)
 
 # web — now implemented by WebAgent (NOT_IMPL patterns removed)
 
-# writing — write a document/report / summarize text
-_not_impl(r'\bwrite\s+a\s+(?:document|report|letter|essay|blog\s+post)\b')
-_not_impl(r'\bsummariz[ei]\s+(?:this|the)\s+(?:text|document|article|file)\b')
+# writing — now implemented by WritingAgent (NOT_IMPL patterns removed)
 
 
 # ---------------------------------------------------------------------------

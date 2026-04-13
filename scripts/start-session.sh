@@ -65,4 +65,4 @@ fi
 # 5. Compositor (Wayland client)
 # ---------------------------------------------------------------------------
 echo "[leaves] launching compositor..."
-exec "$LEAVES_ROOT/compositor/build/leaves-compositor"
+exec "$LEAVES_ROOT/compositor/builddir/leaves-compositor"

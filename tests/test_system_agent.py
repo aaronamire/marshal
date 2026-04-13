@@ -49,7 +49,8 @@ class TestQueryCPU:
 
         assert result["usage_percent"] == 23.5
         assert result["freq_mhz"] == 3600.0
-        assert result["cores"] == 8
+        assert result["cores_physical"] == 8
+        assert result["cores_logical"] == 16
         assert result["temp_celsius"] is None
 
     @patch("agents.system_agent.psutil")
@@ -79,7 +80,9 @@ class TestQueryCPU:
         assert result["freq_mhz"] is None
 
     @patch("agents.system_agent.psutil")
-    def test_cpu_physical_cores_none_falls_back_to_logical(self, mock_psutil, agent):
+    def test_cpu_physical_cores_none_still_exposes_logical(self, mock_psutil, agent):
+        """When psutil can't determine physical cores (returns None), the agent
+        still reports logical cores alongside a None physical count."""
         mock_psutil.cpu_percent.return_value = 5.0
         freq = MagicMock()
         freq.current = 1800.0
@@ -88,7 +91,8 @@ class TestQueryCPU:
         mock_psutil.sensors_temperatures.return_value = {}
 
         result = agent.execute_action(_action("QUERY", {"query_type": "cpu"}))
-        assert result["cores"] == 4
+        assert result["cores_physical"] is None
+        assert result["cores_logical"] == 4
 
 
 # ------------------------------------------------------------------
@@ -490,7 +494,7 @@ class TestTerminateByName:
                 _action("DELETE", {"target": "ghost_process"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc_info.value.code == LeavesErrorCode.PROCESS_NOT_FOUND
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -509,7 +513,7 @@ class TestTerminateByName:
                 _action("DELETE", {"target": "myapp"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc_info.value.code == LeavesErrorCode.PROCESS_NOT_FOUND
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -623,7 +627,7 @@ class TestTerminateByPID:
                 _action("DELETE", {"target": "99999"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc_info.value.code == LeavesErrorCode.PROCESS_NOT_FOUND
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")

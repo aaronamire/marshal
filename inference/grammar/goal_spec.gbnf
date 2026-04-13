@@ -26,7 +26,7 @@ action ::= "{" ws "\"action_id\"" ws ":" ws action-id ws "," ws "\"type\"" ws ":
 # action_id must match "act-<N>"
 action-id ::= "\"act-" [0-9]+ "\""
 
-action-type ::= "\"QUERY\"" | "\"READ\"" | "\"WRITE\"" | "\"DELETE\"" | "\"MOVE\"" | "\"COPY\"" | "\"SUMMARIZE\"" | "\"COMPOSE\""
+action-type ::= "\"QUERY\"" | "\"READ\"" | "\"WRITE\"" | "\"DELETE\"" | "\"MOVE\"" | "\"COPY\"" | "\"COMPOSE\""
 
 agent-type ::= "\"file\"" | "\"email\"" | "\"web\"" | "\"system\"" | "\"writing\"" | "\"audio\"" | "\"network\"" | "\"power\""
 

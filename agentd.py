@@ -26,28 +26,15 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agents.channel import ActionChannel, ChannelMessage
-from agents.file_agent import FileAgent
-from agents.system_agent import SystemAgent
-from agents.web_agent import WebAgent
-from agents.audio_agent import AudioAgent
-from agents.network_agent import NetworkAgent
-from agents.power_agent import PowerAgent
-from agents.writing_agent import WritingAgent
+from agents.registry import agent_classes
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
 from db.audit import get_db, log_error, log_intent_created, log_state_transition, complete_intent
 from errors import LeavesError, LeavesErrorCode
 
-# Map agent type strings -> agent classes
-_AGENT_MAP: dict[str, type] = {
-    "file": FileAgent,
-    "system": SystemAgent,
-    "web": WebAgent,
-    "audio": AudioAgent,
-    "network": NetworkAgent,
-    "power": PowerAgent,
-    "writing": WritingAgent,
-}
+# Map agent type strings -> agent classes. Sourced from agents.registry so
+# adding a new agent is a one-liner there, not a three-file patch.
+_AGENT_MAP: dict[str, type] = agent_classes()
 
 # Per-agent-type cache: does execute_action accept a `channel` kwarg?
 # Lets new agents opt into ActionChannel by adding `channel=None` to their
