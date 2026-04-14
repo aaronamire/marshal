@@ -327,6 +327,11 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 		cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
 			c.b / 255.0, 0.6 * opacity);
 		cairo_set_line_width(cr, 1.5);
+	} else if (intent->proactive) {
+		struct color c = ACCENT_GREEN;
+		cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
+			c.b / 255.0, 0.55 * opacity);
+		cairo_set_line_width(cr, 1.25);
 	} else {
 		struct color c = BORDER_CARD;
 		cairo_set_source_rgba(cr, c.r / 255.0, c.g / 255.0,
@@ -336,8 +341,13 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 	cairo_stroke(cr);
 	cairo_restore(cr);
 
-	/* Indicator bar */
-	struct color indicator_color = indicator_for_state(intent->state, opacity);
+	/* Indicator bar. Proactive cards (pushed by the OS, not typed by the
+	 * user) override the state-based color with the accent green so it's
+	 * visually obvious the OS wrote this card on its own. */
+	struct color indicator_color = intent->proactive
+		? (struct color){ACCENT_GREEN.r, ACCENT_GREEN.g, ACCENT_GREEN.b,
+			(uint8_t)(ACCENT_GREEN.a * opacity)}
+		: indicator_for_state(intent->state, opacity);
 	cairo_save(cr);
 	{
 		double ix = card_x;

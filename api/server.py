@@ -213,6 +213,32 @@ async def _send_goalspec(goal_spec: dict) -> tuple[dict, str]:
     raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
 
 
+async def _fetch_session_context() -> str | None:
+    """
+    Ask agentd for the live session_context prompt block (from the
+    compositor event watcher). Best-effort: returns None on any failure.
+    The block is injected into the L2 system prompt so the parser can
+    reference open windows, focused app, and recent process exits.
+    """
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(str(_SOCK_PATH)), timeout=1.0
+        )
+        writer.write(json.dumps({"_get_session_context": True}).encode() + b"\n")
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=1.0)
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        resp = json.loads(line)
+        block = resp.get("session_context") or ""
+        return block or None
+    except Exception:
+        return None
+
+
 async def _notify_watcher_reload() -> None:
     """Tell agentd to reload filesystem watches. Best-effort — silently ignores failures."""
     try:
@@ -448,9 +474,11 @@ async def plan_intent(body: IntentRequest):
     Returns the plan for user review before execution.
     """
     parser = _get_parser()
+    session_context = await _fetch_session_context()
     try:
         goal_spec = await asyncio.get_event_loop().run_in_executor(
-            None, parser.parse, body.text
+            None,
+            lambda: parser.parse(body.text, session_context=session_context),
         )
     except LeavesError as e:
         if e.code == LeavesErrorCode.NOT_IMPLEMENTED:
@@ -672,10 +700,12 @@ async def persist_intent(body: PersistRequest):
     """Parse an intent and store it as a persistent intent with a trigger."""
     parser = _get_parser()
     db = _get_db()
+    session_context = await _fetch_session_context()
 
     try:
         goal_spec = await asyncio.get_event_loop().run_in_executor(
-            None, parser.parse, body.text
+            None,
+            lambda: parser.parse(body.text, session_context=session_context),
         )
     except LeavesError as e:
         if e.code == LeavesErrorCode.NOT_IMPLEMENTED:

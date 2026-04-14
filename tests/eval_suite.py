@@ -275,13 +275,12 @@ CASES: list[Case] = [
         expected_sequence=["QUERY", "COPY"],
     ),
 
-    # --- NOT_IMPLEMENTED: categories still not implemented ---
+    # --- Writing agent (implemented; model should generate COMPOSE+WRITE) ---
     Case(
-        label="writing (not impl)",
+        label="writing blog post",
         intent="write a blog post about machine learning for beginners",
         expected_category="writing_task",
-        expected_action_types=[],
-        expect_not_implemented=True,
+        expected_action_types=["COMPOSE"],
     ),
 
     # --- System agent (L0 fast-path) ---
@@ -687,6 +686,18 @@ def main() -> int:
         if not cases:
             print(f"No cases matching '{args.case}'")
             return 1
+
+    # Warmup: first L2 call pays page-in + speculative-decode cache costs (~90s
+    # on Kaby Lake with --spec-type ngram-simple). Issue one throwaway parse so
+    # the real cases start on a warm slot and don't eat the warmup into their
+    # per-case timeout.
+    print("Warming up inference server...", flush=True)
+    warmup_t0 = time.time()
+    try:
+        intent_parser.parse("show me the contents of ~/.bashrc")
+    except Exception as e:
+        print(f"  warmup call raised ({e}) — continuing anyway")
+    print(f"  warmup done in {time.time() - warmup_t0:.1f}s\n")
 
     results = []
     print(f"Running {len(cases)} test cases...\n")

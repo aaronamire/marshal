@@ -20,7 +20,7 @@ REQUIRED JSON STRUCTURE:
   "actions": [
     {
       "action_id": "act-1",
-      "type": "<QUERY | READ | WRITE | DELETE | MOVE | COPY | SUMMARIZE | COMPOSE>",
+      "type": "<QUERY | READ | WRITE | DELETE | MOVE | COPY | COMPOSE>",
       "agent": "<file | web | system | writing | audio | network | power>",
       "params": { ... },
       "destructive": false

@@ -57,6 +57,11 @@ typedef struct {
 	bool sandbox_active;
 	char authorized_paths[512];
 
+	/* Proactive intents — pushed from agentd, not user-initiated.
+	 * Rendered with an accent border and AI glyph to signal
+	 * "the OS noticed something and wrote this card for you." */
+	bool proactive;
+
 	/* Spring animation */
 	struct spring anim_y;
 	struct spring anim_opacity;
@@ -131,6 +136,12 @@ struct leaves_feed {
 struct leaves_feed *feed_create(const char *api_base);
 void feed_destroy(struct leaves_feed *feed);
 void feed_load_history(struct leaves_feed *feed);
+/* Insert a proactive intent card pushed from agentd. `intent_json` is a
+ * full GoalSpec JSON string (one line, no trailing newline). Dedup by
+ * intent_id: if a card with the same id already exists, this is a no-op.
+ * Writes a byte to feed->wakeup_pipe to trigger a repaint. Safe to call
+ * from any thread (locks feed->mutex). */
+void feed_insert_proactive(struct leaves_feed *feed, const char *intent_json);
 void feed_load_briefing(struct leaves_feed *feed);
 void feed_load_watchers(struct leaves_feed *feed);
 void feed_submit(struct leaves_feed *feed, const char *text);

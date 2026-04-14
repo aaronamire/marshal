@@ -774,6 +774,20 @@ async def _handle_client(
             await writer.drain()
             return
 
+        # --- return current session_context prompt block ---
+        # API processes can't see the event watcher directly (different process),
+        # so they fetch the live block here and forward it to IntentParser.
+        if msg.get("_get_session_context"):
+            block = ""
+            if _event_watcher is not None:
+                try:
+                    block = _event_watcher.context.to_prompt_block()
+                except Exception:
+                    block = ""
+            writer.write(json.dumps({"session_context": block}).encode() + b"\n")
+            await writer.drain()
+            return
+
         # --- trigger re-index ---
         if msg.get("_reindex"):
             if _indexer is not None:
@@ -923,6 +937,58 @@ def _fire_goalspec_sync(goal_spec: dict) -> None:
         print(f"agentd: watcher intent error — {e}", flush=True)
 
 
+_PROACTIVE_SOCK_PATH = pathlib.Path(
+    os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+) / "leaves-proactive.sock"
+
+_proactive_writer: "asyncio.StreamWriter | None" = None
+_proactive_lock = asyncio.Lock()
+
+
+async def _push_proactive(goal_spec: dict) -> None:
+    """
+    Send a proactive GoalSpec to the compositor via the proactive-intent
+    socket. Best-effort: if the compositor isn't up, we log and drop the
+    event. Reuses one persistent connection; reconnects on EPIPE/closed.
+    """
+    global _proactive_writer
+    frame = json.dumps(goal_spec).encode() + b"\n"
+
+    async with _proactive_lock:
+        for attempt in (1, 2):
+            writer = _proactive_writer
+            if writer is None or writer.is_closing():
+                try:
+                    _, writer = await asyncio.wait_for(
+                        asyncio.open_unix_connection(
+                            str(_PROACTIVE_SOCK_PATH)),
+                        timeout=1.0,
+                    )
+                    _proactive_writer = writer
+                except (FileNotFoundError, ConnectionRefusedError,
+                        OSError, asyncio.TimeoutError) as e:
+                    _proactive_writer = None
+                    if attempt == 2:
+                        print(
+                            f"agentd: proactive push failed "
+                            f"(compositor not up?): {e}",
+                            flush=True,
+                        )
+                    continue
+
+            try:
+                writer.write(frame)
+                await writer.drain()
+                return
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                try:
+                    writer.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                _proactive_writer = None
+                # Fall through to attempt 2 (reconnect).
+
+
 async def _on_terminal_error(
     app_id: str, exit_code: int, scrollback_path: pathlib.Path,
 ) -> None:
@@ -944,7 +1010,6 @@ async def _on_terminal_error(
     )
 
     import uuid as _uuid
-    import time as _time
 
     goal_spec = {
         "intent_id": str(_uuid.uuid4()),
@@ -978,6 +1043,10 @@ async def _on_terminal_error(
         f"exit code {exit_code}",
         flush=True,
     )
+
+    # Push live to the compositor feed (best-effort). Writes to SQLite are
+    # the source of truth; this push is just the low-latency UI notification.
+    await _push_proactive(goal_spec)
 
 
 async def _run_server() -> None:

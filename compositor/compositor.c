@@ -347,6 +347,17 @@ struct leaves_server {
 	int                    event_clients[8];
 	int                    event_client_count;
 
+	/* agentd → compositor proactive-intent push */
+	int                    proactive_srv_fd;
+	struct wl_event_source *proactive_srv_src;
+	struct {
+		int fd;
+		struct wl_event_source *src;
+		char buf[8192];
+		size_t buf_len;
+	}                      proactive_clients[4];
+	int                    proactive_client_count;
+
 	/* PID → app_id mapping for child process tracking */
 	struct { pid_t pid; char app_id[64]; } child_pids[64];
 	int child_pid_count;
@@ -3030,6 +3041,95 @@ static int event_accept_cb(int fd, uint32_t mask, void *data) {
 	return 0;
 }
 
+/* ── agentd → compositor proactive push ── */
+
+static void proactive_client_drop(struct leaves_server *server, int slot) {
+	if (slot < 0 || slot >= server->proactive_client_count) return;
+	if (server->proactive_clients[slot].src)
+		wl_event_source_remove(server->proactive_clients[slot].src);
+	if (server->proactive_clients[slot].fd >= 0)
+		close(server->proactive_clients[slot].fd);
+	int last = --server->proactive_client_count;
+	if (slot != last)
+		server->proactive_clients[slot] = server->proactive_clients[last];
+	memset(&server->proactive_clients[last], 0,
+		sizeof(server->proactive_clients[last]));
+	server->proactive_clients[last].fd = -1;
+}
+
+static int proactive_read_cb(int fd, uint32_t mask, void *data) {
+	struct leaves_server *server = data;
+	int slot = -1;
+	for (int i = 0; i < server->proactive_client_count; i++) {
+		if (server->proactive_clients[i].fd == fd) { slot = i; break; }
+	}
+	if (slot < 0) return 0;
+
+	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
+		proactive_client_drop(server, slot);
+		return 0;
+	}
+
+	char *buf = server->proactive_clients[slot].buf;
+	size_t *blen = &server->proactive_clients[slot].buf_len;
+	size_t cap = sizeof(server->proactive_clients[slot].buf);
+
+	ssize_t n = read(fd, buf + *blen, cap - 1 - *blen);
+	if (n == 0) { proactive_client_drop(server, slot); return 0; }
+	if (n < 0) {
+		if (errno == EAGAIN || errno == EINTR) return 0;
+		proactive_client_drop(server, slot);
+		return 0;
+	}
+	*blen += (size_t)n;
+	buf[*blen] = '\0';
+
+	/* Extract complete newline-delimited frames. */
+	for (;;) {
+		char *nl = memchr(buf, '\n', *blen);
+		if (!nl) {
+			/* Oversized frame with no newline — drop to resync. */
+			if (*blen >= cap - 1) *blen = 0;
+			break;
+		}
+		*nl = '\0';
+		if (server->feed)
+			feed_insert_proactive(server->feed, buf);
+		size_t frame_len = (size_t)(nl - buf) + 1;
+		size_t remaining = *blen - frame_len;
+		memmove(buf, nl + 1, remaining);
+		*blen = remaining;
+		buf[*blen] = '\0';
+	}
+	return 0;
+}
+
+static int proactive_accept_cb(int fd, uint32_t mask __attribute__((unused)),
+		void *data) {
+	struct leaves_server *server = data;
+	int client = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+	if (client < 0) return 0;
+
+	if (server->proactive_client_count >=
+			(int)(sizeof(server->proactive_clients) /
+				sizeof(server->proactive_clients[0]))) {
+		close(client);
+		return 0;
+	}
+
+	int slot = server->proactive_client_count++;
+	server->proactive_clients[slot].fd = client;
+	server->proactive_clients[slot].buf_len = 0;
+	server->proactive_clients[slot].src = wl_event_loop_add_fd(
+		server->event_loop, client,
+		WL_EVENT_READABLE, proactive_read_cb, server);
+	if (!server->proactive_clients[slot].src) {
+		close(client);
+		server->proactive_client_count--;
+	}
+	return 0;
+}
+
 static void emit_event(struct leaves_server *server, const char *json) {
 	size_t len = strlen(json);
 	for (int i = 0; i < server->event_client_count; ) {
@@ -3504,6 +3604,44 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	/* agentd → compositor proactive-intent socket */
+	{
+		server.proactive_srv_fd = -1;
+		for (int i = 0; i < (int)(sizeof(server.proactive_clients) /
+				sizeof(server.proactive_clients[0])); i++)
+			server.proactive_clients[i].fd = -1;
+
+		const char *xdg = getenv("XDG_RUNTIME_DIR");
+		if (!xdg) xdg = "/tmp";
+		char sock_path[256];
+		snprintf(sock_path, sizeof(sock_path),
+			"%s/leaves-proactive.sock", xdg);
+		unlink(sock_path);
+
+		int fd = socket(AF_UNIX,
+			SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+		if (fd >= 0) {
+			struct sockaddr_un addr = {.sun_family = AF_UNIX};
+			strncpy(addr.sun_path, sock_path,
+				sizeof(addr.sun_path) - 1);
+			if (bind(fd, (struct sockaddr *)&addr,
+					sizeof(addr)) == 0 &&
+					listen(fd, 4) == 0) {
+				server.proactive_srv_fd = fd;
+				server.proactive_srv_src = wl_event_loop_add_fd(
+					server.event_loop, fd,
+					WL_EVENT_READABLE,
+					proactive_accept_cb, &server);
+				fprintf(stderr,
+					"Proactive socket: %s\n", sock_path);
+			} else {
+				close(fd);
+				fprintf(stderr,
+					"Warning: proactive socket bind failed\n");
+			}
+		}
+	}
+
 	/* Mark panel dirty for initial render */
 	server.panel_dirty = true;
 
@@ -3515,6 +3653,18 @@ int main(int argc, char *argv[]) {
 		close(server.event_clients[i]);
 	if (server.event_srv_fd >= 0)
 		close(server.event_srv_fd);
+
+	/* Close proactive socket and all connected clients */
+	for (int i = 0; i < server.proactive_client_count; i++) {
+		if (server.proactive_clients[i].src)
+			wl_event_source_remove(server.proactive_clients[i].src);
+		if (server.proactive_clients[i].fd >= 0)
+			close(server.proactive_clients[i].fd);
+	}
+	if (server.proactive_srv_src)
+		wl_event_source_remove(server.proactive_srv_src);
+	if (server.proactive_srv_fd >= 0)
+		close(server.proactive_srv_fd);
 
 	wl_display_destroy_clients(server.display);
 	if (server.logind_event)

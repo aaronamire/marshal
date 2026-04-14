@@ -27,7 +27,8 @@ echo "[leaves] starting agentd..."
 systemctl --user start leaves-agentd.service || true
 
 echo "[leaves] waiting for agentd socket..."
-timeout 30 bash -c 'until [ -S /home/xan/.leaves/agentd.sock ]; do sleep 0.1; done'
+AGENTD_SOCK="$HOME/.leaves/agentd.sock"
+timeout 30 bash -c 'until [ -S "'"$AGENTD_SOCK"'" ]; do sleep 0.1; done'
 echo "[leaves] agentd ready"
 
 # ---------------------------------------------------------------------------
@@ -65,4 +66,35 @@ fi
 # 5. Compositor (Wayland client)
 # ---------------------------------------------------------------------------
 echo "[leaves] launching compositor..."
-exec "$LEAVES_ROOT/compositor/builddir/leaves-compositor"
+"$LEAVES_ROOT/compositor/builddir/leaves-compositor" &
+COMPOSITOR_PID=$!
+
+# Wait for compositor to publish its WAYLAND_DISPLAY socket name, then export
+# it into the D-Bus activation environment so portals/notifyd launched by
+# D-Bus activation (rather than direct exec) inherit it. Without this,
+# xdg-desktop-portal backends and any D-Bus-activated Wayland client fail
+# to connect to the compositor.
+WAYLAND_DISPLAY_FILE="$HOME/.leaves/wayland-display"
+for i in $(seq 1 100); do
+    if [ -s "$WAYLAND_DISPLAY_FILE" ]; then
+        WAYLAND_DISPLAY="$(head -n1 "$WAYLAND_DISPLAY_FILE" | tr -d '[:space:]')"
+        export WAYLAND_DISPLAY
+        export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+        export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-leaves}"
+        export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-leaves}"
+        if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+            dbus-update-activation-environment --systemd \
+                WAYLAND_DISPLAY \
+                XDG_CURRENT_DESKTOP \
+                XDG_SESSION_TYPE \
+                XDG_SESSION_DESKTOP \
+                || echo "[leaves] dbus-update-activation-environment failed (non-fatal)"
+        else
+            echo "[leaves] dbus-update-activation-environment not installed — D-Bus activated services may not see WAYLAND_DISPLAY"
+        fi
+        break
+    fi
+    sleep 0.1
+done
+
+wait "$COMPOSITOR_PID"

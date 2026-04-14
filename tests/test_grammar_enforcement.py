@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # If you add a type to the grammar, add it here AND to the schema.
 # ---------------------------------------------------------------------------
 VALID_ACTION_TYPES = frozenset({
-    "QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY", "SUMMARIZE", "COMPOSE",
+    "QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY", "COMPOSE",
 })
 
 # Types the model would plausibly generate without grammar constraints.

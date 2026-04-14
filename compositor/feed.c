@@ -138,6 +138,14 @@ static void parse_intent_response(const cJSON *obj, LeavesIntent *intent) {
 		else if (strcmp(status->valuestring, "pending") == 0)
 			intent->state = CARD_STATE_PENDING;
 	}
+
+	/* metadata.proactive marks cards the OS pushed on its own */
+	const cJSON *meta = cJSON_GetObjectItem(obj, "metadata");
+	if (meta) {
+		const cJSON *pro = cJSON_GetObjectItem(meta, "proactive");
+		if (cJSON_IsBool(pro))
+			intent->proactive = cJSON_IsTrue(pro);
+	}
 }
 
 /* ── Parse plan response — populate authorization fields ── */
@@ -387,6 +395,62 @@ void feed_load_history(struct leaves_feed *feed) {
 	}
 
 	cJSON_Delete(root);
+}
+
+/* ── Proactive insertion (pushed from agentd) ── */
+
+void feed_insert_proactive(struct leaves_feed *feed, const char *intent_json) {
+	if (!feed || !intent_json) return;
+
+	cJSON *obj = cJSON_Parse(intent_json);
+	if (!obj) return;
+
+	const cJSON *id = cJSON_GetObjectItem(obj, "intent_id");
+	const char *id_str = (cJSON_IsString(id)) ? id->valuestring : NULL;
+
+	pthread_mutex_lock(&feed->mutex);
+
+	/* Dedup: ignore if a card with this intent_id already exists. */
+	if (id_str) {
+		for (int i = 0; i < feed->count; i++) {
+			if (strncmp(feed->intents[i].intent_id, id_str,
+					sizeof(feed->intents[i].intent_id)) == 0) {
+				pthread_mutex_unlock(&feed->mutex);
+				cJSON_Delete(obj);
+				return;
+			}
+		}
+	}
+
+	/* Drop oldest if full (matches feed_submit behavior). */
+	if (feed->count >= MAX_INTENTS) {
+		memmove(&feed->intents[0], &feed->intents[1],
+			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+		feed->count = MAX_INTENTS - 1;
+	}
+
+	int idx = feed->count;
+	LeavesIntent *intent = &feed->intents[idx];
+	memset(intent, 0, sizeof(*intent));
+	parse_intent_response(obj, intent);
+	/* Proactive cards arrive as passive notifications — no confirm flow,
+	 * no execution pending. Render as DONE so they're stable/inert. */
+	intent->state = CARD_STATE_DONE;
+
+	/* Slide in from above with fade. */
+	spring_init(&intent->anim_y, 12.0f, 0.0f);
+	spring_init(&intent->anim_opacity, 0.0f, 1.0f);
+
+	feed->count++;
+	pthread_mutex_unlock(&feed->mutex);
+
+	/* Wake main thread so the panel repaints. wakeup_pipe write happens
+	 * AFTER unlocking the mutex to avoid holding the lock across a
+	 * potentially-blocking syscall. */
+	char byte = 1;
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+
+	cJSON_Delete(obj);
 }
 
 /* ── Briefing fetch ── */

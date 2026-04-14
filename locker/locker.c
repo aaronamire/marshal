@@ -45,16 +45,22 @@ static struct wl_compositor *compositor;
 static struct wl_shm        *shm;
 static struct wl_seat       *seat;
 static struct wl_keyboard   *keyboard;
-static struct wl_output     *output;
 
 static struct ext_session_lock_manager_v1 *lock_manager;
 static struct ext_session_lock_v1         *session_lock;
-static struct ext_session_lock_surface_v1 *lock_surface;
 
-/* ── Locker state ── */
+/* ── Per-output lock surface state ──
+ * ext-session-lock-v1 requires a lock surface on every output before the
+ * compositor sends the `locked` event. We track one context per output and
+ * iterate on configure / render / cleanup. */
 
-struct locker {
+#define MAX_LOCK_OUTPUTS 8
+
+struct output_ctx {
+	uint32_t          name;            /* wl_registry name */
+	struct wl_output *wl_output;
 	struct wl_surface *surface;
+	struct ext_session_lock_surface_v1 *lock_surface;
 
 	/* SHM buffer */
 	struct wl_buffer *buffer;
@@ -64,8 +70,19 @@ struct locker {
 	int     height;
 
 	/* Cairo */
-	cairo_surface_t      *cairo_surface;
-	cairo_t              *cr;
+	cairo_surface_t *cairo_surface;
+	cairo_t         *cr;
+
+	bool configured;
+	bool needs_redraw;
+};
+
+static struct output_ctx outputs[MAX_LOCK_OUTPUTS];
+static int output_count;
+
+/* ── Locker state ── */
+
+struct locker {
 	PangoFontDescription *font_time;
 	PangoFontDescription *font_date;
 	PangoFontDescription *font_input;
@@ -83,13 +100,16 @@ struct locker {
 	bool     authenticating;
 	char     status_msg[128];
 
-	/* State */
-	bool configured;
+	/* Session state */
 	bool locked;
-	bool needs_redraw;
 };
 
 static struct locker lock;
+
+static void mark_all_dirty(void) {
+	for (int i = 0; i < output_count; i++)
+		outputs[i].needs_redraw = true;
+}
 
 /* ── SHM buffer creation ── */
 
@@ -109,49 +129,60 @@ static const struct wl_buffer_listener buffer_listener = {
 	.release = buffer_release,
 };
 
-static bool create_buffer(int width, int height) {
+static bool create_buffer(struct output_ctx *ctx, int width, int height) {
 	int stride = width * 4;
 	int size = stride * height;
 
-	if (lock.buffer) {
-		wl_buffer_destroy(lock.buffer);
-		munmap(lock.shm_data, lock.shm_size);
+	if (ctx->buffer) {
+		wl_buffer_destroy(ctx->buffer);
+		ctx->buffer = NULL;
+	}
+	if (ctx->shm_data) {
+		munmap(ctx->shm_data, ctx->shm_size);
+		ctx->shm_data = NULL;
 	}
 
 	int fd = create_shm_file(size);
 	if (fd < 0) return false;
 
-	lock.shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (lock.shm_data == MAP_FAILED) { close(fd); return false; }
-	lock.shm_size = size;
+	ctx->shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (ctx->shm_data == MAP_FAILED) {
+		ctx->shm_data = NULL;
+		close(fd);
+		return false;
+	}
+	ctx->shm_size = size;
 
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
-	lock.buffer = wl_shm_pool_create_buffer(pool, 0, width, height,
+	ctx->buffer = wl_shm_pool_create_buffer(pool, 0, width, height,
 		stride, WL_SHM_FORMAT_ARGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
 
-	wl_buffer_add_listener(lock.buffer, &buffer_listener, NULL);
+	wl_buffer_add_listener(ctx->buffer, &buffer_listener, NULL);
 
-	if (lock.cr) cairo_destroy(lock.cr);
-	if (lock.cairo_surface) cairo_surface_destroy(lock.cairo_surface);
+	if (ctx->cr) { cairo_destroy(ctx->cr); ctx->cr = NULL; }
+	if (ctx->cairo_surface) {
+		cairo_surface_destroy(ctx->cairo_surface);
+		ctx->cairo_surface = NULL;
+	}
 
-	lock.cairo_surface = cairo_image_surface_create_for_data(
-		lock.shm_data, CAIRO_FORMAT_ARGB32, width, height, stride);
-	lock.cr = cairo_create(lock.cairo_surface);
+	ctx->cairo_surface = cairo_image_surface_create_for_data(
+		ctx->shm_data, CAIRO_FORMAT_ARGB32, width, height, stride);
+	ctx->cr = cairo_create(ctx->cairo_surface);
 
-	lock.width = width;
-	lock.height = height;
+	ctx->width = width;
+	ctx->height = height;
 	return true;
 }
 
 /* ── Rendering ── */
 
-static void render(void) {
-	if (!lock.cr) return;
-	cairo_t *cr = lock.cr;
-	int w = lock.width;
-	int h = lock.height;
+static void render(struct output_ctx *ctx) {
+	if (!ctx->cr) return;
+	cairo_t *cr = ctx->cr;
+	int w = ctx->width;
+	int h = ctx->height;
 
 	/* Background — dark with subtle gradient */
 	cairo_set_source_rgb(cr, 0.06, 0.06, 0.08);
@@ -276,11 +307,20 @@ static void render(void) {
 		g_object_unref(layout);
 	}
 
-	cairo_surface_flush(lock.cairo_surface);
+	cairo_surface_flush(ctx->cairo_surface);
 
-	wl_surface_attach(lock.surface, lock.buffer, 0, 0);
-	wl_surface_damage_buffer(lock.surface, 0, 0, w, h);
-	wl_surface_commit(lock.surface);
+	wl_surface_attach(ctx->surface, ctx->buffer, 0, 0);
+	wl_surface_damage_buffer(ctx->surface, 0, 0, w, h);
+	wl_surface_commit(ctx->surface);
+}
+
+static void render_all(void) {
+	for (int i = 0; i < output_count; i++) {
+		if (outputs[i].configured) {
+			render(&outputs[i]);
+			outputs[i].needs_redraw = false;
+		}
+	}
 }
 
 /* ── PAM authentication ── */
@@ -379,7 +419,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 		/* Attempt authentication */
 		lock.authenticating = true;
 		snprintf(lock.status_msg, sizeof(lock.status_msg), "Verifying...");
-		lock.needs_redraw = true;
+		mark_all_dirty();
 
 		if (authenticate()) {
 			lock.locked = false;
@@ -391,7 +431,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 				"Authentication failed");
 		}
 		lock.authenticating = false;
-		lock.needs_redraw = true;
+		mark_all_dirty();
 		return;
 	}
 
@@ -400,7 +440,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 			lock.password[--lock.pw_len] = '\0';
 			lock.auth_failed = false;
 			lock.status_msg[0] = '\0';
-			lock.needs_redraw = true;
+			mark_all_dirty();
 		}
 		return;
 	}
@@ -411,7 +451,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 		lock.password[0] = '\0';
 		lock.auth_failed = false;
 		lock.status_msg[0] = '\0';
-		lock.needs_redraw = true;
+		mark_all_dirty();
 		return;
 	}
 
@@ -424,7 +464,7 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
 		lock.password[lock.pw_len] = '\0';
 		lock.auth_failed = false;
 		lock.status_msg[0] = '\0';
-		lock.needs_redraw = true;
+		mark_all_dirty();
 	}
 }
 
@@ -476,14 +516,14 @@ static const struct wl_seat_listener seat_listener = {
 static void lock_surface_configure(void *data,
 		struct ext_session_lock_surface_v1 *surface,
 		uint32_t serial, uint32_t width, uint32_t height) {
-	(void)data;
+	struct output_ctx *ctx = data;
 	ext_session_lock_surface_v1_ack_configure(surface, serial);
 
-	if ((int)width != lock.width || (int)height != lock.height)
-		create_buffer(width, height);
+	if ((int)width != ctx->width || (int)height != ctx->height)
+		create_buffer(ctx, width, height);
 
-	lock.configured = true;
-	lock.needs_redraw = true;
+	ctx->configured = true;
+	ctx->needs_redraw = true;
 }
 
 static const struct ext_session_lock_surface_v1_listener
@@ -527,9 +567,17 @@ static void registry_global(void *data, struct wl_registry *reg,
 		seat = wl_registry_bind(reg, name, &wl_seat_interface, 5);
 		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (strcmp(interface, wl_output_interface.name) == 0) {
-		if (!output)
-			output = wl_registry_bind(reg, name,
+		if (output_count < MAX_LOCK_OUTPUTS) {
+			struct output_ctx *ctx = &outputs[output_count++];
+			memset(ctx, 0, sizeof(*ctx));
+			ctx->name = name;
+			ctx->wl_output = wl_registry_bind(reg, name,
 				&wl_output_interface, 1);
+		} else {
+			fprintf(stderr,
+				"leaves-locker: too many outputs (>%d), ignoring\n",
+				MAX_LOCK_OUTPUTS);
+		}
 	} else if (strcmp(interface,
 			ext_session_lock_manager_v1_interface.name) == 0) {
 		lock_manager = wl_registry_bind(reg, name,
@@ -578,8 +626,8 @@ int main(int argc, char *argv[]) {
 			"leaves-locker: compositor lacks ext-session-lock-v1\n");
 		return 1;
 	}
-	if (!output) {
-		fprintf(stderr, "leaves-locker: no output available\n");
+	if (output_count == 0) {
+		fprintf(stderr, "leaves-locker: no outputs available\n");
 		return 1;
 	}
 
@@ -588,23 +636,35 @@ int main(int argc, char *argv[]) {
 	ext_session_lock_v1_add_listener(session_lock, &session_lock_listener,
 		NULL);
 
-	/* Create a lock surface for the output */
-	lock.surface = wl_compositor_create_surface(compositor);
-	lock_surface = ext_session_lock_v1_get_lock_surface(session_lock,
-		lock.surface, output);
-	ext_session_lock_surface_v1_add_listener(lock_surface,
-		&lock_surface_listener, NULL);
+	/* Create a lock surface on every output. ext-session-lock-v1 requires
+	 * this before the compositor will send the `locked` event — miss one
+	 * and we hang here forever. */
+	for (int i = 0; i < output_count; i++) {
+		struct output_ctx *ctx = &outputs[i];
+		ctx->surface = wl_compositor_create_surface(compositor);
+		ctx->lock_surface = ext_session_lock_v1_get_lock_surface(
+			session_lock, ctx->surface, ctx->wl_output);
+		ext_session_lock_surface_v1_add_listener(ctx->lock_surface,
+			&lock_surface_listener, ctx);
+		wl_surface_commit(ctx->surface);
+	}
 
-	/* Initial commit — compositor will send configure with dimensions */
-	wl_surface_commit(lock.surface);
+	/* Wait for every surface to be configured */
+	for (;;) {
+		bool all_configured = true;
+		for (int i = 0; i < output_count; i++) {
+			if (!outputs[i].configured) { all_configured = false; break; }
+		}
+		if (all_configured) break;
+		if (wl_display_dispatch(display) < 0) {
+			fprintf(stderr,
+				"leaves-locker: display disconnected before configure\n");
+			return 1;
+		}
+	}
 
-	/* Wait for configure */
-	while (!lock.configured)
-		wl_display_dispatch(display);
-
-	/* Render initial frame */
-	render();
-	lock.needs_redraw = false;
+	/* Render initial frame on all outputs */
+	render_all();
 
 	/* Wait for compositor to confirm lock */
 	while (!lock.locked && wl_display_dispatch(display) >= 0)
@@ -617,10 +677,7 @@ int main(int argc, char *argv[]) {
 
 	/* Main loop — locked, waiting for PAM auth */
 	while (lock.locked) {
-		if (lock.needs_redraw) {
-			render();
-			lock.needs_redraw = false;
-		}
+		render_all();
 		if (wl_display_dispatch(display) < 0)
 			break;
 	}
@@ -632,12 +689,16 @@ int main(int argc, char *argv[]) {
 	/* Cleanup — securely clear password */
 	explicit_bzero(lock.password, sizeof(lock.password));
 
-	if (lock_surface) ext_session_lock_surface_v1_destroy(lock_surface);
-	if (lock.surface) wl_surface_destroy(lock.surface);
-	if (lock.buffer) wl_buffer_destroy(lock.buffer);
-	if (lock.shm_data) munmap(lock.shm_data, lock.shm_size);
-	if (lock.cr) cairo_destroy(lock.cr);
-	if (lock.cairo_surface) cairo_surface_destroy(lock.cairo_surface);
+	for (int i = 0; i < output_count; i++) {
+		struct output_ctx *ctx = &outputs[i];
+		if (ctx->lock_surface) ext_session_lock_surface_v1_destroy(ctx->lock_surface);
+		if (ctx->surface) wl_surface_destroy(ctx->surface);
+		if (ctx->buffer) wl_buffer_destroy(ctx->buffer);
+		if (ctx->shm_data) munmap(ctx->shm_data, ctx->shm_size);
+		if (ctx->cr) cairo_destroy(ctx->cr);
+		if (ctx->cairo_surface) cairo_surface_destroy(ctx->cairo_surface);
+		if (ctx->wl_output) wl_output_release(ctx->wl_output);
+	}
 	if (lock.xkb_state) xkb_state_unref(lock.xkb_state);
 	if (lock.xkb_keymap) xkb_keymap_unref(lock.xkb_keymap);
 	if (lock.xkb_ctx) xkb_context_unref(lock.xkb_ctx);
@@ -649,7 +710,6 @@ int main(int argc, char *argv[]) {
 		ext_session_lock_manager_v1_destroy(lock_manager);
 	if (keyboard) wl_keyboard_destroy(keyboard);
 	if (seat) wl_seat_destroy(seat);
-	if (output) wl_output_release(output);
 	if (shm) wl_shm_destroy(shm);
 	if (compositor) wl_compositor_destroy(compositor);
 	if (registry) wl_registry_destroy(registry);
