@@ -24,6 +24,7 @@ class LeavesErrorCode(enum.Enum):
     LOW_CONFIDENCE = "LOW_CONFIDENCE"
 
     # Authorization / path safety
+    AUTHORIZATION_VIOLATION = "AUTHORIZATION_VIOLATION"
     PATH_NOT_AUTHORIZED = "PATH_NOT_AUTHORIZED"
     PATH_DOES_NOT_EXIST = "PATH_DOES_NOT_EXIST"
     PATH_TRAVERSAL_DETECTED = "PATH_TRAVERSAL_DETECTED"
@@ -87,6 +88,10 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
     LeavesErrorCode.LOW_CONFIDENCE: (
         "I'm not confident enough about what you want. "
         "Try being more specific (e.g., 'find all PDFs in ~/Downloads')."
+    ),
+    LeavesErrorCode.AUTHORIZATION_VIOLATION: (
+        "Action blocked: it violates the planned authorization contract. "
+        "The agent attempted something outside the approved scope."
     ),
     LeavesErrorCode.PATH_NOT_AUTHORIZED: (
         "That path is outside your home directory. "

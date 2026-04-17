@@ -221,7 +221,7 @@ static int measure_card_height(struct leaves_renderer *r,
 
 		/* Injection block height */
 		if (intent->injection_detected && intent->injection_content[0]) {
-			int inj_block_h = SPACE_S + 40 + SPACE_XS + 16 + SPACE_S;
+			int inj_block_h = SPACE_S + 40 + SPACE_S + 18 + SPACE_S;
 			if (intent->sandbox_active)
 				inj_block_h += 16 + SPACE_XS;
 			h += SPACE_XS + inj_block_h + SPACE_S;
@@ -745,8 +745,8 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 			int iw, ih;
 			pango_layout_get_pixel_size(inj_layout, &iw, &ih);
 
-			/* Red tinted background */
-			int block_h = SPACE_S + ih + SPACE_XS + 16 + SPACE_S;
+			/* Red tinted background — strong enough to read as a block */
+			int block_h = SPACE_S + ih + SPACE_S + 18 + SPACE_S;
 			if (intent->sandbox_active)
 				block_h += 16 + SPACE_XS;
 			rounded_rect(cr, inj_x, text_y, inj_w, block_h,
@@ -755,38 +755,42 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 				struct color c = ACCENT_RED;
 				cairo_set_source_rgba(cr, c.r / 255.0,
 					c.g / 255.0, c.b / 255.0,
-					0.08 * opacity);
+					0.10 * opacity);
 			}
 			cairo_fill(cr);
 
-			/* Red left bar */
-			cairo_rectangle(cr, inj_x, text_y, 3, block_h);
+			/* Solid left accent bar */
+			cairo_rectangle(cr, inj_x, text_y, 4, block_h);
 			{
 				struct color c = ACCENT_RED;
 				cairo_set_source_rgba(cr, c.r / 255.0,
 					c.g / 255.0, c.b / 255.0,
-					0.8 * opacity);
+					opacity);
 			}
 			cairo_fill(cr);
 
-			/* Injection text */
-			cairo_move_to(cr, inj_x + SPACE_S, text_y + SPACE_S);
+			/* Injection snippet — rendered as normal dark text so
+			 * benign lines don't read as alarming; the red tint +
+			 * left bar + label below carry the warning. */
+			cairo_move_to(cr, inj_x + SPACE_S + 4,
+				text_y + SPACE_S);
 			{
-				struct color c = ACCENT_RED;
+				struct color c = TEXT_PRIMARY;
 				cairo_set_source_rgba(cr, c.r / 255.0,
 					c.g / 255.0, c.b / 255.0,
-					0.7 * opacity);
+					(c.a / 255.0) * opacity);
 			}
 			pango_cairo_show_layout(cr, inj_layout);
 			g_object_unref(inj_layout);
 
-			/* BLOCKED label */
-			int label_y = text_y + SPACE_S + ih + SPACE_XS;
+			/* INJECTION DETECTED label — bold, full-opacity red */
+			int label_y = text_y + SPACE_S + ih + SPACE_S;
 			PangoLayout *bl = create_layout(cr,
 				r->font_action_chain, 0);
-			pango_layout_set_text(bl,
-				"BLOCKED: injection detected", -1);
-			cairo_move_to(cr, inj_x + SPACE_S, label_y);
+			pango_layout_set_markup(bl,
+				"<span weight=\"heavy\" letter_spacing=\"600\">"
+				"INJECTION DETECTED IN CONTENT</span>", -1);
+			cairo_move_to(cr, inj_x + SPACE_S + 4, label_y);
 			{
 				struct color c = ACCENT_RED;
 				cairo_set_source_rgba(cr, c.r / 255.0,
@@ -795,7 +799,7 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 			}
 			pango_cairo_show_layout(cr, bl);
 			g_object_unref(bl);
-			label_y += 16;
+			label_y += 18;
 
 			/* Sandbox info */
 			if (intent->sandbox_active) {

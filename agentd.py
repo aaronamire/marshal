@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agents.channel import ActionChannel, ChannelMessage
+from agents.enforcer import enforce as enforce_action
 from agents.registry import agent_classes
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
@@ -120,10 +121,10 @@ class AgentCoordinator:
         # Single-action fast path — no thread pool overhead
         if len(actions) <= 1:
             results, failed_ids = self._execute_sequential(
-                intent_id, actions, tracker)
+                intent_id, actions, tracker, goal_spec)
         else:
             results, failed_ids = self._execute_dag(
-                intent_id, actions, tracker)
+                intent_id, actions, tracker, goal_spec)
 
         succeeded = len(actions) - len(failed_ids)
         total_files = sum(
@@ -152,6 +153,7 @@ class AgentCoordinator:
         intent_id: str,
         actions: list[dict],
         tracker: ToolFailureTracker,
+        goal_spec: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
         results: dict[str, Any] = {}
         failed_ids: list[str] = []
@@ -184,6 +186,8 @@ class AgentCoordinator:
             agent = _AGENT_MAP[agent_type](
                 intent_id=intent_id, db_conn=self._db)
             try:
+                if goal_spec:
+                    enforce_action(action, goal_spec)
                 result = agent.execute_action(action)
                 tracker.reset(action.get("type", ""), action.get("params", {}))
                 results[action_id] = result
@@ -216,6 +220,7 @@ class AgentCoordinator:
         intent_id: str,
         actions: list[dict],
         tracker: ToolFailureTracker,
+        goal_spec: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
         """
         Execute actions respecting depends_on ordering, with support for
@@ -294,6 +299,8 @@ class AgentCoordinator:
             aid = action["action_id"]
             agent_type = action.get("agent", "")
             try:
+                if goal_spec:
+                    enforce_action(action, goal_spec)
                 if agent_type not in _AGENT_MAP:
                     raise LeavesError(
                         LeavesErrorCode.AGENT_NOT_AVAILABLE,
@@ -580,7 +587,7 @@ async def _run_sandboxed(
     goal_spec: dict,
     from_state: str,
     on_event=None,
-) -> tuple[dict, str]:
+) -> tuple[dict, str, dict]:
     """
     Spawn agents/sandboxed_runner.py as a fresh subprocess.
 
@@ -719,7 +726,10 @@ async def _run_sandboxed(
                           detail=f"runner output not JSON: {exc}")
 
     if resp.get("ok"):
-        return resp["results"], resp["summary"]
+        sandbox = resp.get("sandbox") or {
+            "active": False, "reason": "missing_from_runner", "authorized_resources": []
+        }
+        return resp["results"], resp["summary"], sandbox
 
     code_str = resp.get("code", "INTERNAL_ERROR")
     try:
@@ -823,13 +833,14 @@ async def _handle_client(
                 pass
 
         try:
-            results, summary = await _run_sandboxed(
+            results, summary, sandbox = await _run_sandboxed(
                 goal_spec, from_state_str,
                 on_event=_forward_event if wants_events else None,
             )
             response: dict = {
                 "final": True, "ok": True,
                 "results": results, "summary": summary,
+                "sandbox": sandbox,
             }
         except LeavesError as e:
             response = {
@@ -861,6 +872,45 @@ _indexer = None   # CortexIndexer instance, set in _run_server
 _event_watcher = None  # CompositorEventWatcher instance, set in _run_server
 
 _INDEX_INTERVAL_SECONDS = 1800  # 30 minutes between incremental re-indexes
+
+
+async def _warm_inference_kv_cache() -> None:
+    """
+    Send a dummy /completion request using the real intent-parser system prompt
+    so llama.cpp pre-fills the KV cache for the prefix shared by every request.
+    Subsequent user requests hit cache_prompt and skip the prefill.
+
+    Silent on failure — the inference server may not be up yet, and that must
+    never block agentd from serving.
+    """
+    loop = asyncio.get_event_loop()
+
+    def _warm() -> str | None:
+        try:
+            from agents.intent_parser import IntentParser
+            from inference.client import InferenceClient, InferenceRequest
+
+            parser = IntentParser()
+            client: InferenceClient = parser._client
+            if not client.is_available():
+                return "inference server unavailable"
+            # Minimal request — goal is cache population, not a useful response.
+            prompt = parser._build_prompt("warmup")
+            req = InferenceRequest(
+                prompt=prompt,
+                max_tokens=1,
+                grammar=None,
+            )
+            client.complete(req)
+            return None
+        except Exception as e:
+            return str(e)
+
+    err = await loop.run_in_executor(None, _warm)
+    if err is None:
+        print("agentd: inference KV cache warmed", flush=True)
+    else:
+        print(f"agentd: KV cache warmup skipped ({err})", flush=True)
 
 
 async def _background_indexing(indexer) -> None:
@@ -1108,6 +1158,12 @@ async def _run_server() -> None:
     # Schedule background indexing
     if _indexer is not None:
         asyncio.get_event_loop().create_task(_background_indexing(_indexer))
+
+    # Warm the inference KV cache with the intent-parser system prompt so the
+    # first user request doesn't pay the ~30s cold-start prefill on CPU.
+    # Runs in a background task so a missing inference server never blocks
+    # agentd from accepting connections.
+    asyncio.get_event_loop().create_task(_warm_inference_kv_cache())
 
     try:
         async with server:

@@ -57,3 +57,4 @@
 {"intent": "search for how to use psutil in Python", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "how to use psutil Python"}, "destructive": false}]}
 {"intent": "write a blog post about machine learning for beginners", "category": "writing_task", "actions": []}
 {"intent": "draft a cover letter for a software engineer position", "category": "writing_task", "actions": []}
+{"intent": "what's in ~/Documents/meeting-notes.txt", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/Documents/meeting-notes.txt"}, "destructive": false}]}

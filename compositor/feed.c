@@ -1299,3 +1299,261 @@ void feed_cancel(struct leaves_feed *feed) {
 	char byte = 'n';
 	(void)write(feed->confirm_pipe[1], &byte, 1);
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Time-machine: detail fetch + replay
+ *
+ * Both calls run on detached threads so the compositor main loop is
+ * never blocked on HTTP. Results are committed under feed->mutex and
+ * a wakeup byte is written to trigger a repaint. Stale targets (card
+ * scrolled out / intent_id changed) are detected by re-checking the
+ * intent_id under the lock before mutating.
+ * ─────────────────────────────────────────────────────────────────── */
+
+#include <pthread.h>
+
+struct detail_args {
+	struct leaves_feed *feed;
+	int index;
+	char intent_id[64];
+};
+
+/* Safe offset-tracking snprintf: clamps off to out_sz so the unsigned
+ * subtraction out_sz - off never wraps. Without this, snprintf returning
+ * more than the remaining space makes off > out_sz and size_t underflow
+ * feeds a huge length to the next snprintf — potential buffer overflow. */
+#define DETAIL_FMT(fmt, ...) do { \
+	if (off >= out_sz) goto done; \
+	int _n = snprintf(out + off, out_sz - off, fmt, ##__VA_ARGS__); \
+	if (_n > 0) off += (size_t)_n; \
+	if (off >= out_sz) off = out_sz - 1; \
+} while (0)
+
+static void format_detail(const cJSON *root, char *out, size_t out_sz) {
+	size_t off = 0;
+	if (!out_sz) return;
+
+	const cJSON *ntext = cJSON_GetObjectItem(root, "natural_text");
+	const cJSON *cat = cJSON_GetObjectItem(root, "category");
+	const cJSON *state = cJSON_GetObjectItem(root, "state");
+	const cJSON *dur = cJSON_GetObjectItem(root, "duration_ms");
+	DETAIL_FMT("Intent: %s\nCategory: %s · State: %s · Total: %.0fms\n\n",
+		(cJSON_IsString(ntext) ? ntext->valuestring : "?"),
+		(cJSON_IsString(cat) ? cat->valuestring : "?"),
+		(cJSON_IsString(state) ? state->valuestring : "?"),
+		(cJSON_IsNumber(dur) ? dur->valuedouble : 0));
+
+	const cJSON *actions = cJSON_GetObjectItem(root, "actions");
+	if (cJSON_IsArray(actions)) {
+		DETAIL_FMT("Actions:\n");
+		const cJSON *a;
+		cJSON_ArrayForEach(a, actions) {
+			if (off + 256 >= out_sz) break;
+			const cJSON *aid = cJSON_GetObjectItem(a, "action_id");
+			const cJSON *atype = cJSON_GetObjectItem(a, "type");
+			const cJSON *aagent = cJSON_GetObjectItem(a, "agent");
+			const cJSON *adur = cJSON_GetObjectItem(a, "duration_ms");
+			const cJSON *aerr = cJSON_GetObjectItem(a, "error_code");
+			DETAIL_FMT("  %-8s  %-7s  %-7s  %6.0fms  %s\n",
+				(cJSON_IsString(aid) ? aid->valuestring : "?"),
+				(cJSON_IsString(atype) ? atype->valuestring : "?"),
+				(cJSON_IsString(aagent) ? aagent->valuestring : "?"),
+				(cJSON_IsNumber(adur) ? adur->valuedouble : 0),
+				(cJSON_IsString(aerr) ? "FAIL" : "OK"));
+		}
+	}
+
+	const cJSON *trans = cJSON_GetObjectItem(root, "transitions");
+	if (cJSON_IsArray(trans) && cJSON_GetArraySize(trans) > 0) {
+		DETAIL_FMT("\nTransitions:\n");
+		const cJSON *t;
+		cJSON_ArrayForEach(t, trans) {
+			if (off + 128 >= out_sz) break;
+			const cJSON *fs = cJSON_GetObjectItem(t, "from_state");
+			const cJSON *ts = cJSON_GetObjectItem(t, "to_state");
+			DETAIL_FMT("  %s → %s\n",
+				(cJSON_IsString(fs) ? fs->valuestring : "?"),
+				(cJSON_IsString(ts) ? ts->valuestring : "?"));
+		}
+	}
+
+	const cJSON *errs = cJSON_GetObjectItem(root, "errors");
+	if (cJSON_IsArray(errs) && cJSON_GetArraySize(errs) > 0) {
+		DETAIL_FMT("\nErrors:\n");
+		const cJSON *e;
+		cJSON_ArrayForEach(e, errs) {
+			if (off + 320 >= out_sz) break;
+			const cJSON *code = cJSON_GetObjectItem(e, "error_code");
+			const cJSON *det = cJSON_GetObjectItem(e, "error_detail");
+			DETAIL_FMT("  [%s] %s\n",
+				(cJSON_IsString(code) ? code->valuestring : "?"),
+				(cJSON_IsString(det) ? det->valuestring : ""));
+		}
+	}
+
+	DETAIL_FMT("\nCtrl+R to replay (QUERY/READ only).");
+done:
+	out[off < out_sz ? off : out_sz - 1] = '\0';
+}
+
+#undef DETAIL_FMT
+
+static void *detail_thread(void *arg) {
+	struct detail_args *da = arg;
+	char url[512];
+	snprintf(url, sizeof(url), "%s/v1/history/%s/detail",
+		da->feed->api_base, da->intent_id);
+
+	cJSON *root = http_get(url, 15L);
+	if (!root) {
+		free(da);
+		return NULL;
+	}
+
+	char buf[65536];
+	format_detail(root, buf, sizeof(buf));
+	cJSON_Delete(root);
+
+	pthread_mutex_lock(&da->feed->mutex);
+	if (da->index < da->feed->count) {
+		LeavesIntent *intent = &da->feed->intents[da->index];
+		if (strcmp(intent->intent_id, da->intent_id) == 0) {
+			snprintf(intent->result_summary,
+				sizeof(intent->result_summary), "%s", buf);
+			intent->detail_fetched = true;
+		}
+	}
+	pthread_mutex_unlock(&da->feed->mutex);
+
+	char byte = 'u';
+	(void)write(da->feed->wakeup_pipe[1], &byte, 1);
+	free(da);
+	return NULL;
+}
+
+void feed_load_detail(struct leaves_feed *feed, int card_idx) {
+	if (!feed || card_idx < 0) return;
+
+	struct detail_args *da = calloc(1, sizeof(*da));
+	if (!da) return;
+	da->feed = feed;
+	da->index = card_idx;
+
+	pthread_mutex_lock(&feed->mutex);
+	if (card_idx >= feed->count ||
+			feed->intents[card_idx].state != CARD_STATE_HISTORY ||
+			feed->intents[card_idx].detail_fetched) {
+		pthread_mutex_unlock(&feed->mutex);
+		free(da);
+		return;
+	}
+	snprintf(da->intent_id, sizeof(da->intent_id), "%s",
+		feed->intents[card_idx].intent_id);
+	pthread_mutex_unlock(&feed->mutex);
+
+	pthread_t thread;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_create(&thread, &attr, detail_thread, da);
+	pthread_attr_destroy(&attr);
+}
+
+struct replay_args {
+	struct leaves_feed *feed;
+	int index;
+	char intent_id[64];
+};
+
+static void *replay_thread(void *arg) {
+	struct replay_args *ra = arg;
+	char url[512];
+	snprintf(url, sizeof(url), "%s/v1/history/%s/replay",
+		ra->feed->api_base, ra->intent_id);
+
+	cJSON *root = http_post(url, "", 180L);
+
+	char banner[1024];
+	if (!root) {
+		snprintf(banner, sizeof(banner),
+			"⟳ Replay failed: no response from API\n\n");
+	} else {
+		const cJSON *status = cJSON_GetObjectItem(root, "status");
+		const char *sv = (cJSON_IsString(status) ? status->valuestring : "?");
+		if (strcmp(sv, "refused") == 0) {
+			const cJSON *det = cJSON_GetObjectItem(root, "detail");
+			snprintf(banner, sizeof(banner),
+				"⟳ Replay refused — %s\n\n",
+				(cJSON_IsString(det) ? det->valuestring
+				                     : "destructive action"));
+		} else {
+			const cJSON *replay = cJSON_GetObjectItem(root, "replay");
+			const cJSON *matches = cJSON_GetObjectItem(root, "matches_state");
+			const cJSON *rid = replay ? cJSON_GetObjectItem(replay, "intent_id") : NULL;
+			const cJSON *rst = replay ? cJSON_GetObjectItem(replay, "state") : NULL;
+			const cJSON *rdur = replay ? cJSON_GetObjectItem(replay, "duration_ms") : NULL;
+			snprintf(banner, sizeof(banner),
+				"⟳ Replay → %s (%.0fms) %s  new_id=%s\n\n",
+				(cJSON_IsString(rst) ? rst->valuestring : "?"),
+				(cJSON_IsNumber(rdur) ? rdur->valuedouble : 0),
+				(cJSON_IsTrue(matches) ? "[matches original]"
+				                       : "[DIFFERS]"),
+				(cJSON_IsString(rid) ? rid->valuestring : "?"));
+		}
+		cJSON_Delete(root);
+	}
+
+	pthread_mutex_lock(&ra->feed->mutex);
+	if (ra->index < ra->feed->count) {
+		LeavesIntent *intent = &ra->feed->intents[ra->index];
+		if (strcmp(intent->intent_id, ra->intent_id) == 0) {
+			/* In-place prepend of the banner: shift existing summary
+			 * right by banner length, truncating the tail if needed,
+			 * then copy the banner into the freed prefix. Avoids an
+			 * intermediate buffer and the compiler truncation warning
+			 * about snprintf into a fixed-size destination. */
+			const size_t cap = sizeof(intent->result_summary);
+			size_t blen = strlen(banner);
+			if (blen >= cap) blen = cap - 1;
+			size_t slen = strlen(intent->result_summary);
+			if (blen + slen + 1 > cap) slen = cap - blen - 1;
+			memmove(intent->result_summary + blen,
+				intent->result_summary, slen);
+			memcpy(intent->result_summary, banner, blen);
+			intent->result_summary[blen + slen] = '\0';
+		}
+	}
+	pthread_mutex_unlock(&ra->feed->mutex);
+
+	char byte = 'u';
+	(void)write(ra->feed->wakeup_pipe[1], &byte, 1);
+	free(ra);
+	return NULL;
+}
+
+void feed_replay(struct leaves_feed *feed, int card_idx) {
+	if (!feed || card_idx < 0) return;
+
+	struct replay_args *ra = calloc(1, sizeof(*ra));
+	if (!ra) return;
+	ra->feed = feed;
+	ra->index = card_idx;
+
+	pthread_mutex_lock(&feed->mutex);
+	if (card_idx >= feed->count ||
+			feed->intents[card_idx].state != CARD_STATE_HISTORY) {
+		pthread_mutex_unlock(&feed->mutex);
+		free(ra);
+		return;
+	}
+	snprintf(ra->intent_id, sizeof(ra->intent_id), "%s",
+		feed->intents[card_idx].intent_id);
+	pthread_mutex_unlock(&feed->mutex);
+
+	pthread_t thread;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_create(&thread, &attr, replay_thread, ra);
+	pthread_attr_destroy(&attr);
+}

@@ -62,6 +62,11 @@ typedef struct {
 	 * "the OS noticed something and wrote this card for you." */
 	bool proactive;
 
+	/* Time-machine: true once /v1/history/{id}/detail has been
+	 * fetched and rendered into result_summary. Prevents re-fetch
+	 * on every re-expand. Only meaningful for CARD_STATE_HISTORY. */
+	bool detail_fetched;
+
 	/* Spring animation */
 	struct spring anim_y;
 	struct spring anim_opacity;
@@ -147,6 +152,15 @@ void feed_load_watchers(struct leaves_feed *feed);
 void feed_submit(struct leaves_feed *feed, const char *text);
 void feed_search(struct leaves_feed *feed, const char *query);
 void feed_create_watcher(struct leaves_feed *feed, const char *text);
+/* Time-machine: lazy-load the full audit trace for a history card
+ * (per-action type/agent/duration/status + state transitions + errors)
+ * and format it into the card's result_summary for display. No-op if
+ * the card isn't CARD_STATE_HISTORY or detail has already been fetched. */
+void feed_load_detail(struct leaves_feed *feed, int card_idx);
+/* Time-machine: re-execute a stored GoalSpec under a new intent_id
+ * and prepend a replay banner to result_summary. Destructive replays
+ * are refused by the API; the banner shows the refusal. */
+void feed_replay(struct leaves_feed *feed, int card_idx);
 void feed_process_updates(struct leaves_feed *feed);
 bool feed_animate(struct leaves_feed *feed, float dt);
 void feed_confirm(struct leaves_feed *feed);

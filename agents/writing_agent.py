@@ -12,7 +12,7 @@ import pathlib
 from agents.base_agent import BaseAgent
 from config import MODEL_FAMILY
 from errors import LeavesError, LeavesErrorCode
-from inference.client import InferenceClient, InferenceRequest
+from inference.client import InferenceClient, InferenceRequest, RemoteAnthropicBackend
 
 
 class WritingAgent(BaseAgent):
@@ -43,7 +43,11 @@ class WritingAgent(BaseAgent):
         row_id = self._audit_start(action_id, "COMPOSE", params)
 
         try:
-            client = InferenceClient()
+            remote = RemoteAnthropicBackend()
+            if remote.is_available():
+                client = InferenceClient(backend=remote)
+            else:
+                client = InferenceClient()
             user_block = (
                 f"Write the following in {fmt} format. "
                 f"Output only the content, no preamble:\n{topic}"

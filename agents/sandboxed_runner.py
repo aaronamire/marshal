@@ -120,7 +120,7 @@ def _ll_restrict_self(ruleset_fd: int) -> int:
 
 # ── apply_landlock ─────────────────────────────────────────────────────────
 
-def apply_landlock(goal_spec: dict) -> None:
+def apply_landlock(goal_spec: dict) -> dict:
     """
     Apply Landlock FS restrictions to this process.
 
@@ -132,14 +132,24 @@ def apply_landlock(goal_spec: dict) -> None:
 
     On any failure (unsupported kernel, ENOSYS, …) logs to stderr and continues
     without restriction — never crashes the agent.
+
+    Returns {"active": bool, "reason": str, "authorized_resources": [str]} so
+    downstream layers (agentd → api → UI) can report ground-truth sandbox
+    status instead of a hardcoded "true".
     """
+    resources = [
+        str(r) for r in goal_spec.get("authorization", {}).get("resources", []) if r
+    ]
     if not _HAVE_LIBC:
-        return
+        print("landlock: skipping (libc unavailable)", file=sys.stderr)
+        return {"active": False, "reason": "libc_unavailable", "authorized_resources": resources}
     try:
         _do_apply(goal_spec)
         print("landlock: sandbox active", file=sys.stderr)
+        return {"active": True, "reason": "ok", "authorized_resources": resources}
     except Exception as exc:
         print(f"landlock: skipping ({exc})", file=sys.stderr)
+        return {"active": False, "reason": f"error: {exc}", "authorized_resources": resources}
 
 
 def _do_apply(goal_spec: dict) -> None:
@@ -240,9 +250,18 @@ def _main() -> None:
         for a in goal_spec.get("actions", [])
     )
     if not _is_launch:
-        apply_landlock(goal_spec)
+        sandbox_status = apply_landlock(goal_spec)
     else:
         print("landlock: skipping for app launch", file=sys.stderr)
+        sandbox_status = {
+            "active": False,
+            "reason": "launch_skipped",
+            "authorized_resources": [
+                str(r)
+                for r in goal_spec.get("authorization", {}).get("resources", [])
+                if r
+            ],
+        }
 
     # Step 3: project imports (Landlock already active)
     _root = str(pathlib.Path(__file__).parent.parent.resolve())
@@ -310,7 +329,12 @@ def _main() -> None:
         results, summary = coordinator.execute(goal_spec, lifecycle)
         if cancel_event.is_set():
             summary = (summary or "") + " (cancelled by user)"
-        out: dict = {"ok": True, "results": results, "summary": summary}
+        out: dict = {
+            "ok": True,
+            "results": results,
+            "summary": summary,
+            "sandbox": sandbox_status,
+        }
     except LeavesError as e:
         out = {
             "ok":     False,

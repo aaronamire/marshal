@@ -8,6 +8,7 @@ __pycache__/
 *.pyo
 .venv/
 leaves-env/
+.os/
 
 # Build artifacts
 *.o
@@ -22,3 +23,25 @@ builddir/
 *.db-wal
 .leaves/
 leaves_audit.db
+
+# LanceDB / vector stores — embeddings of user data, never commit
+*.lance/
+*.lancedb/
+rag/.lancedb/
+**/.lancedb/
+
+# Images and scratch files
+*.jpeg
+*.jpg
+*.png
+WhatsApp*
+/tmp/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Logs / scratch
+*.log
+/leaves-boot.log
+agentd.log

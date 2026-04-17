@@ -36,11 +36,58 @@ class KnowledgeGraph:
     """
 
     def __init__(self, db: sqlite3.Connection, lance_path: Path):
-        self._db = db
+        # Extract the on-disk path so we can open thread-local connections on
+        # demand. Indexing runs in a threadpool executor (see agentd.py
+        # _background_indexing → loop.run_in_executor) but sqlite3 connections
+        # are thread-bound by default. Previously this stored a single
+        # connection and raised ProgrammingError ("SQLite objects created in a
+        # thread can only be used in that same thread") on every upsert,
+        # silently losing all indexed rows.
+        rows = db.execute("PRAGMA database_list").fetchall()
+        path_str = ""
+        for r in rows:
+            try:
+                name = r["name"]
+            except Exception:
+                name = r[1]
+            if name == "main":
+                try:
+                    path_str = r["file"]
+                except Exception:
+                    path_str = r[2]
+                break
+        # Empty path means :memory: DB (or an attached-db quirk). In-memory
+        # connections can't be reopened, so fall back to sharing the passed
+        # connection across threads. check_same_thread=False plus the
+        # existing _write_lock keeps this safe for the test harness.
+        if path_str:
+            self._db_path = Path(path_str)
+            self._shared_db = None
+        else:
+            self._db_path = None
+            self._shared_db = db
+        self._tls = threading.local()
         self._lance_path = lance_path
         self._model = None  # lazy
         self._table = None  # lazy
         self._write_lock = threading.Lock()
+
+    def _db_conn(self) -> sqlite3.Connection:
+        """Return a sqlite3 connection bound to the current thread."""
+        if self._shared_db is not None:
+            return self._shared_db
+        conn = getattr(self._tls, "conn", None)
+        if conn is not None:
+            return conn
+        conn = sqlite3.connect(str(self._db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        # Mirror db/audit.py: indexer writes contend with agentd + api writers.
+        conn.execute("PRAGMA busy_timeout=10000")
+        self._tls.conn = conn
+        return conn
 
     def _ensure_model(self):
         if self._model is None:
@@ -86,7 +133,7 @@ class KnowledgeGraph:
         # Check which items are new or changed
         to_embed = []
         for item in items:
-            row = self._db.execute(
+            row = self._db_conn().execute(
                 "SELECT content_hash FROM knowledge_items WHERE id = ?",
                 (item["id"],),
             ).fetchone()
@@ -122,7 +169,7 @@ class KnowledgeGraph:
                 })
 
                 # Upsert SQLite structured index
-                self._db.execute("""
+                self._db_conn().execute("""
                     INSERT OR REPLACE INTO knowledge_items
                     (id, source_type, source_id, source_path, title,
                      content_preview, content_hash, metadata_json,
@@ -141,6 +188,13 @@ class KnowledgeGraph:
                     now,
                 ))
 
+            # Commit sqlite BEFORE LanceDB writes. The LanceDB delete/add
+            # below can take seconds per batch (disk I/O) — if we hold the
+            # sqlite writer transaction across it, every other writer
+            # (agentd + api /v1/intent/execute) blocks past busy_timeout
+            # and crashes with "database is locked".
+            self._db_conn().commit()
+
             # LanceDB: delete existing then add
             ids_to_replace = [r["id"] for r in lance_rows]
             for rid in ids_to_replace:
@@ -149,7 +203,6 @@ class KnowledgeGraph:
                 except Exception:
                     pass
             table.add(lance_rows)
-            self._db.commit()
 
         log.info("Upserted %d items (%d skipped)", len(to_embed), len(items) - len(to_embed))
         return len(to_embed)
@@ -213,12 +266,12 @@ class KnowledgeGraph:
         sql += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
-        rows = self._db.execute(sql, params).fetchall()
+        rows = self._db_conn().execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def stats(self) -> dict[str, Any]:
         """Return indexing statistics per source type."""
-        rows = self._db.execute(
+        rows = self._db_conn().execute(
             "SELECT source_type, COUNT(*) as count, MAX(indexed_at) as last_indexed "
             "FROM knowledge_items GROUP BY source_type"
         ).fetchall()

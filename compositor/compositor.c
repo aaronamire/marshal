@@ -1589,6 +1589,18 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 			handled = true;
 		}
 
+		/* ── Ctrl+R: time-machine replay of the currently expanded
+		 * history card. Only fires while a card is expanded, so plain
+		 * 'r' typed into the prompt input is unaffected. The replay
+		 * endpoint refuses destructive plans and the refusal is shown
+		 * as a banner inside the card. */
+		if (!handled && (server->modifiers & MOD_CTRL) &&
+				server->feed->expanded_card >= 0 &&
+				(base_sym == XKB_KEY_r || raw_sym == XKB_KEY_r)) {
+			feed_replay(server->feed, server->feed->expanded_card);
+			handled = true;
+		}
+
 		/* ── Super+Space: cycle focus: NONE → PANEL → APP → NONE ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_space || raw_sym == XKB_KEY_space)) {
@@ -2186,6 +2198,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 					/* Click outside text — toggle card expansion */
 					int card_idx = renderer_card_hit_test(
 						server->lrenderer, server->feed, my);
+					bool became_expanded = false;
 					pthread_mutex_lock(&server->feed->mutex);
 					server->feed->selected_card = card_idx;
 					/* Toggle expansion: click same card again to collapse */
@@ -2195,10 +2208,15 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 					} else {
 						server->feed->expanded_card = card_idx;
 						server->feed->expanded_scroll = 0;
+						became_expanded = (card_idx >= 0);
 					}
 					pthread_mutex_unlock(&server->feed->mutex);
 					server->lrenderer->card_sel.card_idx = -1;
 					server->card_text_drag = false;
+					/* Time-machine: lazy-load audit detail when a history
+					 * card is expanded. No-op for non-history cards. */
+					if (became_expanded)
+						feed_load_detail(server->feed, card_idx);
 				}
 
 				server->focus_mode = FOCUS_PANEL;

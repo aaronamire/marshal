@@ -33,6 +33,11 @@ def get_db(path: Path = AUDIT_DB_PATH) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Multiple processes (agentd + api server) and multiple threads (cortex
+    # indexer) write to this DB concurrently. Default busy_timeout is 0, so
+    # losers of the writer-lock race get OperationalError("database is
+    # locked") instantly. 10s lets writers queue up under bursty load.
+    conn.execute("PRAGMA busy_timeout=10000")
 
     _create_schema(conn)
     return conn

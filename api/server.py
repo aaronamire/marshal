@@ -27,7 +27,14 @@ from config import AUDIT_DB_PATH, INFERENCE_SERVER_URL
 from cortex.briefing import BriefingGenerator
 from cortex.indexer import CortexIndexer
 from cortex.adapters.filesystem import FilesystemAdapter
-from db.audit import complete_intent, get_db, get_recent_intents, log_intent_created
+from db.audit import (
+    complete_intent,
+    get_db,
+    get_intent_actions,
+    get_intent_transitions,
+    get_recent_intents,
+    log_intent_created,
+)
 from db.intent_store import (
     activate_intent,
     deactivate_intent,
@@ -54,10 +61,34 @@ _START_INFERENCE_SCRIPT = (
 # ---------------------------------------------------------------------------
 
 
+_inference_healthy: bool = False
+_inference_check_task: Optional[asyncio.Task] = None
+
+
+async def _inference_health_loop() -> None:
+    """Background coroutine that checks inference server health every 30s."""
+    global _inference_healthy
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{INFERENCE_SERVER_URL}/health")
+                _inference_healthy = resp.status_code == 200
+        except Exception:
+            _inference_healthy = False
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _inference_check_task
     await _ensure_agentd()
+    _inference_check_task = asyncio.create_task(_inference_health_loop())
     yield
+    _inference_check_task.cancel()
+    try:
+        await _inference_check_task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _ensure_agentd() -> None:
@@ -171,9 +202,14 @@ def _retrieve_plan(intent_id: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-async def _send_goalspec(goal_spec: dict) -> tuple[dict, str]:
+async def _send_goalspec(goal_spec: dict) -> tuple[dict, str, dict]:
     """
-    Send a GoalSpec to the agentd Unix socket and return (results, summary).
+    Send a GoalSpec to the agentd Unix socket and return
+    (results, summary, sandbox). `sandbox` reflects ground-truth Landlock
+    state from the runner subprocess: {"active": bool, "reason": str,
+    "authorized_resources": [str]}. On an old agentd that doesn't report
+    sandbox, a safe default is substituted so the API response still
+    carries honest telemetry rather than a hardcoded True.
     Raises LeavesError on connection failure or agentd error response.
     """
     _16MB = 16 * 1024 * 1024
@@ -203,7 +239,12 @@ async def _send_goalspec(goal_spec: dict) -> tuple[dict, str]:
 
     resp = json.loads(line)
     if resp.get("ok"):
-        return resp["results"], resp["summary"]
+        sandbox = resp.get("sandbox") or {
+            "active": False,
+            "reason": "agentd_did_not_report",
+            "authorized_resources": goal_spec.get("authorization", {}).get("resources", []),
+        }
+        return resp["results"], resp["summary"], sandbox
 
     code_str = resp.get("code", "INTERNAL_ERROR")
     try:
@@ -424,7 +465,11 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
 
 
 def _build_result_response(
-    goal_spec: dict, results: dict, summary: str, duration_ms: float
+    goal_spec: dict,
+    results: dict,
+    summary: str,
+    duration_ms: float,
+    sandbox: dict,
 ) -> dict:
     injection_detected, injection_content = _scan_for_injections(results)
     auth = goal_spec.get("authorization", {})
@@ -451,8 +496,10 @@ def _build_result_response(
         "model_latency_ms": round(
             goal_spec.get("metadata", {}).get("parse_latency_ms", 0), 1
         ),
-        "sandbox_active": True,
-        "authorized_paths": auth.get("resources", []),
+        "sandbox_active": bool(sandbox.get("active", False)),
+        "sandbox_reason": sandbox.get("reason", "unknown"),
+        "authorized_paths": sandbox.get("authorized_resources")
+            or auth.get("resources", []),
     }
 
     if injection_detected:
@@ -495,6 +542,16 @@ async def plan_intent(body: IntentRequest):
     # connect to the correct compositor session.
     if body.wayland_display:
         goal_spec.setdefault("metadata", {})["wayland_display"] = body.wayland_display
+
+    # Force preview_required for destructive actions — the compositor's
+    # Y/N overlay is the actual safety layer, not the API's confirmed flag.
+    _DESTRUCTIVE = {"DELETE", "MOVE", "WRITE", "COPY"}
+    has_destructive = any(
+        a.get("type", "").upper() in _DESTRUCTIVE
+        for a in goal_spec.get("actions", [])
+    )
+    if has_destructive:
+        goal_spec.setdefault("authorization", {})["preview_required"] = True
 
     _store_plan(intent_id, goal_spec)
 
@@ -540,8 +597,12 @@ async def execute_intent(body: ExecuteRequest):
     intent_id = goal_spec["intent_id"]
     log_intent_created(db, intent_id, goal_spec.get("natural_text", ""), goal_spec)
 
+    sandbox: dict = {
+        "active": False, "reason": "not_executed",
+        "authorized_resources": goal_spec.get("authorization", {}).get("resources", []),
+    }
     try:
-        results, summary = await _send_goalspec(goal_spec)
+        results, summary, sandbox = await _send_goalspec(goal_spec)
         status = "done"
         db_state = "DONE"
     except LeavesError as e:
@@ -561,7 +622,7 @@ async def execute_intent(body: ExecuteRequest):
             "summary": summary,
             "duration_ms": round(duration_ms, 1),
         }
-    return _build_result_response(goal_spec, results, summary, duration_ms)
+    return _build_result_response(goal_spec, results, summary, duration_ms, sandbox)
 
 
 @app.post("/v1/intent")
@@ -595,6 +656,178 @@ async def get_history(limit: int = Query(default=20, ge=1, le=200)):
     ]
 
 
+_NON_DESTRUCTIVE_TYPES = {"QUERY", "READ"}
+
+
+@app.get("/v1/history/{intent_id}/detail")
+async def get_history_detail(intent_id: str):
+    """
+    Full audit trace for a past intent: original goal_spec, per-action
+    timing and results, state transitions, and any logged errors.
+    Powers the compositor's time-machine pane.
+    """
+    db = _get_db()
+    row = db.execute(
+        "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Intent not found")
+
+    actions = get_intent_actions(db, intent_id)
+    transitions = get_intent_transitions(db, intent_id)
+    error_rows = db.execute(
+        """
+        SELECT error_code, error_detail, occurred_at
+        FROM errors WHERE intent_id = ? ORDER BY occurred_at ASC
+        """,
+        (intent_id,),
+    ).fetchall()
+
+    goal_spec: Optional[dict] = None
+    if row["goal_spec_json"]:
+        try:
+            goal_spec = json.loads(row["goal_spec_json"])
+        except json.JSONDecodeError:
+            goal_spec = None
+
+    def _parse_json(raw):
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    def _dur(a):
+        if a["completed_at"] and a["started_at"]:
+            return round((a["completed_at"] - a["started_at"]) * 1000, 1)
+        return None
+
+    return {
+        "intent_id": intent_id,
+        "natural_text": row["natural_text"],
+        "category": row["category"],
+        "state": row["state"],
+        "result_message": row["result_message"],
+        "duration_ms": row["duration_ms"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "goal_spec": goal_spec,
+        "actions": [
+            {
+                "action_id": a["action_id"],
+                "type": a["action_type"],
+                "agent": a["agent"],
+                "params": _parse_json(a["params_json"]) or {},
+                "result": _parse_json(a["result_json"]),
+                "error_code": a["error_code"],
+                "error_detail": a["error_detail"],
+                "started_at": a["started_at"],
+                "completed_at": a["completed_at"],
+                "duration_ms": _dur(a),
+            }
+            for a in actions
+        ],
+        "transitions": transitions,
+        "errors": [dict(e) for e in error_rows],
+    }
+
+
+@app.post("/v1/history/{intent_id}/replay")
+async def replay_history(intent_id: str):
+    """
+    Re-execute a stored GoalSpec under a new intent_id and report a
+    structural diff against the original run.
+
+    Safety: replay is only allowed when every planned action is
+    non-destructive (QUERY or READ). For destructive intents, return
+    422 — the user should re-plan via /v1/intent/plan so they see the
+    preview overlay before re-deleting/re-moving data.
+    """
+    import uuid
+
+    db = _get_db()
+    row = db.execute(
+        "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Intent not found")
+    if not row["goal_spec_json"]:
+        raise HTTPException(
+            status_code=422,
+            detail="Original intent has no stored GoalSpec — nothing to replay.",
+        )
+    try:
+        original_spec = json.loads(row["goal_spec_json"])
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=500, detail=f"Stored GoalSpec is malformed: {e}"
+        )
+
+    planned_actions = original_spec.get("actions", [])
+    non_destructive = all(
+        (a.get("type") or "").upper() in _NON_DESTRUCTIVE_TYPES
+        for a in planned_actions
+    )
+    if not non_destructive or not planned_actions:
+        return {
+            "status": "refused",
+            "reason": "destructive_replay_blocked",
+            "detail": (
+                "Replay is restricted to QUERY/READ intents. "
+                "Re-plan via /v1/intent/plan to see the preview overlay."
+            ),
+            "original": {
+                "intent_id": intent_id,
+                "natural_text": row["natural_text"],
+                "state": row["state"],
+                "action_types": [a.get("type") for a in planned_actions],
+            },
+        }
+
+    new_intent_id = str(uuid.uuid4())
+    new_spec = json.loads(json.dumps(original_spec))  # deep copy
+    new_spec["intent_id"] = new_intent_id
+    new_spec.setdefault("metadata", {})["replayed_from"] = intent_id
+
+    t_start = time.monotonic()
+    log_intent_created(db, new_intent_id, new_spec.get("natural_text", ""), new_spec)
+
+    try:
+        results, summary, sandbox = await _send_goalspec(new_spec)
+        new_state = "DONE"
+        new_status = "done"
+    except LeavesError as e:
+        results, sandbox = {}, {
+            "active": False, "reason": "not_executed", "authorized_resources": []
+        }
+        summary = e.user_message
+        new_state = "FAILED"
+        new_status = "failed"
+
+    new_duration_ms = (time.monotonic() - t_start) * 1000
+    complete_intent(db, new_intent_id, new_state, summary, new_duration_ms)
+
+    return {
+        "status": new_status,
+        "matches_state": new_state == row["state"],
+        "original": {
+            "intent_id": intent_id,
+            "natural_text": row["natural_text"],
+            "state": row["state"],
+            "result_message": row["result_message"],
+            "duration_ms": row["duration_ms"],
+        },
+        "replay": {
+            "intent_id": new_intent_id,
+            "state": new_state,
+            "result_message": summary,
+            "duration_ms": round(new_duration_ms, 1),
+            "sandbox_active": bool(sandbox.get("active", False)),
+        },
+    }
+
+
 @app.get("/v1/agents")
 async def get_agents():
     manifests = []
@@ -610,19 +843,18 @@ async def get_agents():
 async def get_health():
     agentd_ok = _SOCK_PATH.exists()
 
-    inference_ok = False
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{INFERENCE_SERVER_URL}/health")
-            inference_ok = resp.status_code == 200
-    except Exception:
-        pass
+    issues = []
+    if not agentd_ok:
+        issues.append("agentd not running — start with: python3 agentd.py")
+    if not _inference_healthy:
+        issues.append("inference server not running — start with: bash scripts/start-inference.sh")
 
     return {
-        "status": "ok",
+        "status": "ok" if (agentd_ok and _inference_healthy) else "degraded",
         "agentd": agentd_ok,
-        "inference": inference_ok,
+        "inference": _inference_healthy,
         "model": _read_model_from_script(),
+        "issues": issues,
     }
 
 
@@ -793,7 +1025,7 @@ async def fire_persistent_intent(intent_id: str):
     log_intent_created(db, gs_intent_id, goal_spec.get("natural_text", ""), goal_spec)
 
     try:
-        results, summary = await _send_goalspec(goal_spec)
+        results, summary, _sandbox = await _send_goalspec(goal_spec)
         status = "done"
         db_state = "DONE"
     except LeavesError as e:

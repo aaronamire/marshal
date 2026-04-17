@@ -212,10 +212,14 @@ class IntentParser:
             "destructive": destructive,
         }
         has_destructive = destructive
-        resources = []
-        for key in ("path", "source"):
-            if key in params:
-                resources.append(params[key])
+        # Collect every path-like param the action will touch. The
+        # enforcer requires that destinations also appear in resources,
+        # otherwise a MOVE/COPY with an unlisted destination is blocked.
+        resources: list[str] = []
+        for key in ("path", "source", "destination"):
+            val = params.get(key)
+            if isinstance(val, str) and val and val not in resources:
+                resources.append(val)
         if not resources:
             resources = ["~"]
 
@@ -363,11 +367,17 @@ class IntentParser:
         # We always derive the values from action.destructive — never trust LLM values.
         actions = goal_spec.get("actions", [])
         has_destructive = any(a.get("destructive", False) for a in actions)
-        resources = list({
-            a.get("params", {}).get("path", "~")
-            for a in actions
-            if "path" in a.get("params", {})
-        }) or ["~"]
+        # Collect destinations as well — a MOVE/COPY action's destination
+        # must be authorized, otherwise the enforcer blocks the dispatch.
+        resources: list[str] = []
+        for a in actions:
+            p = a.get("params", {}) or {}
+            for key in ("path", "source", "destination"):
+                val = p.get(key)
+                if isinstance(val, str) and val and val not in resources:
+                    resources.append(val)
+        if not resources:
+            resources = ["~"]
 
         auth = goal_spec.get("authorization", {})
         goal_spec["authorization"] = {
