@@ -58,3 +58,13 @@
 {"intent": "write a blog post about machine learning for beginners", "category": "writing_task", "actions": []}
 {"intent": "draft a cover letter for a software engineer position", "category": "writing_task", "actions": []}
 {"intent": "what's in ~/Documents/meeting-notes.txt", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/Documents/meeting-notes.txt"}, "destructive": false}]}
+{"intent": "tell me about the Wayland protocol", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "Wayland protocol overview"}, "destructive": false}]}
+{"intent": "what is eBPF used for", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "eBPF use cases"}, "destructive": false}]}
+{"intent": "explain how Landlock works on Linux", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "Linux Landlock LSM how it works"}, "destructive": false}]}
+{"intent": "research the latest llama.cpp release notes", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "llama.cpp release notes"}, "destructive": false}]}
+{"intent": "find articles about local-first AI", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "local-first AI articles"}, "destructive": false}]}
+{"intent": "google rust async runtime comparison", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "search", "query": "rust async runtime comparison"}, "destructive": false}]}
+{"intent": "open https://github.com/ggerganov/llama.cpp", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "fetch", "url": "https://github.com/ggerganov/llama.cpp"}, "destructive": false}]}
+{"intent": "load the page at https://wayland.freedesktop.org", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "fetch", "url": "https://wayland.freedesktop.org"}, "destructive": false}]}
+{"intent": "scrape https://docs.python.org/3/library/asyncio.html", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "fetch", "url": "https://docs.python.org/3/library/asyncio.html"}, "destructive": false}]}
+{"intent": "download the README from https://raw.githubusercontent.com/torvalds/linux/master/README", "category": "web_task", "actions": [{"type": "QUERY", "params": {"query_type": "fetch", "url": "https://raw.githubusercontent.com/torvalds/linux/master/README"}, "destructive": false}]}

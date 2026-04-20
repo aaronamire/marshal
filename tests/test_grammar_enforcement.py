@@ -146,6 +146,7 @@ def assert_no_impossible_types(goal_spec: dict, intent: str):
 
 
 @pytest.mark.inference
+@pytest.mark.timeout(180)  # Layer-2 inference can take 30-60s per call (5 calls in test_all_outputs_valid_enum)
 class TestGrammarEnforcement:
     """Verify grammar is actively constraining sampler output."""
 

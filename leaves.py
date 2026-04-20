@@ -11,7 +11,9 @@ Orchestration delegated to agentd.AgentCoordinator.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import pathlib
 import signal
 import socket as _socket
@@ -52,6 +54,12 @@ from db.intent_store import (
 from errors import LeavesError, LeavesErrorCode
 
 _LANCE_PATH = pathlib.Path(__file__).parent / "rag" / ".lancedb"
+
+# Verbose mode: dump GoalSpec JSON after every parse and include full
+# LeavesError code + detail on failures. Set via --verbose CLI flag or
+# LEAVES_VERBOSE=1 env var (the env var is honored even when the REPL is
+# launched with no argv, e.g. from a systemd unit).
+_VERBOSE = os.environ.get("LEAVES_VERBOSE", "").lower() in ("1", "true", "yes")
 
 console = Console()
 
@@ -214,6 +222,31 @@ def _banner() -> None:
 
 def _show_error(msg: str) -> None:
     console.print(f"[{LEAVES_ERROR_COLOR}]Error:[/{LEAVES_ERROR_COLOR}] {msg}")
+
+
+def _show_leaves_error(e: LeavesError) -> None:
+    """Render a LeavesError with the user-facing message; in verbose mode
+    also print the error code and the structured detail (which often
+    contains the offending value, e.g. the raw model output that failed
+    to parse, or the path that was outside the authorization scope)."""
+    _show_error(e.user_message)
+    if _VERBOSE:
+        console.print(f"  [{LEAVES_DIM_COLOR}]code:   {e.code.value}[/{LEAVES_DIM_COLOR}]")
+        if e.detail:
+            console.print(f"  [{LEAVES_DIM_COLOR}]detail: {e.detail}[/{LEAVES_DIM_COLOR}]")
+        if e.cause is not None:
+            console.print(f"  [{LEAVES_DIM_COLOR}]cause:  {type(e.cause).__name__}: {e.cause}[/{LEAVES_DIM_COLOR}]")
+
+
+def _dump_goal_spec(goal_spec: dict) -> None:
+    """Pretty-print the full GoalSpec in verbose mode so power users can see
+    exactly what the model produced and what the enforcer will check
+    against."""
+    if not _VERBOSE:
+        return
+    rendered = json.dumps(goal_spec, indent=2, sort_keys=False)
+    console.print(f"[{LEAVES_DIM_COLOR}]GoalSpec:[/{LEAVES_DIM_COLOR}]")
+    console.print(f"[{LEAVES_DIM_COLOR}]{rendered}[/{LEAVES_DIM_COLOR}]")
 
 
 def _show_warning(msg: str) -> None:
@@ -570,9 +603,10 @@ def handle_intent(user_text: str) -> None:
             f"· L2 confidence {confidence:.0%} · {latency:.0f}ms"
             f"{cache_tag}[/{LEAVES_DIM_COLOR}]"
         )
+        _dump_goal_spec(goal_spec)
 
     except LeavesError as e:
-        _show_error(e.user_message)
+        _show_leaves_error(e)
         log_error(_get_db(), e.code.value, e.detail)
         return
 
@@ -663,7 +697,7 @@ def handle_intent(user_text: str) -> None:
             _show_warning("agentd unavailable — running in-process.")
             results, summary = AgentCoordinator(db).execute(goal_spec, lifecycle)
     except LeavesError as e:
-        _show_error(e.user_message)
+        _show_leaves_error(e)
         log_state_transition(db, intent_id, "EXECUTING", "FAILED")
         complete_intent(
             db, intent_id, "FAILED", e.detail,
@@ -906,7 +940,7 @@ def cmd_watch(raw: str) -> None:
         with console.status(f"[{LEAVES_DIM_COLOR}]Parsing intent…[/{LEAVES_DIM_COLOR}]"):
             goal_spec = parser.parse(intent_text)
     except LeavesError as e:
-        _show_error(e.user_message)
+        _show_leaves_error(e)
         return
 
     # Store as persistent intent
@@ -922,7 +956,7 @@ def cmd_watch(raw: str) -> None:
             trigger_type="filesystem", trigger_config=trigger_config,
         )
     except LeavesError as e:
-        _show_error(e.user_message)
+        _show_leaves_error(e)
         return
 
     # Notify agentd to reload watches
@@ -997,7 +1031,7 @@ def cmd_unwatch(id_prefix: str) -> None:
     try:
         deactivate_intent(db, intent["id"])
     except LeavesError as e:
-        _show_error(e.user_message)
+        _show_leaves_error(e)
         return
 
     console.print(
@@ -1200,6 +1234,10 @@ def repl() -> None:
             cmd_search(raw[7:].strip())
         elif lower in ("briefing", "morning"):
             cmd_briefing()
+        elif lower == "verbose":
+            global _VERBOSE
+            _VERBOSE = not _VERBOSE
+            console.print(f"  [{LEAVES_DIM_COLOR}]verbose mode: {'on' if _VERBOSE else 'off'}[/{LEAVES_DIM_COLOR}]")
         elif _is_briefing_trigger(raw):
             cmd_briefing()
         else:
@@ -1208,5 +1246,27 @@ def repl() -> None:
         console.print()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entry. Parses args, sets _VERBOSE, then runs the REPL."""
+    global _VERBOSE
+    p = argparse.ArgumentParser(
+        prog="leaves",
+        description="Leaves OS — local AI agents that can't escape their plan.",
+    )
+    p.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Dump full GoalSpec after each parse and show error code/detail on failures. "
+             "Also enabled by LEAVES_VERBOSE=1.",
+    )
+    p.add_argument(
+        "--version", action="version",
+        version=f"{APP_NAME} {APP_VERSION}",
+    )
+    args = p.parse_args()
+    if args.verbose:
+        _VERBOSE = True
     repl()
+
+
+if __name__ == "__main__":
+    main()

@@ -29,6 +29,7 @@ from config import (
     TIMEOUT_HARD_SECONDS,
 )
 from errors import LeavesError, LeavesErrorCode
+from observability import inference_latency_ms
 
 
 @dataclass
@@ -127,6 +128,7 @@ class LocalLlamaCppBackend(InferenceBackend):
                 cause=e,
             )
         latency_ms = (time.monotonic() - t0) * 1000
+        inference_latency_ms.observe(latency_ms)
 
         if r.status_code != 200:
             raise LeavesError(

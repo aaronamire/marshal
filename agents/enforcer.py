@@ -36,8 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from errors import LeavesError, LeavesErrorCode
-
-_DESTRUCTIVE_TYPES = frozenset({"DELETE", "MOVE", "WRITE", "COPY"})
+from observability import enforcer_rejections_total
 
 # Whitelisted param keys that are *always* treated as path-like, even
 # if the value doesn't lead with /, ~, ./, ../. Agents conventionally
@@ -63,6 +62,7 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     action_type = (action.get("type") or "").upper()
     params = action.get("params") or {}
     if not isinstance(params, dict):
+        enforcer_rejections_total.inc(reason="non_dict_params")
         raise LeavesError(
             LeavesErrorCode.AUTHORIZATION_VIOLATION,
             detail=f"Action '{action_id}' has non-dict params: {type(params).__name__}",
@@ -75,6 +75,7 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     # 1. Action must be in the plan
     planned_ids = {a.get("action_id") for a in planned_actions}
     if action_id not in planned_ids:
+        enforcer_rejections_total.inc(reason="unplanned_action_id")
         raise LeavesError(
             LeavesErrorCode.AUTHORIZATION_VIOLATION,
             detail=(
@@ -89,6 +90,7 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     )
     planned_type = (planned_action or {}).get("type", "").upper()
     if planned_action is None or action_type != planned_type:
+        enforcer_rejections_total.inc(reason="type_mismatch")
         raise LeavesError(
             LeavesErrorCode.AUTHORIZATION_VIOLATION,
             detail=(
@@ -101,6 +103,7 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     action_paths = _extract_paths(params)
     if action_paths:
         if not resources:
+            enforcer_rejections_total.inc(reason="paths_with_no_resources")
             raise LeavesError(
                 LeavesErrorCode.AUTHORIZATION_VIOLATION,
                 detail=(
@@ -112,6 +115,7 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
         authorized = _resolve_resources(resources)
         for raw_path, resolved in action_paths:
             if not _path_within_authorized(resolved, authorized):
+                enforcer_rejections_total.inc(reason="path_outside_resources")
                 raise LeavesError(
                     LeavesErrorCode.AUTHORIZATION_VIOLATION,
                     detail=(
@@ -121,25 +125,46 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
                     ),
                 )
 
-    # 4. Destructive action type must match plan
-    if action_type in _DESTRUCTIVE_TYPES and planned_type not in _DESTRUCTIVE_TYPES:
-        raise LeavesError(
-            LeavesErrorCode.AUTHORIZATION_VIOLATION,
-            detail=(
-                f"Action '{action_id}' is destructive ({action_type}) "
-                f"but plan specifies non-destructive '{planned_type}'"
-            ),
-        )
+    # (Step 4 removed.) Step 2 already requires action_type == planned_type,
+    # so any destructive/non-destructive mismatch is already caught upstream.
+    # Keeping the dead branch invited future refactors to relax step 2 while
+    # mistakenly trusting step 4 — see security audit F-5.
 
 
 def _looks_like_path(val: str) -> bool:
-    """Cheap heuristic: does this string look like a filesystem path?"""
+    """
+    Cheap heuristic: does this string look like a filesystem path?
+
+    Catches:
+      - absolute and home-relative paths (/x, ~/x)
+      - explicit relatives (./x, ../x, bare ., .., ~)
+      - bare relatives that contain a path separator (foo/bar, etc/passwd) —
+        narrowed by excluding URL-looking strings without a scheme so we
+        don't false-positive on identifiers like "type/version" or
+        "key:value/flag".
+
+    Bare-relative scanning closes security audit F-6, where a non-
+    whitelisted param key carrying a value like "etc/passwd" used to
+    slip past the value-scan pass entirely.
+    """
     if not val or len(val) > 4096:
         return False
     if any(val.startswith(s) for s in _NON_FS_SCHEMES):
         return False
-    # Absolute, home-relative, or explicitly relative paths.
-    return val.startswith(("/", "~/", "./", "../")) or val in ("~", ".", "..")
+    if val.startswith(("/", "~/", "./", "../")) or val in ("~", ".", ".."):
+        return True
+    # Bare relative with at least one separator. Reject obvious non-paths:
+    # whitespace, control chars, or anything that looks like a URL/host
+    # (a colon before the first slash usually means scheme://, host:port,
+    # or a sigil — not a path component).
+    if "/" not in val:
+        return False
+    if any(c.isspace() or ord(c) < 0x20 for c in val):
+        return False
+    first_slash = val.index("/")
+    if ":" in val[:first_slash]:
+        return False
+    return True
 
 
 def _extract_paths(params: dict) -> list[tuple[str, Path]]:

@@ -1,0 +1,139 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leaves-os"
+version = "0.3.0"
+description = "Local AI agents that can't escape their plan. Runtime contract enforcer + Landlock sandbox + replayable audit log."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Leaves OS contributors" },
+]
+keywords = [
+    "ai", "agents", "llm", "local-first", "linux", "wayland",
+    "sandbox", "audit", "capabilities", "llama-cpp",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+    "Topic :: System :: Operating System",
+    "Topic :: System :: Shells",
+]
+
+dependencies = [
+    # Core runtime
+    "requests>=2.31.0",
+    "jsonschema>=4.21.0",
+    "pydantic>=2.5.0",
+    "rich>=13.7.0",
+    "psutil>=5.9.0",
+
+    # HTTP API
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "httpx>=0.26.0",
+
+    # Layer 1 classifier
+    "scikit-learn>=1.4.0",
+    "joblib>=1.3.0",
+
+    # Web agent
+    "beautifulsoup4>=4.12.0",
+    "duckduckgo-search>=4.0",
+]
+
+[project.optional-dependencies]
+rag = [
+    "lancedb>=0.4.0",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=2.3.0",
+]
+remote = [
+    "anthropic>=0.40.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "pytest-timeout>=2.3",
+    "ruff>=0.3",
+]
+all = [
+    "leaves-os[rag,remote,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/amirewontmiss/leaves-os"
+Repository = "https://github.com/amirewontmiss/leaves-os"
+Issues = "https://github.com/amirewontmiss/leaves-os/issues"
+Changelog = "https://github.com/amirewontmiss/leaves-os/blob/main/CHANGELOG.md"
+
+[project.scripts]
+leaves = "leaves:main"
+# agentd.py still has no main() — invoke as `python -m agentd` or
+# `python /path/to/agentd.py`. Will be added in a follow-up.
+
+[tool.setuptools.packages.find]
+include = ["agents*", "agents.prompts*", "agents.schema*", "api*", "cortex*", "db*", "inference*", "rag*"]
+exclude = ["tests*", "compositor*", "research*", "docs*", "scripts*"]
+
+[tool.setuptools.package-data]
+"agents.prompts" = ["*.txt"]
+"agents.schema" = ["*.json"]
+"inference.grammar" = ["*.gbnf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --timeout: any single test running longer than 30s is killed and reported
+# as a failure. Inference-backed tests can stall under thermal load — better
+# to fail loudly than block CI for 5 minutes.
+#
+# `-m "not inference"`: by default we skip tests that need a running
+# llama-server. Each one can take 60-120s per call (5 calls × 5 tests = up
+# to 50 minutes). To run them explicitly:
+#
+#     pytest -m inference tests/
+#
+# CI never has a server, so the fixture's is_available() check would skip
+# these anyway — the marker exclusion just makes intent obvious.
+addopts = "-ra -q --strict-markers --timeout=30 -m 'not inference'"
+markers = [
+    "integration: end-to-end pipeline tests (slower)",
+    "redteam: adversarial security tests",
+    "demo: canonical demo intents with latency budgets",
+    "inference: tests that require a running llama-server",
+    "slow: tests that take >5s",
+]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]
+ignore = [
+    "E501",    # line length handled by formatter
+    "S101",    # asserts in tests are fine
+    "S603",    # subprocess calls are intentional in agent code
+    "S607",    # partial executable paths are fine for system tools
+    "B008",    # FastAPI Depends() is the idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"scripts/**" = ["S"]

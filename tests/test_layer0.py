@@ -221,3 +221,173 @@ class TestLayer0QuotedPaths:
         r = match("cat '/home/user/my notes.txt'")
         assert r.matched
         assert r.params["path"] == "/home/user/my notes.txt"
+
+
+# ---------------------------------------------------------------------------
+# Web search / fetch — bypass L1+L2, big latency win on the L2 fallback path
+# ---------------------------------------------------------------------------
+
+
+class TestLayer0WebSearch:
+
+    def test_google_query(self):
+        r = match("google rust async runtime comparison")
+        assert r.matched
+        assert r.agent == "web"
+        assert r.action_type == "QUERY"
+        assert r.params["query_type"] == "search"
+        assert r.params["query"] == "rust async runtime comparison"
+
+    def test_look_up(self):
+        r = match("look up the weather in San Francisco")
+        assert r.matched
+        assert r.agent == "web"
+        assert r.params["query"] == "the weather in San Francisco"
+
+    def test_search_the_web_for(self):
+        r = match("search the web for python tutorials")
+        assert r.matched
+        assert r.agent == "web"
+        assert r.params["query"] == "python tutorials"
+
+    def test_search_for(self):
+        r = match("search for latest kernel news")
+        assert r.matched
+        assert r.params["query_type"] == "search"
+
+    def test_bare_search(self):
+        r = match("search anthropic claude")
+        assert r.matched
+        assert r.agent == "web"
+
+    def test_path_in_query_falls_through(self):
+        # Path-like tokens in the query → L2 (likely meant a file find)
+        r = match("look up ~/file.txt")
+        assert not r.matched
+
+    def test_search_with_absolute_path_falls_through(self):
+        r = match("search for /etc/hosts")
+        assert not r.matched
+
+
+class TestLayer0WebFetch:
+
+    def test_fetch_https(self):
+        r = match("fetch https://example.com")
+        assert r.matched
+        assert r.agent == "web"
+        assert r.params["query_type"] == "fetch"
+        assert r.params["url"].startswith("https://")
+
+    def test_load_bare_domain(self):
+        r = match("load github.com/foo/bar")
+        assert r.matched
+        assert r.params["url"] == "github.com/foo/bar"
+
+    def test_scrape_page_at(self):
+        r = match("scrape the page at https://x.org")
+        assert r.matched
+        assert r.params["url"] == "https://x.org"
+
+    def test_download_url(self):
+        r = match(
+            "download https://raw.githubusercontent.com/x/y/main/README"
+        )
+        assert r.matched
+        assert r.params["query_type"] == "fetch"
+
+    def test_open_https_routes_to_fetch_not_app_launch(self):
+        r = match("open https://github.com")
+        assert r.matched
+        assert r.agent == "web"
+        assert r.params["query_type"] == "fetch"
+
+    def test_open_bare_domain_does_not_match_fetch(self):
+        # No scheme + "open" verb → falls through (avoids stealing from
+        # APP_LAUNCH for ambiguous tokens like "open foo.com").
+        # APP_LAUNCH itself rejects "foo.com" because the period in a
+        # word boundary check fails to bind to a single program name in
+        # most apps; this test just asserts we don't classify as fetch.
+        r = match("open github.com")
+        if r.matched:
+            assert r.params.get("query_type") != "fetch"
+
+
+class TestLayer0AppLaunchVsWeb:
+    """Web rules must not steal app-launch matches for bare program names."""
+
+    def test_open_firefox_still_app_launch(self):
+        r = match("open firefox")
+        assert r.matched
+        assert r.agent == "system"
+        assert r.action_type == "WRITE"
+        assert r.params["program"] == "firefox"
+
+    def test_launch_gimp_still_app_launch(self):
+        r = match("launch gimp")
+        assert r.matched
+        assert r.agent == "system"
+        assert r.action_type == "WRITE"
+
+
+# ---------------------------------------------------------------------------
+# New file READ phrasings: "what's in", "view", "open <path>"
+# ---------------------------------------------------------------------------
+
+
+class TestLayer0FileReadAlternates:
+
+    def test_whats_in(self):
+        r = match("what's in ~/Documents/notes.md")
+        assert r.matched
+        assert r.action_type == "READ"
+        assert r.params["path"] == "~/Documents/notes.md"
+
+    def test_what_is_in(self):
+        r = match("what is in ~/file.txt")
+        assert r.matched
+        assert r.action_type == "READ"
+
+    def test_view_path(self):
+        r = match("view ~/file.py")
+        assert r.matched
+        assert r.action_type == "READ"
+
+    def test_open_path_routes_to_file_read(self):
+        # "open ~/file.py" → READ. App-launch's _APP_NAME doesn't permit
+        # the leading ~, so this can only hit the file rule.
+        r = match("open ~/dev/leaves-os/config.py")
+        assert r.matched
+        assert r.action_type == "READ"
+        assert r.agent == "file"
+
+
+# ---------------------------------------------------------------------------
+# New WRITE (empty file) phrasings: touch, create file
+# ---------------------------------------------------------------------------
+
+
+class TestLayer0CreateFile:
+
+    def test_touch(self):
+        r = match("touch ~/foo.txt")
+        assert r.matched
+        assert r.action_type == "WRITE"
+        assert r.params["path"] == "~/foo.txt"
+        assert r.params["content"] == ""
+
+    def test_create_file_at(self):
+        r = match("create a file at ~/notes/y.txt")
+        assert r.matched
+        assert r.action_type == "WRITE"
+        assert r.params["path"] == "~/notes/y.txt"
+
+    def test_create_file_short(self):
+        r = match("create file ~/x.md")
+        assert r.matched
+        assert r.action_type == "WRITE"
+
+    def test_create_file_nondestructive(self):
+        # New empty files don't overwrite anything → not destructive.
+        r = match("touch ~/empty.txt")
+        assert not r.params.get("destructive")

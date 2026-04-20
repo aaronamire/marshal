@@ -1,0 +1,76 @@
+# Leaves OS — full stack via docker-compose.
+#
+# Prereqs:
+#   1. Build the image:    docker compose build
+#   2. Download a model:   ./scripts/download-model.sh
+#                          (places models/goalspec_qwen25_3b_q4km.gguf locally)
+#   3. Start the stack:    docker compose up
+#   4. Try it:             curl http://127.0.0.1:8765/v1/health
+#
+# All services share /data for the audit log and persistent state.
+
+services:
+  inference:
+    image: leaves/runtime:0.3.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      llama-server
+        --model /models/goalspec_qwen25_3b_q4km.gguf
+        --port 8080 --host 0.0.0.0
+        --threads 2 --ctx-size 4096
+        --mlock --no-mmap --log-disable
+        --slot-save-path /data/kv-cache
+    volumes:
+      - ./models:/models:ro
+      - leaves-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  agentd:
+    image: leaves/runtime:0.3.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "/opt/leaves/agentd.py"]
+    environment:
+      - INFERENCE_SERVER_URL=http://inference:8080
+      - LEAVES_ANTHROPIC_KEY=${LEAVES_ANTHROPIC_KEY:-}
+      - LEAVES_ANTHROPIC_MODEL=${LEAVES_ANTHROPIC_MODEL:-claude-sonnet-4-6}
+    volumes:
+      - leaves-data:/data
+      - ./models:/models:ro
+    depends_on:
+      inference:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    image: leaves/runtime:0.3.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      uvicorn api.server:app
+        --host 0.0.0.0 --port 8765
+        --workers 1
+    environment:
+      - INFERENCE_SERVER_URL=http://inference:8080
+    volumes:
+      - leaves-data:/data
+    ports:
+      - "127.0.0.1:8765:8765"
+    depends_on:
+      - agentd
+    restart: unless-stopped
+
+volumes:
+  leaves-data:

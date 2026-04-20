@@ -68,9 +68,20 @@ def _rule(pattern: str, action_type: str, destructive: bool, extractor) -> None:
 
 
 # READ — "read ~/file.txt", "cat /etc/hosts", "show contents of ~/notes.txt"
-# "print /tmp/log.txt", "display ~/readme.md"
+# "print /tmp/log.txt", "display ~/readme.md", "view ~/file.py", "open ~/x.py"
+# Note: "open <path>" only fires here when the arg starts with ~/, /, or ./
+# (the _PATH regex). "open firefox" still goes to APP_LAUNCH below because
+# bare app names lack a leading path char.
 _rule(
-    r'^\s*(?:read|cat|show\s+contents?\s+of|print|display)\s+' + _PATH + r'\s*$',
+    r'^\s*(?:read|cat|show\s+contents?\s+of|print|display|view|open)\s+'
+    + _PATH + r'\s*$',
+    "READ", False,
+    lambda m: {"path": _norm(m.group(1))},
+)
+
+# READ alt — "what's in ~/file.txt", "what is in ~/notes/x.md"
+_rule(
+    r'^\s*what(?:\'s|\s+is)\s+in\s+' + _PATH + r'\s*$',
     "READ", False,
     lambda m: {"path": _norm(m.group(1))},
 )
@@ -112,6 +123,20 @@ _rule(
     r'^\s*mkdir\s+' + _PATH + r'\s*$',
     "WRITE", False,
     lambda m: {"path": _norm(m.group(1)), "content": "", "is_directory": True},
+)
+
+# WRITE (empty file) — "touch ~/foo.txt", "create file ~/x.md",
+# "create a file at ~/notes/y.txt"
+_rule(
+    r'^\s*touch\s+' + _PATH + r'\s*$',
+    "WRITE", False,
+    lambda m: {"path": _norm(m.group(1)), "content": ""},
+)
+_rule(
+    r'^\s*(?:create|make)\s+(?:a\s+)?(?:new\s+)?(?:empty\s+)?file\s+'
+    r'(?:called\s+|at\s+|named\s+)?' + _PATH + r'\s*$',
+    "WRITE", False,
+    lambda m: {"path": _norm(m.group(1)), "content": ""},
 )
 
 # DELETE — "delete ~/tmp/file.txt", "remove /tmp/foo", "rm ~/junk.txt"
@@ -214,6 +239,95 @@ _sys_rule(r'\bwhat(?:\'s|\s+is)\s+(?:running|using)\b', "processes")
 # uptime
 _sys_rule(r'\buptime\b', "uptime")
 _sys_rule(r'\bhow\s+long\s+.*\b(?:running|on|up)\b', "uptime")
+
+
+# ---------------------------------------------------------------------------
+# Web rules (agent="web", category="web_task")
+#
+# Two action shapes:
+#   - SEARCH: query_type="search", params.query
+#   - FETCH:  query_type="fetch",  params.url
+#
+# False-positive guards:
+#   - Search rules require an explicit search verb ("google", "look up",
+#     "search the web for", "search for"). Bare "search X" is too risky
+#     because X often happens to be a path.
+#   - If the search query contains a path-like token (~/foo or /usr/x),
+#     we fall through — the user almost certainly meant a file find.
+#   - Fetch rules with bare verbs (fetch/load/scrape/download) accept any
+#     URL-like token. "open <url>" is more constrained: it only fires for
+#     URLs with an explicit https?:// scheme, so "open firefox" still
+#     reaches APP_LAUNCH below.
+# ---------------------------------------------------------------------------
+
+_WEB_RULES: list = []
+
+
+def _web_rule(pattern: str, query_type: str, extractor) -> None:
+    _WEB_RULES.append(
+        (re.compile(pattern, re.IGNORECASE), query_type, extractor))
+
+
+# Common TLDs we accept in bare-domain (no-scheme) URLs. Conservative list:
+# anything not on it falls through. Keeps "config.py" or "notes.md" from
+# being misread as a domain.
+_TLD = (
+    r'(?:com|org|net|io|co|dev|app|ai|gov|edu|info|me|sh|so|tv|fm|ly|to'
+    r'|uk|de|fr|jp|cn|ca|au|us|biz|cloud|tech|page|site|xyz)'
+)
+
+# URL with explicit scheme (always safe to treat as a URL).
+_URL_HTTP = r'(https?://\S+)'
+
+# Bare domain like "github.com/foo" — must end in a known TLD.
+_URL_BARE = r'((?:[\w\-]+\.)+' + _TLD + r'(?:/\S*)?)'
+
+# Either form, used by fetch-style verbs (which are unambiguously web).
+_URL_ANY = r'(?:' + _URL_HTTP + r'|' + _URL_BARE + r')'
+
+
+def _path_in_text(text: str) -> bool:
+    """True if `text` contains an obvious filesystem path token."""
+    return bool(re.search(r'(?:^|\s)(?:~|/[a-zA-Z]|\./)', text))
+
+
+# SEARCH — "google rust async", "look up the weather in SF",
+# "search the web for X", "search for X"
+_web_rule(
+    r'^\s*google\s+(?:for\s+)?(.+?)\s*$',
+    "search",
+    lambda m: {"query": m.group(1).strip()} if not _path_in_text(m.group(1)) else None,
+)
+_web_rule(
+    r'^\s*look\s+up\s+(.+?)\s*$',
+    "search",
+    lambda m: {"query": m.group(1).strip()} if not _path_in_text(m.group(1)) else None,
+)
+_web_rule(
+    r'^\s*search\s+(?:the\s+web\s+)?for\s+(.+?)\s*$',
+    "search",
+    lambda m: {"query": m.group(1).strip()} if not _path_in_text(m.group(1)) else None,
+)
+_web_rule(
+    r'^\s*(?:web\s+)?search\s+(.+?)\s*$',
+    "search",
+    lambda m: {"query": m.group(1).strip()} if not _path_in_text(m.group(1)) else None,
+)
+
+# FETCH — explicit verbs accept any URL form (scheme or bare domain).
+_web_rule(
+    r'^\s*(?:fetch|get|load|scrape|download)\s+'
+    r'(?:the\s+(?:page|contents?|content)\s+(?:at|of|from)\s+)?' + _URL_ANY + r'\s*$',
+    "fetch",
+    lambda m: {"url": (m.group(1) or m.group(2) or "").strip()},
+)
+
+# "open <url>" — REQUIRES https?:// so it never steals from APP_LAUNCH.
+_web_rule(
+    r'^\s*open\s+' + _URL_HTTP + r'\s*$',
+    "fetch",
+    lambda m: {"url": m.group(1).strip()},
+)
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +647,31 @@ def match(user_text: str) -> Layer0Result:
                 agent="power",
                 category="power_task",
             )
+    # Web — search and fetch. Placed before app launch so "open https://x"
+    # routes to fetch instead of being misread as a program named "https://x".
+    for pattern, query_type, extractor in _WEB_RULES:
+        m = pattern.match(user_text)
+        if not m:
+            continue
+        try:
+            params = extractor(m)
+        except Exception:
+            continue
+        if params is None:
+            # Extractor's guards (e.g. path-in-search-query) said "skip".
+            continue
+        latency_ms = (time.monotonic() - t0) * 1000
+        return Layer0Result(
+            matched=True,
+            action_type="QUERY",
+            params={**params, "query_type": query_type, "destructive": False},
+            confidence=0.95,
+            latency_ms=latency_ms,
+            is_implemented=True,
+            agent="web",
+            category="web_task",
+            preview_required=False,
+        )
     # App launch — "open firefox", "launch gimp"
     for pattern in _APP_LAUNCH_RULES:
         m = pattern.match(user_text)

@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from agents.intent_parser import IntentParser
 from config import AUDIT_DB_PATH, INFERENCE_SERVER_URL
+from observability import configure_logging, render_prometheus_text
 from cortex.briefing import BriefingGenerator
 from cortex.indexer import CortexIndexer
 from cortex.adapters.filesystem import FilesystemAdapter
@@ -81,6 +82,7 @@ async def _inference_health_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _inference_check_task
+    configure_logging()
     await _ensure_agentd()
     _inference_check_task = asyncio.create_task(_inference_health_loop())
     yield
@@ -121,6 +123,9 @@ async def _ensure_agentd() -> None:
 
 app = FastAPI(title="Leaves OS API", version="0.1.0", lifespan=lifespan)
 
+# CORS: no credentials, explicit method list, and only the dev-server
+# origins we actually support. allow_credentials=True with localhost
+# origins was a DNS-rebinding amplifier — see security audit F-4.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -129,10 +134,50 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
     ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
+
+
+# Host-header allowlist — defense against DNS rebinding. The API binds
+# to 127.0.0.1, but a rebound attacker domain pointing at our service
+# would otherwise be honored. We compare the hostname portion only; any
+# port the user runs on is fine. `testserver` is FastAPI's TestClient
+# default and is allowed so tests don't have to override the Host header.
+# See security audit F-4.
+_ALLOWED_HOST_NAMES = frozenset({
+    "127.0.0.1", "localhost", "::1",
+    # Reserved test hostnames per RFC 6761 / FastAPI + httpx test defaults.
+    # No public DNS will ever resolve these to a real host, so allowing them
+    # lets in-process ASGI tests run without overriding the Host header.
+    "testserver", "test",
+})
+
+
+def _host_allowed(host_header: str) -> bool:
+    if not host_header:
+        return False
+    # Strip port. IPv6 hosts arrive as "[::1]:8765"; handle the bracketed form.
+    h = host_header.strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        if end == -1:
+            return False
+        return h[1:end] in _ALLOWED_HOST_NAMES
+    name = h.split(":", 1)[0]
+    return name in _ALLOWED_HOST_NAMES
+
+
+@app.middleware("http")
+async def _enforce_host_header(request, call_next):
+    if not _host_allowed(request.headers.get("host", "")):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=421,
+            content={"detail": "Host header not allowed"},
+        )
+    return await call_next(request)
 
 # Singletons — created lazily on first request
 _parser: Optional[IntentParser] = None
@@ -837,6 +882,19 @@ async def get_agents():
         except Exception:
             pass
     return manifests
+
+
+@app.get("/v1/metrics")
+async def get_metrics():
+    """
+    Prometheus 0.0.4 text exposition. Counters and the inference-latency
+    histogram are exposed; scrape with `curl http://127.0.0.1:8765/v1/metrics`.
+    """
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        content=render_prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/v1/health")

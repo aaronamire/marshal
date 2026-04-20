@@ -16,10 +16,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import pathlib
 import queue
+import re
 import signal
+import socket
+import struct
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +36,9 @@ from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
 from db.audit import get_db, log_error, log_intent_created, log_state_transition, complete_intent
 from errors import LeavesError, LeavesErrorCode
+from observability import configure_logging, intents_total, runner_path_total
+
+log = logging.getLogger("agentd")
 
 # Map agent type strings -> agent classes. Sourced from agents.registry so
 # adding a new agent is a one-liner there, not a three-file patch.
@@ -533,11 +540,56 @@ _SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
 _CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/leaves")
 _CGROUP_AVAILABLE = False
 
-# Map of in-flight runner subprocesses keyed by full intent_id. The
-# {"_cancel": "<intent_id>"} socket message looks up the matching proc
-# and SIGUSR1's it. Mutated only from the asyncio main thread inside
-# _run_sandboxed and _handle_client, so no lock is needed.
-_INFLIGHT_PROCS: dict[str, "asyncio.subprocess.Process"] = {}
+# UUID v4 — same regex as agents/schema/goal_spec.json. Validating at the
+# socket boundary blocks F-1 (intent_id traversal into _CGROUP_ROOT) before
+# any path interpolation can run.
+_UUID_V4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+def _validate_intent_id(intent_id: Any) -> str:
+    if not isinstance(intent_id, str) or not _UUID_V4_RE.match(intent_id):
+        raise LeavesError(
+            LeavesErrorCode.INVALID_INTENT_FORMAT,
+            detail=f"intent_id must be UUID v4, got: {intent_id!r}",
+        )
+    return intent_id
+
+
+def _check_peer_uid_allowed(writer: asyncio.StreamWriter) -> bool:
+    """
+    Returns True iff the connecting peer runs as the same uid as agentd.
+
+    Defense-in-depth on top of the 0o600 socket perms (F-2). Without this,
+    a misconfigured ~/.leaves/ permission would silently widen the trust
+    boundary. See docs/security-audit-2026-04-18.md F-3.
+    """
+    sock = writer.get_extra_info("socket")
+    if sock is None or sock.family != socket.AF_UNIX:
+        return False
+    try:
+        # struct ucred = pid_t pid; uid_t uid; gid_t gid;  (3 × u32 on Linux)
+        cred = sock.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+        )
+        _pid, peer_uid, _gid = struct.unpack("3i", cred)
+    except (OSError, struct.error):
+        return False
+    return peer_uid == os.geteuid()
+
+# Map of in-flight runner pids keyed by full intent_id. Both warm-path
+# (forked from runner-pool master) and cold-path (fresh subprocess) workers
+# register here. Mutated only from the asyncio main thread, so no lock.
+_INFLIGHT_PROCS: dict[str, int] = {}
+
+# Path to the runner-pool master's socket. Master is spawned at agentd
+# startup; if it's down, _run_sandboxed falls back to the cold path.
+_POOL_SOCK_PATH = pathlib.Path.home() / ".leaves" / "runner-pool.sock"
+_pool_proc: "asyncio.subprocess.Process | None" = None
+_ACK_TIMEOUT_S = 5.0
+_POOL_CONNECT_TIMEOUT_S = 1.0
+_POOL_RESULT_TIMEOUT_S = 120.0
 
 
 def _is_app_launch(goal_spec: dict) -> bool:
@@ -589,6 +641,191 @@ async def _run_sandboxed(
     on_event=None,
 ) -> tuple[dict, str, dict]:
     """
+    Dispatch an intent to the warm runner-pool master if it's up; otherwise
+    fall back to the cold-path subprocess. The warm path saves ~150-300ms
+    of CPython startup + module imports per intent (workers fork from a
+    pre-imported master and inherit modules via copy-on-write).
+
+    Both paths apply Landlock + per-intent cgroup with identical scope, so
+    the security claim is preserved across the dispatch.
+    """
+    if _POOL_SOCK_PATH.exists():
+        try:
+            res = await _run_via_pool(goal_spec, from_state, on_event)
+            runner_path_total.inc(path="warm")
+            return res
+        except (OSError, asyncio.TimeoutError, json.JSONDecodeError) as e:
+            # Transport-level failure: pool socket is gone, master crashed,
+            # or the protocol got desynchronized. Fall back to the cold path
+            # so the user's intent still completes.
+            log.warning(
+                "warm path transport failure, falling back to cold",
+                extra={"intent_id": str(goal_spec.get("intent_id"))[:8],
+                       "error": str(e)},
+            )
+        except LeavesError:
+            # Domain error from inside the worker (DB_ERROR, ENFORCER_REJECT,
+            # etc.) — re-raise. Falling back to cold would just re-trigger
+            # the same error and double-charge latency.
+            runner_path_total.inc(path="warm")
+            raise
+    runner_path_total.inc(path="cold")
+    return await _run_sandboxed_cold(goal_spec, from_state, on_event)
+
+
+async def _run_via_pool(
+    goal_spec: dict,
+    from_state: str,
+    on_event=None,
+) -> tuple[dict, str, dict]:
+    """
+    Execute an intent via the runner-pool master (warm path).
+
+    Protocol:
+      1. Open a fresh connection to ~/.leaves/runner-pool.sock.
+      2. Send {"goal_spec": ..., "from_state": ...}.
+      3. Read {"_kind": "worker_pid", "pid": N}.
+      4. Set up per-intent cgroup, write the worker pid into cgroup.procs.
+      5. Send {"_kind": "cgroup_ready"}.
+      6. Stream incoming frames: "event" → on_event hook; "result" → return.
+
+    Per-intent cgroup placement is best-effort. If the cgroup write fails,
+    the ack is still sent and the worker proceeds — the security boundary
+    is Landlock, applied inside the worker, not the cgroup.
+    """
+    full_intent_id = _validate_intent_id(goal_spec.get("intent_id"))
+    intent_id = full_intent_id[:8]
+    cgroup_path = _CGROUP_ROOT / f"intent-{intent_id}"
+    cgroup_applied = False
+    is_launch = _is_app_launch(goal_spec)
+
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_unix_connection(str(_POOL_SOCK_PATH)),
+        timeout=_POOL_CONNECT_TIMEOUT_S,
+    )
+
+    result_frame: dict | None = None
+    try:
+        # 1. Send the request.
+        req = (
+            json.dumps({"goal_spec": goal_spec, "from_state": from_state})
+            .encode() + b"\n"
+        )
+        writer.write(req)
+        await writer.drain()
+
+        # 2. Read worker_pid frame.
+        line = await asyncio.wait_for(reader.readline(), timeout=_ACK_TIMEOUT_S)
+        if not line:
+            raise LeavesError(
+                LeavesErrorCode.INTERNAL_ERROR,
+                detail="runner pool closed before sending worker_pid",
+            )
+        first = json.loads(line)
+        if first.get("_kind") != "worker_pid":
+            raise LeavesError(
+                LeavesErrorCode.INTERNAL_ERROR,
+                detail=f"unexpected first frame from pool: {first}",
+            )
+        worker_pid = int(first["pid"])
+        _INFLIGHT_PROCS[full_intent_id] = worker_pid
+
+        # 3. Per-intent cgroup placement (best-effort, skipped for launches).
+        if _CGROUP_AVAILABLE and not is_launch:
+            try:
+                cgroup_path.mkdir(parents=False, exist_ok=True)
+                (cgroup_path / "memory.max").write_text("536870912")
+                (cgroup_path / "memory.swap.max").write_text("0")
+                (cgroup_path / "cpu.max").write_text("50000 100000")
+                (cgroup_path / "pids.max").write_text("32")
+                (cgroup_path / "cgroup.procs").write_text(str(worker_pid))
+                cgroup_applied = True
+            except (PermissionError, FileNotFoundError, OSError) as e:
+                log.warning(
+                    "cgroup setup failed (warm path)",
+                    extra={"intent_id": intent_id, "error": str(e)},
+                )
+
+        # 4. Ack — worker is blocking on this before applying Landlock.
+        writer.write(json.dumps({"_kind": "cgroup_ready"}).encode() + b"\n")
+        await writer.drain()
+
+        # 5. Drain frames until result.
+        while True:
+            line = await asyncio.wait_for(
+                reader.readline(), timeout=_POOL_RESULT_TIMEOUT_S
+            )
+            if not line:
+                break
+            try:
+                frame = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind = frame.get("_kind")
+            if kind == "event":
+                if on_event is not None:
+                    try:
+                        res = on_event(frame.get("event") or {})
+                        if asyncio.iscoroutine(res):
+                            await res
+                    except Exception:  # noqa: BLE001
+                        pass
+            elif kind == "result":
+                result_frame = frame
+                break
+
+        if result_frame is None:
+            raise LeavesError(
+                LeavesErrorCode.INTERNAL_ERROR,
+                detail="runner pool closed without sending result",
+            )
+
+    finally:
+        _INFLIGHT_PROCS.pop(full_intent_id, None)
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+        if cgroup_applied and cgroup_path.exists():
+            try:
+                procs_file = cgroup_path / "cgroup.procs"
+                if procs_file.exists():
+                    pids = procs_file.read_text().strip().split()
+                    for pid_str in pids:
+                        if pid_str.strip():
+                            try:
+                                os.kill(int(pid_str), signal.SIGKILL)
+                            except (ProcessLookupError, ValueError):
+                                pass
+                    await asyncio.sleep(0.05)
+                cgroup_path.rmdir()
+            except (FileNotFoundError, OSError):
+                pass
+
+    if result_frame.get("ok"):
+        sandbox = result_frame.get("sandbox") or {
+            "active": False, "reason": "missing_from_runner",
+            "authorized_resources": [],
+        }
+        return result_frame["results"], result_frame["summary"], sandbox
+
+    code_str = result_frame.get("code", "INTERNAL_ERROR")
+    try:
+        code = LeavesErrorCode[code_str]
+    except KeyError:
+        code = LeavesErrorCode.INTERNAL_ERROR
+    raise LeavesError(
+        code, detail=result_frame.get("detail") or result_frame.get("error")
+    )
+
+
+async def _run_sandboxed_cold(
+    goal_spec: dict,
+    from_state: str,
+    on_event=None,
+) -> tuple[dict, str, dict]:
+    """
     Spawn agents/sandboxed_runner.py as a fresh subprocess.
 
     The subprocess applies Landlock to itself before importing project code,
@@ -611,7 +848,10 @@ async def _run_sandboxed(
     runner = pathlib.Path(__file__).parent / "agents" / "sandboxed_runner.py"
     payload = json.dumps({"goal_spec": goal_spec,
                           "from_state": from_state}).encode() + b"\n"
-    full_intent_id = goal_spec.get("intent_id", "unknown")
+    # Defense in depth: even if a future caller skips _handle_client's
+    # validation, refuse to interpolate a non-UUID intent_id into the
+    # cgroup path. See docs/security-audit-2026-04-18.md F-1.
+    full_intent_id = _validate_intent_id(goal_spec.get("intent_id"))
     intent_id = full_intent_id[:8]
     cgroup_path = _CGROUP_ROOT / f"intent-{intent_id}"
     cgroup_applied = False
@@ -648,7 +888,7 @@ async def _run_sandboxed(
     # Register this proc so cancel-by-intent-id can find it. The entry
     # is removed in the finally block below regardless of how the
     # subprocess exits (success, timeout, error, signal).
-    _INFLIGHT_PROCS[full_intent_id] = proc
+    _INFLIGHT_PROCS[full_intent_id] = proc.pid
 
     # Parent no longer needs the write end; the child has its own copy.
     # Closing here is what eventually delivers EOF to the reader when the
@@ -670,7 +910,7 @@ async def _run_sandboxed(
             (cgroup_path / "cgroup.procs").write_text(str(proc.pid))
             cgroup_applied = True
         except (PermissionError, FileNotFoundError, OSError) as e:
-            print(f"agentd: cgroup setup failed: {e}", flush=True)
+            log.warning("cgroup setup failed", extra={"error": str(e)})
 
     try:
         stdout, _stderr = await asyncio.wait_for(
@@ -744,6 +984,19 @@ async def _handle_client(
     writer: asyncio.StreamWriter,
 ) -> None:
     try:
+        if not _check_peer_uid_allowed(writer):
+            try:
+                writer.write(json.dumps({
+                    "final": True, "ok": False,
+                    "code": "AUTHORIZATION_VIOLATION",
+                    "error": "peer uid does not match agentd uid",
+                    "detail": None,
+                }).encode() + b"\n")
+                await writer.drain()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
         line = await reader.readline()
         if not line:
             return
@@ -767,14 +1020,14 @@ async def _handle_client(
         # --- cancel an in-flight intent ---
         if "_cancel" in msg:
             target_id = msg["_cancel"]
-            proc = _INFLIGHT_PROCS.get(target_id)
-            if proc is None:
+            pid = _INFLIGHT_PROCS.get(target_id)
+            if pid is None:
                 writer.write(json.dumps(
                     {"_cancelled": False, "reason": "not_inflight"}
                 ).encode() + b"\n")
             else:
                 try:
-                    proc.send_signal(signal.SIGUSR1)
+                    os.kill(pid, signal.SIGUSR1)
                     cancelled = True
                 except (ProcessLookupError, PermissionError, OSError):
                     cancelled = False
@@ -817,6 +1070,19 @@ async def _handle_client(
 
         # --- execute GoalSpec ---
         goal_spec      = msg["goal_spec"]
+        # Validate intent_id at the trust boundary BEFORE it can flow into
+        # cgroup paths or audit-db writes. See security audit F-1.
+        try:
+            _validate_intent_id(goal_spec.get("intent_id"))
+        except LeavesError as e:
+            writer.write(json.dumps({
+                "final": True, "ok": False,
+                "code": e.code.value,
+                "error": e.user_message,
+                "detail": e.detail,
+            }).encode() + b"\n")
+            await writer.drain()
+            return
         from_state_str = msg.get("from_state", "PARSING")
         wants_events   = bool(msg.get("stream_events"))
 
@@ -832,6 +1098,7 @@ async def _handle_client(
             except Exception:  # noqa: BLE001
                 pass
 
+        category = goal_spec.get("category", "unknown")
         try:
             results, summary, sandbox = await _run_sandboxed(
                 goal_spec, from_state_str,
@@ -842,6 +1109,7 @@ async def _handle_client(
                 "results": results, "summary": summary,
                 "sandbox": sandbox,
             }
+            intents_total.inc(status="done", category=category)
         except LeavesError as e:
             response = {
                 "final":  True,
@@ -850,6 +1118,7 @@ async def _handle_client(
                 "error":  e.user_message,
                 "detail": e.detail,
             }
+            intents_total.inc(status="failed", category=category)
 
     except Exception as exc:
         response = {
@@ -908,9 +1177,9 @@ async def _warm_inference_kv_cache() -> None:
 
     err = await loop.run_in_executor(None, _warm)
     if err is None:
-        print("agentd: inference KV cache warmed", flush=True)
+        log.info("inference KV cache warmed")
     else:
-        print(f"agentd: KV cache warmup skipped ({err})", flush=True)
+        log.info("KV cache warmup skipped", extra={"reason": err})
 
 
 async def _background_indexing(indexer) -> None:
@@ -922,17 +1191,18 @@ async def _background_indexing(indexer) -> None:
 
     # Initial full index
     try:
-        print("agentd: starting initial index (background)…", flush=True)
+        log.info("starting initial index (background)")
         stats = await loop.run_in_executor(None, indexer.run_once)
-        print(
-            f"agentd: initial index complete — "
-            f"{stats['total_scanned']} scanned, "
-            f"{stats['total_upserted']} indexed "
-            f"in {stats.get('elapsed_seconds', 0):.1f}s",
-            flush=True,
+        log.info(
+            "initial index complete",
+            extra={
+                "scanned": stats["total_scanned"],
+                "upserted": stats["total_upserted"],
+                "elapsed_s": round(stats.get("elapsed_seconds", 0), 1),
+            },
         )
     except Exception as e:
-        print(f"agentd: initial index failed: {e}", flush=True)
+        log.warning("initial index failed", extra={"error": str(e)})
 
     # Periodic incremental
     while True:
@@ -940,12 +1210,12 @@ async def _background_indexing(indexer) -> None:
         try:
             stats = await loop.run_in_executor(None, indexer.run_incremental)
             if stats["total_upserted"] > 0:
-                print(
-                    f"agentd: incremental index — {stats['total_upserted']} updated",
-                    flush=True,
+                log.info(
+                    "incremental index",
+                    extra={"upserted": stats["total_upserted"]},
                 )
         except Exception as e:
-            print(f"agentd: incremental index failed: {e}", flush=True)
+            log.warning("incremental index failed", extra={"error": str(e)})
 
 
 def _fire_goalspec_sync(goal_spec: dict) -> None:
@@ -961,7 +1231,15 @@ def _fire_goalspec_sync(goal_spec: dict) -> None:
     intent_id = goal_spec.get("intent_id", "unknown")
     natural_text = goal_spec.get("natural_text", "")
 
-    print(f"agentd: watcher firing intent {intent_id[:8]} — {natural_text}", flush=True)
+    category = goal_spec.get("category", "unknown")
+    log.info(
+        "watcher firing intent",
+        extra={
+            "intent_id": intent_id[:8],
+            "natural_text": natural_text,
+            "source": "watcher",
+        },
+    )
     t_start = _time.monotonic()
 
     try:
@@ -977,14 +1255,93 @@ def _fire_goalspec_sync(goal_spec: dict) -> None:
         log_state_transition(db, intent_id, "EXECUTING", "DONE")
         duration_ms = (_time.monotonic() - t_start) * 1000
         complete_intent(db, intent_id, "DONE", summary, duration_ms=duration_ms)
-        print(f"agentd: watcher intent done in {duration_ms:.0f}ms — {summary}", flush=True)
+        intents_total.inc(status="done", category=category)
+        log.info(
+            "watcher intent done",
+            extra={
+                "intent_id": intent_id[:8],
+                "duration_ms": round(duration_ms, 0),
+                "summary": summary,
+                "source": "watcher",
+            },
+        )
 
     except LeavesError as e:
         duration_ms = (_time.monotonic() - t_start) * 1000
         complete_intent(db, intent_id, "FAILED", e.detail, duration_ms=duration_ms)
-        print(f"agentd: watcher intent failed — {e.user_message}", flush=True)
+        intents_total.inc(status="failed", category=category)
+        log.warning(
+            "watcher intent failed",
+            extra={"intent_id": intent_id[:8], "error": e.user_message},
+        )
     except Exception as e:
-        print(f"agentd: watcher intent error — {e}", flush=True)
+        intents_total.inc(status="error", category=category)
+        log.error(
+            "watcher intent error",
+            extra={"intent_id": intent_id[:8], "error": str(e)},
+        )
+
+
+async def _spawn_runner_pool() -> "asyncio.subprocess.Process | None":
+    """
+    Spawn agents/runner_master.py as a long-lived subprocess. Returns the
+    Process handle on success, None on failure (logged). Failure is
+    survivable: _run_sandboxed falls back to the cold-path subprocess.
+
+    Removes any stale socket left by a prior crashed master before launch
+    so that the new master can bind cleanly.
+    """
+    try:
+        if _POOL_SOCK_PATH.exists():
+            _POOL_SOCK_PATH.unlink()
+    except OSError:
+        pass
+
+    master_py = pathlib.Path(__file__).parent / "agents" / "runner_master.py"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(master_py),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as e:
+        log.warning("runner pool spawn failed", extra={"error": str(e)})
+        return None
+
+    # Wait briefly for the master to bind its socket. The master prints
+    # "runner-pool: listening" to stdout right after listen(). Poll for
+    # the socket file with a 3s budget — if it never appears, the master
+    # crashed during _eager_import() and we abandon the warm path.
+    for _ in range(60):  # 60 × 50ms = 3s
+        if _POOL_SOCK_PATH.exists():
+            log.info("runner pool ready", extra={"pid": proc.pid})
+            return proc
+        if proc.returncode is not None:
+            stderr = b""
+            try:
+                stderr = (await proc.stderr.read()) if proc.stderr else b""
+            except Exception:  # noqa: BLE001
+                pass
+            log.warning(
+                "runner pool exited during startup",
+                extra={
+                    "rc": proc.returncode,
+                    "stderr": stderr.decode(errors="replace")[:500],
+                },
+            )
+            return None
+        await asyncio.sleep(0.05)
+
+    log.warning("runner pool failed to bind socket within 3s")
+    try:
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+    except (ProcessLookupError, asyncio.TimeoutError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    return None
 
 
 _PROACTIVE_SOCK_PATH = pathlib.Path(
@@ -1019,10 +1376,9 @@ async def _push_proactive(goal_spec: dict) -> None:
                         OSError, asyncio.TimeoutError) as e:
                     _proactive_writer = None
                     if attempt == 2:
-                        print(
-                            f"agentd: proactive push failed "
-                            f"(compositor not up?): {e}",
-                            flush=True,
+                        log.warning(
+                            "proactive push failed (compositor not up?)",
+                            extra={"error": str(e)},
                         )
                     continue
 
@@ -1088,10 +1444,13 @@ async def _on_terminal_error(
 
     db = get_db()
     log_intent_created(db, goal_spec["intent_id"], intent_text, goal_spec)
-    print(
-        f"agentd: proactive intent created for {app_id} "
-        f"exit code {exit_code}",
-        flush=True,
+    log.info(
+        "proactive intent created",
+        extra={
+            "intent_id": goal_spec["intent_id"][:8],
+            "source_app": app_id,
+            "exit_code": exit_code,
+        },
     )
 
     # Push live to the compositor feed (best-effort). Writes to SQLite are
@@ -1100,18 +1459,20 @@ async def _on_terminal_error(
 
 
 async def _run_server() -> None:
-    global _CGROUP_AVAILABLE, _watcher, _event_watcher
+    global _CGROUP_AVAILABLE, _watcher, _event_watcher, _pool_proc
+
+    configure_logging()
 
     # One-time cgroup v2 parent setup
     try:
         if pathlib.Path("/sys/fs/cgroup/cgroup.controllers").exists():
             _CGROUP_ROOT.mkdir(parents=False, exist_ok=True)
             _CGROUP_AVAILABLE = True
-            print("agentd: cgroup v2 resource limits enabled", flush=True)
+            log.info("cgroup v2 resource limits enabled")
         else:
-            print("agentd: cgroup v2 not mounted — limits disabled", flush=True)
+            log.info("cgroup v2 not mounted — limits disabled")
     except PermissionError:
-        print("agentd: no cgroup write permission — limits disabled", flush=True)
+        log.warning("no cgroup write permission — limits disabled")
 
     _SOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     if _SOCK_PATH.exists():
@@ -1123,9 +1484,9 @@ async def _run_server() -> None:
         watcher_db = get_db()
         _watcher = IntentWatcher(watcher_db, _fire_goalspec_sync)
         _watcher.start()
-        print("agentd: filesystem watcher started", flush=True)
+        log.info("filesystem watcher started")
     except Exception as e:
-        print(f"agentd: filesystem watcher failed to start: {e}", flush=True)
+        log.warning("filesystem watcher failed to start", extra={"error": str(e)})
         _watcher = None
 
     # Start cortex indexer — background thread for initial + periodic indexing
@@ -1136,9 +1497,11 @@ async def _run_server() -> None:
         lance_path = pathlib.Path(__file__).parent / "rag" / ".lancedb"
         _indexer = CortexIndexer(indexer_db, lance_path)
         _indexer.register(FilesystemAdapter())
-        print("agentd: cortex indexer registered", flush=True)
+        log.info("cortex indexer registered")
     except Exception as e:
-        print(f"agentd: cortex indexer failed to initialize: {e}", flush=True)
+        log.warning(
+            "cortex indexer failed to initialize", extra={"error": str(e)}
+        )
         _indexer = None
 
     # Start compositor event watcher
@@ -1147,13 +1510,29 @@ async def _run_server() -> None:
         _event_watcher = CompositorEventWatcher()
         _event_watcher.on_nonzero_exit(_on_terminal_error)
         await _event_watcher.start()
-        print("agentd: compositor event watcher started", flush=True)
+        log.info("compositor event watcher started")
     except Exception as e:
-        print(f"agentd: compositor event watcher failed: {e}", flush=True)
+        log.warning(
+            "compositor event watcher failed", extra={"error": str(e)}
+        )
         _event_watcher = None
 
+    # Spawn the runner-pool master. If this fails, _run_sandboxed dispatches
+    # everything through the cold path — correctness is preserved, only the
+    # ~150-300ms startup speedup is lost. Spawning unconditionally (even when
+    # cgroup is unavailable) since Landlock + module-warm fork are independent
+    # of cgroup placement.
+    _pool_proc = await _spawn_runner_pool()
+
     server = await asyncio.start_unix_server(_handle_client, path=str(_SOCK_PATH))
-    print(f"agentd listening on {_SOCK_PATH}", flush=True)
+    # Tighten socket perms before serving. Same-uid only, no group, no other.
+    # Together with _check_peer_uid_allowed this gives belt-and-suspenders
+    # isolation from co-tenants. See security audit F-2.
+    try:
+        os.chmod(_SOCK_PATH, 0o600)
+    except OSError as e:
+        log.warning("failed to chmod socket to 0o600", extra={"error": str(e)})
+    log.info("agentd listening", extra={"socket": str(_SOCK_PATH)})
 
     # Schedule background indexing
     if _indexer is not None:
@@ -1169,6 +1548,21 @@ async def _run_server() -> None:
         async with server:
             await server.serve_forever()
     finally:
+        if _pool_proc is not None and _pool_proc.returncode is None:
+            try:
+                _pool_proc.terminate()
+                await asyncio.wait_for(_pool_proc.wait(), timeout=2.0)
+            except (ProcessLookupError, asyncio.TimeoutError):
+                try:
+                    _pool_proc.kill()
+                    await _pool_proc.wait()
+                except ProcessLookupError:
+                    pass
+        if _POOL_SOCK_PATH.exists():
+            try:
+                _POOL_SOCK_PATH.unlink()
+            except OSError:
+                pass
         if _event_watcher is not None:
             await _event_watcher.stop()
         if _watcher is not None:

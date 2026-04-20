@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -e ".[rag,dev]"
+
+      - name: Run unit + integration tests (excluding eval and demo)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          pytest tests/ -q --tb=short \
+            --ignore=tests/eval_suite.py \
+            --ignore=tests/demo_suite.py \
+            --durations=10
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install ruff
+      - run: ruff check . --output-format=github
+
+  compositor-build:
+    name: compositor (meson + wlroots)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compositor build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build pkg-config \
+            libwayland-dev wayland-protocols \
+            libcairo2-dev libpango1.0-dev \
+            libcurl4-openssl-dev libcjson-dev \
+            libdrm-dev libjpeg-dev \
+            libxcb1-dev libxcb-icccm4-dev \
+            libasound2-dev libsystemd-dev \
+            libxkbcommon-dev
+
+      - name: Install wlroots
+        # wlroots-0.18 is not in Ubuntu 24.04. Build from source at a pinned
+        # tag so this job is deterministic.
+        run: |
+          sudo apt-get install -y \
+            libegl1-mesa-dev libgles2-mesa-dev libglvnd-dev \
+            libinput-dev libxkbcommon-dev libpixman-1-dev \
+            libdrm-dev libgbm-dev libseat-dev hwdata libdisplay-info-dev \
+            libliftoff-dev
+          git clone --depth 1 --branch 0.18.0 https://gitlab.freedesktop.org/wlroots/wlroots.git /tmp/wlroots
+          meson setup /tmp/wlroots/build /tmp/wlroots \
+            -Dexamples=false -Dxwayland=disabled
+          meson compile -C /tmp/wlroots/build
+          sudo meson install -C /tmp/wlroots/build
+          sudo ldconfig
+
+      - name: Build compositor
+        run: |
+          cd compositor
+          meson setup builddir -Dwarning_level=1
+          meson compile -C builddir
+
+  docker:
+    name: docker buildx
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: leaves/runtime:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test image
+        run: |
+          docker run --rm leaves/runtime:ci python -c "import agentd, agents.intent_parser, agents.enforcer; print('OK')"
+
+  demo-suite:
+    name: demo suite (latency budgets)
+    runs-on: ubuntu-24.04
+    needs: test
+    # The demo suite requires a live llama-server. We do not start one here
+    # because pulling a model in CI is wasteful. Instead, demo_suite.py is
+    # parameterized to accept LEAVES_DEMO_MODE=stub which exercises the L0
+    # regex path only (which has no inference dependency).
+    env:
+      LEAVES_DEMO_MODE: stub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[rag,dev]"
+      - run: pytest tests/demo_suite.py -q --tb=short

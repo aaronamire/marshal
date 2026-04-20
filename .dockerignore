@@ -1,0 +1,55 @@
+# Build context exclusions for Docker. Keeps the image small and the build
+# fast; mirrors .gitignore but is more aggressive.
+
+# VCS
+.git/
+.gitignore
+.github/
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.venv/
+.os/
+leaves-env/
+
+# Tests + dev-only files
+tests/
+.pytest_cache/
+*.lance/
+*.lancedb/
+rag/.lancedb/
+
+# Models — never bake into the image (license + size)
+models/*.gguf
+models/*.joblib
+
+# Compositor + native components — built separately
+compositor/builddir/
+compositor/.cache/
+
+# Local runtime state
+*.db
+*.db-shm
+*.db-wal
+.leaves/
+leaves_audit.db
+*.log
+
+# Editor + OS cruft
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs not needed at runtime
+docs/
+research/
+*.md
+!README.md
+!LICENSE
+!CHANGELOG.md
