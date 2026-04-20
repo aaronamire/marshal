@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from agents.base_agent import BaseAgent
 from config import AUTHORIZED_PATH_ROOTS
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 MAX_READ_BYTES = 65_536  # 64 KiB — don't slurp huge files into memory
 MAX_LIST_RESULTS = 500   # cap on fs_list results
@@ -59,8 +59,8 @@ class FileAgent(BaseAgent):
 
         handler = dispatch.get(action_type)
         if handler is None:
-            raise LeavesError(
-                LeavesErrorCode.NOT_IMPLEMENTED,
+            raise MarshalError(
+                MarshalErrorCode.NOT_IMPLEMENTED,
                 detail=f"FileAgent does not handle action type '{action_type}'",
             )
         return handler()
@@ -87,10 +87,10 @@ class FileAgent(BaseAgent):
             result = {"count": len(results), "files": results, "path": str(resolved)}
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -104,7 +104,7 @@ class FileAgent(BaseAgent):
         row_id = self._audit_start(action_id, "READ", {"path": path})
         try:
             if not resolved.exists():
-                raise LeavesError(LeavesErrorCode.PATH_DOES_NOT_EXIST, detail=str(resolved))
+                raise MarshalError(MarshalErrorCode.PATH_DOES_NOT_EXIST, detail=str(resolved))
             stat = resolved.stat()
             result = {
                 "name": resolved.name,
@@ -117,14 +117,14 @@ class FileAgent(BaseAgent):
             }
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except PermissionError as e:
-            err = LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -139,10 +139,10 @@ class FileAgent(BaseAgent):
         row_id = self._audit_start(action_id, "READ", {"path": path})
         try:
             if not resolved.exists():
-                raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved))
+                raise MarshalError(MarshalErrorCode.FILE_NOT_FOUND, detail=str(resolved))
             if not resolved.is_file():
-                raise LeavesError(
-                    LeavesErrorCode.FILE_READ_ERROR,
+                raise MarshalError(
+                    MarshalErrorCode.FILE_READ_ERROR,
                     detail=f"{resolved} is not a file",
                 )
             capped = min(max_bytes, MAX_READ_BYTES)
@@ -157,14 +157,14 @@ class FileAgent(BaseAgent):
             }
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except PermissionError as e:
-            err = LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_READ_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -188,8 +188,8 @@ class FileAgent(BaseAgent):
                 return result
 
             if resolved.exists() and not overwrite:
-                raise LeavesError(
-                    LeavesErrorCode.FILE_WRITE_ERROR,
+                raise MarshalError(
+                    MarshalErrorCode.FILE_WRITE_ERROR,
                     detail=f"{resolved} already exists. Set overwrite=True to allow.",
                 )
             resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -197,14 +197,14 @@ class FileAgent(BaseAgent):
             result = {"path": str(resolved), "bytes_written": len(content.encode())}
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except PermissionError as e:
-            err = LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_WRITE_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_WRITE_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -232,13 +232,13 @@ class FileAgent(BaseAgent):
             # --- Bulk delete: pattern provided ---
             if pattern:
                 if not resolved.exists():
-                    raise LeavesError(
-                        LeavesErrorCode.PATH_DOES_NOT_EXIST,
+                    raise MarshalError(
+                        MarshalErrorCode.PATH_DOES_NOT_EXIST,
                         detail=str(resolved),
                     )
                 if not resolved.is_dir():
-                    raise LeavesError(
-                        LeavesErrorCode.FILE_DELETE_ERROR,
+                    raise MarshalError(
+                        MarshalErrorCode.FILE_DELETE_ERROR,
                         detail=f"{resolved} is not a directory — cannot use pattern on a file",
                     )
                 glob_fn = resolved.rglob if recursive else resolved.glob
@@ -268,10 +268,10 @@ class FileAgent(BaseAgent):
 
             # --- Single file delete ---
             if not resolved.exists():
-                raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved))
+                raise MarshalError(MarshalErrorCode.FILE_NOT_FOUND, detail=str(resolved))
             if resolved.is_dir():
-                raise LeavesError(
-                    LeavesErrorCode.FILE_DELETE_ERROR,
+                raise MarshalError(
+                    MarshalErrorCode.FILE_DELETE_ERROR,
                     detail=(
                         f"{resolved} is a directory. "
                         "FileAgent only deletes files, not directories. "
@@ -283,14 +283,14 @@ class FileAgent(BaseAgent):
             self._audit_end(row_id, result)
             return result
 
-        except LeavesError:
+        except MarshalError:
             raise
         except PermissionError as e:
-            err = LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_DELETE_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_DELETE_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -319,13 +319,13 @@ class FileAgent(BaseAgent):
             # --- Bulk move: pattern provided ---
             if pattern:
                 if not resolved_src.exists():
-                    raise LeavesError(
-                        LeavesErrorCode.PATH_DOES_NOT_EXIST,
+                    raise MarshalError(
+                        MarshalErrorCode.PATH_DOES_NOT_EXIST,
                         detail=str(resolved_src),
                     )
                 if not resolved_src.is_dir():
-                    raise LeavesError(
-                        LeavesErrorCode.FILE_MOVE_ERROR,
+                    raise MarshalError(
+                        MarshalErrorCode.FILE_MOVE_ERROR,
                         detail=f"{resolved_src} is not a directory — cannot use pattern on a file",
                     )
                 resolved_dst.mkdir(parents=True, exist_ok=True)
@@ -358,7 +358,7 @@ class FileAgent(BaseAgent):
 
             # --- Single file/dir move ---
             if not resolved_src.exists():
-                raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved_src))
+                raise MarshalError(MarshalErrorCode.FILE_NOT_FOUND, detail=str(resolved_src))
             resolved_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(resolved_src), str(resolved_dst))
             result = {
@@ -369,14 +369,14 @@ class FileAgent(BaseAgent):
             self._audit_end(row_id, result)
             return result
 
-        except LeavesError:
+        except MarshalError:
             raise
         except PermissionError as e:
-            err = LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_MOVE_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_MOVE_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -405,13 +405,13 @@ class FileAgent(BaseAgent):
             # --- Bulk copy: pattern provided ---
             if pattern:
                 if not resolved_src.exists():
-                    raise LeavesError(
-                        LeavesErrorCode.PATH_DOES_NOT_EXIST,
+                    raise MarshalError(
+                        MarshalErrorCode.PATH_DOES_NOT_EXIST,
                         detail=str(resolved_src),
                     )
                 if not resolved_src.is_dir():
-                    raise LeavesError(
-                        LeavesErrorCode.FILE_MOVE_ERROR,
+                    raise MarshalError(
+                        MarshalErrorCode.FILE_MOVE_ERROR,
                         detail=f"{resolved_src} is not a directory — cannot use pattern on a file",
                     )
                 resolved_dst.mkdir(parents=True, exist_ok=True)
@@ -444,10 +444,10 @@ class FileAgent(BaseAgent):
 
             # --- Single file copy ---
             if not resolved_src.exists():
-                raise LeavesError(LeavesErrorCode.FILE_NOT_FOUND, detail=str(resolved_src))
+                raise MarshalError(MarshalErrorCode.FILE_NOT_FOUND, detail=str(resolved_src))
             if not resolved_src.is_file():
-                raise LeavesError(
-                    LeavesErrorCode.FILE_MOVE_ERROR,
+                raise MarshalError(
+                    MarshalErrorCode.FILE_MOVE_ERROR,
                     detail=f"{resolved_src} is not a file. Use pattern to copy files from a directory.",
                 )
             resolved_dst.parent.mkdir(parents=True, exist_ok=True)
@@ -460,14 +460,14 @@ class FileAgent(BaseAgent):
             self._audit_end(row_id, result)
             return result
 
-        except LeavesError:
+        except MarshalError:
             raise
         except PermissionError as e:
-            err = LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.FILE_MOVE_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.FILE_MOVE_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -481,13 +481,13 @@ class FileAgent(BaseAgent):
 
         Uses .expanduser().resolve(strict=False) to defeat symlink traversal.
         Uses Path.relative_to() for containment — NOT str.startswith().
-        Raises LeavesError(PATH_NOT_AUTHORIZED) if outside all authorized roots.
+        Raises MarshalError(PATH_NOT_AUTHORIZED) if outside all authorized roots.
         """
         try:
             resolved = Path(raw_path).expanduser().resolve(strict=False)
         except Exception as e:
-            raise LeavesError(
-                LeavesErrorCode.PATH_NOT_AUTHORIZED,
+            raise MarshalError(
+                MarshalErrorCode.PATH_NOT_AUTHORIZED,
                 detail=f"Could not resolve path {raw_path!r}: {e}",
                 cause=e,
             )
@@ -499,8 +499,8 @@ class FileAgent(BaseAgent):
             except ValueError:
                 continue
 
-        raise LeavesError(
-            LeavesErrorCode.PATH_NOT_AUTHORIZED,
+        raise MarshalError(
+            MarshalErrorCode.PATH_NOT_AUTHORIZED,
             detail=(
                 f"Path {resolved!r} is outside all authorized roots: "
                 f"{[str(r) for r in self._authorized_roots]}"
@@ -513,10 +513,10 @@ class FileAgent(BaseAgent):
 
     def _do_list(self, directory: Path, pattern: str, recursive: bool) -> list[dict]:
         if not directory.exists():
-            raise LeavesError(LeavesErrorCode.PATH_DOES_NOT_EXIST, detail=str(directory))
+            raise MarshalError(MarshalErrorCode.PATH_DOES_NOT_EXIST, detail=str(directory))
         if not directory.is_dir():
-            raise LeavesError(
-                LeavesErrorCode.FILE_READ_ERROR,
+            raise MarshalError(
+                MarshalErrorCode.FILE_READ_ERROR,
                 detail=f"{directory} is not a directory",
             )
 
@@ -538,7 +538,7 @@ class FileAgent(BaseAgent):
                 except (PermissionError, OSError):
                     continue
         except PermissionError as e:
-            raise LeavesError(LeavesErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
+            raise MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
 
         return sorted(results, key=lambda x: x["name"])
 

@@ -3,7 +3,7 @@ Red-team adversarial test suite for agents.enforcer.
 
 Each case constructs a (goal_spec, action) pair that an attacker /
 buggy agent might produce, and asserts the enforcer rejects it with
-LeavesError(AUTHORIZATION_VIOLATION).
+MarshalError(AUTHORIZATION_VIOLATION).
 
 Goal: 20/20 blocked. Run with::
 
@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agents.enforcer import enforce  # noqa: E402
-from errors import LeavesError, LeavesErrorCode  # noqa: E402
+from errors import MarshalError, MarshalErrorCode  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ from errors import LeavesError, LeavesErrorCode  # noqa: E402
 @pytest.fixture(scope="module")
 def safe_tree():
     """A real on-disk directory tree we can authorize and attack."""
-    with tempfile.TemporaryDirectory(prefix="leaves-redteam-") as td:
+    with tempfile.TemporaryDirectory(prefix="marshal-redteam-") as td:
         root = Path(td).resolve()
         safe_dir = root / "safe-dir"
         other_dir = root / "other-dir"
@@ -301,9 +301,9 @@ def cases(safe_tree):
 @pytest.mark.parametrize("idx", range(20))
 def test_enforcer_blocks_adversarial(cases, idx):
     name, goal_spec, action = cases[idx]
-    with pytest.raises(LeavesError) as exc_info:
+    with pytest.raises(MarshalError) as exc_info:
         enforce(action, goal_spec)
-    assert exc_info.value.code == LeavesErrorCode.AUTHORIZATION_VIOLATION, (
+    assert exc_info.value.code == MarshalErrorCode.AUTHORIZATION_VIOLATION, (
         f"[{name}] expected AUTHORIZATION_VIOLATION, got {exc_info.value.code}"
     )
 
@@ -329,7 +329,7 @@ def test_positive_control_legitimate_action_passes(safe_tree):
 
 def _run_summary():
     """For ad-hoc runs: python3 tests/test_enforcer_redteam.py"""
-    with tempfile.TemporaryDirectory(prefix="leaves-redteam-") as td:
+    with tempfile.TemporaryDirectory(prefix="marshal-redteam-") as td:
         root = Path(td).resolve()
         (root / "safe-dir").mkdir()
         (root / "safe-dir" / "ok.txt").write_text("ok")
@@ -355,8 +355,8 @@ def _run_summary():
         for name, gs, act in cases:
             try:
                 enforce(act, gs)
-            except LeavesError as e:
-                if e.code == LeavesErrorCode.AUTHORIZATION_VIOLATION:
+            except MarshalError as e:
+                if e.code == MarshalErrorCode.AUTHORIZATION_VIOLATION:
                     blocked += 1
                 else:
                     failures.append((name, f"wrong code: {e.code.value}"))
@@ -375,7 +375,7 @@ def _run_summary():
         try:
             enforce(act, gs)
             pos_ok = True
-        except LeavesError as e:
+        except MarshalError as e:
             pos_ok = False
             failures.append(("positive_control", f"falsely blocked: {e.detail}"))
 

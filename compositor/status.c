@@ -9,8 +9,8 @@
 #include <alloca.h>
 #include <alsa/asoundlib.h>
 
-struct leaves_status *status_create(void) {
-	struct leaves_status *s = calloc(1, sizeof(*s));
+struct marshal_status *status_create(void) {
+	struct marshal_status *s = calloc(1, sizeof(*s));
 	if (!s) return NULL;
 	s->battery_pct = -1;
 	s->volume_pct  = -1;
@@ -20,11 +20,11 @@ struct leaves_status *status_create(void) {
 	return s;
 }
 
-void status_destroy(struct leaves_status *s) {
+void status_destroy(struct marshal_status *s) {
 	free(s);
 }
 
-void status_update_clock(struct leaves_status *s) {
+void status_update_clock(struct marshal_status *s) {
 	time_t now = time(NULL);
 	struct tm *tm = localtime(&now);
 
@@ -42,7 +42,7 @@ void status_update_clock(struct leaves_status *s) {
 
 /* ── Battery (pure sysfs, no subprocesses) ── */
 
-static void poll_battery(struct leaves_status *s) {
+static void poll_battery(struct marshal_status *s) {
 	static const char *bases[] = {
 		"/sys/class/power_supply/BAT0",
 		"/sys/class/power_supply/BAT1",
@@ -76,7 +76,7 @@ static void poll_battery(struct leaves_status *s) {
 
 /* ── WiFi (sysfs + /proc/net/wireless, no subprocesses) ── */
 
-static void poll_wifi(struct leaves_status *s) {
+static void poll_wifi(struct marshal_status *s) {
 	s->wifi_connected = false;
 	s->wifi_ssid[0] = '\0';
 	s->wifi_signal = 0;
@@ -143,7 +143,7 @@ static void poll_wifi(struct leaves_status *s) {
 
 /* ── Bluetooth (sysfs + rfkill) ── */
 
-static void poll_bluetooth(struct leaves_status *s) {
+static void poll_bluetooth(struct marshal_status *s) {
 	s->bt_available = false;
 	s->bt_enabled   = false;
 
@@ -188,7 +188,7 @@ static void poll_bluetooth(struct leaves_status *s) {
 
 /* ── Volume (ALSA mixer — works with PipeWire's ALSA compat layer) ── */
 
-static void poll_volume(struct leaves_status *s) {
+static void poll_volume(struct marshal_status *s) {
 	snd_mixer_t *mixer = NULL;
 	snd_mixer_selem_id_t *sid = NULL;
 
@@ -234,7 +234,7 @@ out:
 	snd_mixer_close(mixer);
 }
 
-void status_poll(struct leaves_status *s) {
+void status_poll(struct marshal_status *s) {
 	poll_battery(s);
 	poll_wifi(s);
 	poll_bluetooth(s);

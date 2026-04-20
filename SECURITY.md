@@ -1,18 +1,18 @@
 # Security Policy
 
-Leaves OS executes user-issued natural language as system actions. Every code
+Marshal executes user-issued natural language as system actions. Every code
 path through the agent dispatch boundary is in scope for security review.
 
 ## Reporting a Vulnerability
 
 **Do not open a public issue for security vulnerabilities.**
 
-Email `security@leaves.dev` (or the maintainer at the email listed in
+Email `security@marshal.dev` (or the maintainer at the email listed in
 `pyproject.toml`) with:
 
 1. A description of the issue
 2. Steps to reproduce, including the GoalSpec or intent that triggered it
-3. The audit log row (`leaves_audit.db`) for the affected intent if available
+3. The audit log row (`marshal_audit.db`) for the affected intent if available
 4. Your assessment of severity and impact
 
 You will receive an acknowledgement within 72 hours. We aim to triage within
@@ -44,7 +44,7 @@ Out of scope (for now):
 
 ## Threat Model
 
-Leaves assumes:
+Marshal assumes:
 - The user controls the host and trusts the operating system kernel.
 - The local llama.cpp model is treated as untrusted output — the enforcer
   re-validates everything the model produces.
@@ -53,7 +53,7 @@ Leaves assumes:
 - The Anthropic remote backend is trusted only with the prompt content
   the user explicitly sends through the writing agent.
 
-Leaves does NOT defend against:
+Marshal does NOT defend against:
 - A compromised host kernel
 - A compromised llama.cpp build (verify checksums)
 - A user with shell access running arbitrary processes outside the agent

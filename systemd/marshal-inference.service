@@ -1,11 +1,11 @@
 [Unit]
-Description=Leaves OS inference server (llama.cpp)
+Description=Marshal inference server (llama.cpp)
 Documentation=https://github.com/ggml-org/llama.cpp
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/dev/leaves-os/scripts/start-inference.sh
+ExecStart=%h/dev/marshal/scripts/start-inference.sh
 Restart=on-failure
 RestartSec=5
 Environment=HOME=%h
@@ -19,7 +19,7 @@ ProtectHome=read-only
 ProtectSystem=strict
 NoNewPrivileges=true
 PrivateTmp=true
-ReadWritePaths=%h/.leaves %h/.leaves/kv-cache
+ReadWritePaths=%h/.marshal %h/.marshal/kv-cache
 
 [Install]
-WantedBy=leaves-session.target
+WantedBy=marshal-session.target

@@ -1,7 +1,7 @@
 """
 Demo suite — guaranteed-working intents with asserted p95 latency budgets.
 
-Two modes, controlled by LEAVES_DEMO_MODE:
+Two modes, controlled by MARSHAL_DEMO_MODE:
 
   stub  (default in CI)
         Only intents that resolve via Layer 0 (regex). No inference server
@@ -33,8 +33,8 @@ from agents.intent_parser import IntentParser
 from inference.client import InferenceClient
 
 
-DEMO_MODE = os.environ.get("LEAVES_DEMO_MODE", "stub").lower()
-RUNS_PER_CASE = int(os.environ.get("LEAVES_DEMO_RUNS", "10" if DEMO_MODE == "stub" else "3"))
+DEMO_MODE = os.environ.get("MARSHAL_DEMO_MODE", "stub").lower()
+RUNS_PER_CASE = int(os.environ.get("MARSHAL_DEMO_RUNS", "10" if DEMO_MODE == "stub" else "3"))
 
 
 @dataclass(frozen=True)
@@ -167,7 +167,7 @@ def _check_inference_available(parser: IntentParser) -> None:
         return
     client: InferenceClient = parser._client
     if not client.is_available():
-        pytest.skip("LEAVES_DEMO_MODE=full but no inference server reachable")
+        pytest.skip("MARSHAL_DEMO_MODE=full but no inference server reachable")
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +227,8 @@ def _percentile(values: list[float], pct: float) -> float:
 
 def test_demo_mode_advertised() -> None:
     """Sanity: print which mode ran so CI logs make the choice obvious."""
-    print(f"\nLEAVES_DEMO_MODE={DEMO_MODE}  cases={len(CASES)}  runs/case={RUNS_PER_CASE}")
-    assert DEMO_MODE in ("stub", "full"), f"unknown LEAVES_DEMO_MODE: {DEMO_MODE!r}"
+    print(f"\nMARSHAL_DEMO_MODE={DEMO_MODE}  cases={len(CASES)}  runs/case={RUNS_PER_CASE}")
+    assert DEMO_MODE in ("stub", "full"), f"unknown MARSHAL_DEMO_MODE: {DEMO_MODE!r}"
 
 
 # Allow running directly: `python tests/demo_suite.py`

@@ -1,4 +1,4 @@
-# Leaves OS — multi-stage Dockerfile.
+# Marshal — multi-stage Dockerfile.
 #
 # Stage 1 (llama-builder): build llama-server with native ISA support.
 # Stage 2 (runtime):       slim image with the venv, agentd, and api.
@@ -6,7 +6,7 @@
 # The model is NOT baked into the image (license + 1.8GB). Mount it at
 # /models when running:
 #
-#   docker run --rm -v $PWD/models:/models -p 8080:8080 leaves/inference:0.3.0
+#   docker run --rm -v $PWD/models:/models -p 8080:8080 marshal/inference:0.3.0
 #
 # For the full stack, prefer docker-compose.yml.
 
@@ -51,16 +51,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=llama-builder /build/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
 # Install the Python project.
-WORKDIR /opt/leaves
-COPY pyproject.toml requirements.txt README.md LICENSE /opt/leaves/
-COPY agents /opt/leaves/agents
-COPY api /opt/leaves/api
-COPY cortex /opt/leaves/cortex
-COPY db /opt/leaves/db
-COPY inference /opt/leaves/inference
-COPY rag /opt/leaves/rag
-COPY scripts /opt/leaves/scripts
-COPY config.py errors.py leaves.py agentd.py /opt/leaves/
+WORKDIR /opt/marshal
+COPY pyproject.toml requirements.txt README.md LICENSE /opt/marshal/
+COPY agents /opt/marshal/agents
+COPY api /opt/marshal/api
+COPY cortex /opt/marshal/cortex
+COPY db /opt/marshal/db
+COPY inference /opt/marshal/inference
+COPY rag /opt/marshal/rag
+COPY scripts /opt/marshal/scripts
+COPY config.py errors.py main.py agentd.py /opt/marshal/
 
 RUN pip install --no-cache-dir --upgrade pip wheel \
     && pip install --no-cache-dir -e ".[rag,remote]"
@@ -69,7 +69,7 @@ RUN pip install --no-cache-dir --upgrade pip wheel \
 #   /models  — mount your downloaded GGUF here
 #   /data    — persistent state (audit DB, KV cache slots, RAG index)
 ENV MODELS_DIR=/models \
-    LEAVES_DATA_DIR=/data \
+    MARSHAL_DATA_DIR=/data \
     HOME=/data \
     PYTHONUNBUFFERED=1
 
@@ -77,4 +77,4 @@ VOLUME ["/models", "/data"]
 
 # Default: run agentd. Override with `command:` in compose for the API or
 # the inference server.
-CMD ["python", "/opt/leaves/agentd.py"]
+CMD ["python", "/opt/marshal/agentd.py"]

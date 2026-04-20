@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.web_agent import WebAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 # ---------------------------------------------------------------------------
@@ -118,19 +118,19 @@ class TestSearchErrors:
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_empty_query_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-err-1", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("QUERY", query_type="search", query=""))
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
         assert "No query" in exc_info.value.detail
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_missing_query_param_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-err-2", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action({"action_id": "a1", "type": "QUERY",
                                   "params": {"query_type": "search"}})
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -269,19 +269,19 @@ class TestFetchErrors:
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_empty_url_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-ferr-1", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("QUERY", query_type="fetch", url=""))
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
         assert "No URL" in exc_info.value.detail
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_missing_url_param_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-ferr-2", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action({"action_id": "a1", "type": "QUERY",
                                   "params": {"query_type": "fetch"}})
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -336,26 +336,26 @@ class TestActionDispatch:
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_invalid_action_type_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-disp-1", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("WRITE", query_type="search", query="test"))
-        assert exc_info.value.code == LeavesErrorCode.AGENT_NOT_AVAILABLE
+        assert exc_info.value.code == MarshalErrorCode.AGENT_NOT_AVAILABLE
         assert "WRITE" in exc_info.value.detail
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_delete_action_type_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-disp-2", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("DELETE", query_type="fetch", url="http://x.com"))
-        assert exc_info.value.code == LeavesErrorCode.AGENT_NOT_AVAILABLE
+        assert exc_info.value.code == MarshalErrorCode.AGENT_NOT_AVAILABLE
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_read_action_type_raises(self, _audit_s, _audit_e, db_conn):
         agent = WebAgent("test-disp-3", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("READ", query_type="search", query="test"))
-        assert exc_info.value.code == LeavesErrorCode.AGENT_NOT_AVAILABLE
+        assert exc_info.value.code == MarshalErrorCode.AGENT_NOT_AVAILABLE
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -400,9 +400,9 @@ class TestActionDispatch:
     def test_missing_params_entirely(self, _audit_s, _audit_e, db_conn):
         """Action with no params at all — defaults to search, empty query raises."""
         agent = WebAgent("test-disp-6", db_conn)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action({"action_id": "a1", "type": "QUERY", "params": {}})
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)

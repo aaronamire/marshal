@@ -1,5 +1,5 @@
-#ifndef LEAVES_COLORS_H
-#define LEAVES_COLORS_H
+#ifndef MARSHAL_COLORS_H
+#define MARSHAL_COLORS_H
 
 #include <stdint.h>
 

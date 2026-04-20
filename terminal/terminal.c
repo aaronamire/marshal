@@ -1,5 +1,5 @@
 /*
- * leaves-terminal — Minimal Wayland-native terminal emulator for Leaves OS.
+ * marshal-terminal — Minimal Wayland-native terminal emulator for Marshal.
  *
  * Architecture:
  *   - Wayland client via libwayland-client + xdg-shell
@@ -48,11 +48,11 @@
 #define PTY_BUF_SIZE      16384
 #define CURSOR_BLINK_MS   600
 
-/* ── Colors (Leaves OS palette — dark terminal) ── */
+/* ── Colors (Marshal palette — dark terminal) ── */
 
 struct rgba { double r, g, b, a; };
 
-/* 16-color ANSI palette + Leaves accents */
+/* 16-color ANSI palette + Marshal accents */
 static const struct rgba palette[18] = {
 	/* 0  black   */ { 0.11, 0.11, 0.13, 1.0 },
 	/* 1  red     */ { 0.86, 0.15, 0.15, 1.0 },
@@ -81,7 +81,7 @@ static const struct rgba palette[18] = {
  *
  * Captures the last SCROLLBACK_CAP bytes of raw PTY output in a ring buffer.
  * On non-zero child exit, the buffer is stripped of ANSI escapes and written
- * to ~/.leaves/terminal-scrollback.txt. The agentd compositor event watcher
+ * to ~/.marshal/terminal-scrollback.txt. The agentd compositor event watcher
  * reads this file to synthesize diagnostic GoalSpecs.
  */
 
@@ -138,7 +138,7 @@ static void dump_scrollback(int exit_code) {
 	if (!home) return;
 
 	char dir_path[PATH_MAX];
-	snprintf(dir_path, sizeof(dir_path), "%s/.leaves", home);
+	snprintf(dir_path, sizeof(dir_path), "%s/.marshal", home);
 	mkdir(dir_path, 0700);  /* ignore EEXIST */
 
 	/* Linearize ring buffer (oldest data first) */
@@ -168,7 +168,7 @@ static void dump_scrollback(int exit_code) {
 
 	char file_path[PATH_MAX];
 	snprintf(file_path, sizeof(file_path),
-		"%s/.leaves/terminal-scrollback.txt", home);
+		"%s/.marshal/terminal-scrollback.txt", home);
 
 	int fd = open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd >= 0) {
@@ -253,7 +253,7 @@ static uint64_t now_ms(void) {
 /* ── Shared memory buffer ── */
 
 static int create_shm_file(size_t size) {
-	char name[] = "/leaves-term-XXXXXX";
+	char name[] = "/marshal-term-XXXXXX";
 	int fd = memfd_create(name, MFD_CLOEXEC);
 	if (fd < 0) return -1;
 	if (ftruncate(fd, size) < 0) {
@@ -478,7 +478,7 @@ static void draw_cursor(void) {
 	int y = TERM_PAD_Y + cy * term.cell_h;
 
 	cairo_t *cr = term.cr;
-	/* Block cursor with Leaves accent blue */
+	/* Block cursor with Marshal accent blue */
 	cairo_set_source_rgba(cr, 0.15, 0.39, 0.92, 0.85);
 	cairo_rectangle(cr, x, y, term.cell_w, term.cell_h);
 	cairo_fill(cr);
@@ -941,8 +941,8 @@ int main(int argc, char *argv[]) {
 
 	term.xdg_toplevel = xdg_surface_get_toplevel(term.xdg_surface);
 	xdg_toplevel_add_listener(term.xdg_toplevel, &xdg_toplevel_listener, NULL);
-	xdg_toplevel_set_title(term.xdg_toplevel, "Leaves Terminal");
-	xdg_toplevel_set_app_id(term.xdg_toplevel, "leaves-terminal");
+	xdg_toplevel_set_title(term.xdg_toplevel, "Marshal Terminal");
+	xdg_toplevel_set_app_id(term.xdg_toplevel, "marshal-terminal");
 	wl_surface_commit(term.surface);
 
 	/* Wait for configure */

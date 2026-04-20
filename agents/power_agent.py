@@ -18,7 +18,7 @@ import os
 import subprocess
 
 from agents.base_agent import BaseAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 # Backlight sysfs paths — first match wins
@@ -38,8 +38,8 @@ class PowerAgent(BaseAgent):
         elif action_type == "WRITE":
             return self._handle_write(action_id, params)
         else:
-            raise LeavesError(
-                LeavesErrorCode.AGENT_NOT_AVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.AGENT_NOT_AVAILABLE,
                 detail=f"PowerAgent supports QUERY and WRITE, got {action_type}",
             )
 
@@ -59,10 +59,10 @@ class PowerAgent(BaseAgent):
                 result = self._get_power_status()
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -154,16 +154,16 @@ class PowerAgent(BaseAgent):
             elif power_action == "lock":
                 result = self._lock_screen()
             else:
-                raise LeavesError(
-                    LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                raise MarshalError(
+                    MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail=f"Unknown power_action: {power_action}",
                 )
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -190,8 +190,8 @@ class PowerAgent(BaseAgent):
                 )
                 return {"action": "suspend", "success": r.returncode == 0}
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                raise LeavesError(
-                    LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                raise MarshalError(
+                    MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail="Neither loginctl nor systemctl available for suspend",
                 )
 
@@ -217,8 +217,8 @@ class PowerAgent(BaseAgent):
                 )
                 return {"action": "hibernate", "success": r.returncode == 0}
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                raise LeavesError(
-                    LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                raise MarshalError(
+                    MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail="Neither loginctl nor systemctl available for hibernate",
                 )
 
@@ -226,8 +226,8 @@ class PowerAgent(BaseAgent):
         """Set screen brightness. Tries brightnessctl first, then direct sysfs."""
         level = params.get("level")
         if level is None:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="No brightness level provided",
             )
         level = max(0, min(100, int(level)))
@@ -250,14 +250,14 @@ class PowerAgent(BaseAgent):
         # Fallback: direct sysfs write (needs video group or root)
         bl = self._find_backlight()
         if not bl:
-            raise LeavesError(
-                LeavesErrorCode.AGENT_NOT_AVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.AGENT_NOT_AVAILABLE,
                 detail="No backlight device found",
             )
         max_val = self._read_sysfs_int(f"{bl}/max_brightness")
         if not max_val:
-            raise LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            raise MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail="Could not read max brightness",
             )
         raw_val = max(1, round(level / 100.0 * max_val))
@@ -272,8 +272,8 @@ class PowerAgent(BaseAgent):
                 "method": "sysfs",
             }
         except PermissionError:
-            raise LeavesError(
-                LeavesErrorCode.PERMISSION_DENIED,
+            raise MarshalError(
+                MarshalErrorCode.PERMISSION_DENIED,
                 detail=(
                     f"Cannot write to {brightness_path}. "
                     "Install brightnessctl or add user to 'video' group."

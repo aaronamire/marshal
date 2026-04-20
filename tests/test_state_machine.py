@@ -1,7 +1,7 @@
 """Tests for the intent lifecycle state machine."""
 import pytest
 from agents.state_machine import IntentLifecycle, IntentState
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 def test_valid_path_to_done():
@@ -23,9 +23,9 @@ def test_valid_path_with_auth():
 
 def test_invalid_transition_raises():
     lc = IntentLifecycle("test-003")
-    with pytest.raises(LeavesError) as exc_info:
+    with pytest.raises(MarshalError) as exc_info:
         lc.transition(IntentState.DONE)  # PENDING -> DONE is not allowed
-    assert exc_info.value.code == LeavesErrorCode.INVALID_STATE_TRANSITION
+    assert exc_info.value.code == MarshalErrorCode.INVALID_STATE_TRANSITION
 
 
 def test_terminal_state_no_further_transitions():
@@ -33,9 +33,9 @@ def test_terminal_state_no_further_transitions():
     lc.transition(IntentState.PARSING)
     lc.transition(IntentState.EXECUTING)
     lc.transition(IntentState.DONE)
-    with pytest.raises(LeavesError) as exc_info:
+    with pytest.raises(MarshalError) as exc_info:
         lc.transition(IntentState.FAILED)
-    assert exc_info.value.code == LeavesErrorCode.INTENT_ALREADY_TERMINAL
+    assert exc_info.value.code == MarshalErrorCode.INTENT_ALREADY_TERMINAL
 
 
 def test_cancelled_path():

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Leaves OS runner-pool master.
+Marshal runner-pool master.
 
 Long-lived process that pre-imports the agent stack and forks per-intent
 worker children. Eliminates the ~150-300ms CPython startup + module-import
@@ -40,7 +40,7 @@ Protocol on each per-connection socket (newline-delimited JSON):
         {"_kind": "event", "event": {...}}        # zero or more
         {"_kind": "result", "ok": true, "results": ..., "summary": ..., "sandbox": ...}
 
-Socket path: ~/.leaves/runner-pool.sock (0o600, same uid as agentd).
+Socket path: ~/.marshal/runner-pool.sock (0o600, same uid as agentd).
 """
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ if str(_ROOT) not in sys.path:
 # Landlock primitives — stdlib-only, safe to import pre-fork.
 from agents.sandboxed_runner import apply_landlock  # noqa: E402
 
-_SOCK_PATH = pathlib.Path.home() / ".leaves" / "runner-pool.sock"
+_SOCK_PATH = pathlib.Path.home() / ".marshal" / "runner-pool.sock"
 
 # Cap how long the worker waits for the cgroup-ready ack. agentd's cgroup
 # write is ~1ms; if we don't hear back in 5s, agentd has crashed and the
@@ -87,7 +87,7 @@ def _eager_import() -> None:
     # DB layer.
     from db.audit import get_db  # noqa: F401
     # Errors + observability so worker rejections increment the same counters.
-    from errors import LeavesError, LeavesErrorCode  # noqa: F401
+    from errors import MarshalError, MarshalErrorCode  # noqa: F401
     from observability import configure_logging, intents_total  # noqa: F401
     # Inference client (loads `requests`).
     from inference.client import LocalLlamaCppBackend  # noqa: F401
@@ -149,7 +149,7 @@ def _handle_in_child(conn: socket.socket, request: dict) -> None:
     from agents.state_machine import IntentLifecycle, IntentState
     from agentd import AgentCoordinator
     from db.audit import get_db
-    from errors import LeavesError
+    from errors import MarshalError
 
     goal_spec = request["goal_spec"]
     from_state_str = request.get("from_state", "PARSING")
@@ -246,7 +246,7 @@ def _handle_in_child(conn: socket.socket, request: dict) -> None:
             "summary": summary,
             "sandbox": sandbox_status,
         }
-    except LeavesError as e:
+    except MarshalError as e:
         result_frame = {
             "_kind": "result",
             "ok": False,

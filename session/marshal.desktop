@@ -1,7 +1,7 @@
 [Desktop Entry]
-Name=Leaves OS
+Name=Marshal
 Comment=AI-native operating system
-Exec=/home/xan/dev/leaves-os/scripts/start-session.sh
+Exec=/home/xan/dev/marshal/scripts/start-session.sh
 Type=Application
-DesktopNames=leaves
+DesktopNames=marshal
 Keywords=wayland;compositor;ai;

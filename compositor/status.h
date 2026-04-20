@@ -1,10 +1,10 @@
-#ifndef LEAVES_STATUS_H
-#define LEAVES_STATUS_H
+#ifndef MARSHAL_STATUS_H
+#define MARSHAL_STATUS_H
 
 #include <stdbool.h>
 #include <pthread.h>
 
-struct leaves_status {
+struct marshal_status {
 	/* Clock */
 	char time_str[16];      /* "2:34 PM"       */
 	char date_str[32];      /* "Thu, Mar 27"    */
@@ -34,13 +34,13 @@ struct leaves_status {
 	bool history_open;   /* true → show feed cards; false → show wallpaper */
 };
 
-struct leaves_status *status_create(void);
-void status_destroy(struct leaves_status *s);
+struct marshal_status *status_create(void);
+void status_destroy(struct marshal_status *s);
 
 /* Update time strings from the wall clock — cheap, call every second. */
-void status_update_clock(struct leaves_status *s);
+void status_update_clock(struct marshal_status *s);
 
 /* Poll sysfs for battery, wifi, bluetooth — call every ~30 s. */
-void status_poll(struct leaves_status *s);
+void status_poll(struct marshal_status *s);
 
 #endif

@@ -109,13 +109,13 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          tags: leaves/runtime:ci
+          tags: marshal/runtime:ci
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test image
         run: |
-          docker run --rm leaves/runtime:ci python -c "import agentd, agents.intent_parser, agents.enforcer; print('OK')"
+          docker run --rm marshal/runtime:ci python -c "import agentd, agents.intent_parser, agents.enforcer; print('OK')"
 
   demo-suite:
     name: demo suite (latency budgets)
@@ -123,10 +123,10 @@ jobs:
     needs: test
     # The demo suite requires a live llama-server. We do not start one here
     # because pulling a model in CI is wasteful. Instead, demo_suite.py is
-    # parameterized to accept LEAVES_DEMO_MODE=stub which exercises the L0
+    # parameterized to accept MARSHAL_DEMO_MODE=stub which exercises the L0
     # regex path only (which has no inference dependency).
     env:
-      LEAVES_DEMO_MODE: stub
+      MARSHAL_DEMO_MODE: stub
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

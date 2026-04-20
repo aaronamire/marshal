@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 def store_persistent_intent(
@@ -29,8 +29,8 @@ def store_persistent_intent(
     now = datetime.now(timezone.utc).isoformat()
 
     if trigger_type not in ("manual", "filesystem", "schedule"):
-        raise LeavesError(
-            LeavesErrorCode.INVALID_INTENT_FORMAT,
+        raise MarshalError(
+            MarshalErrorCode.INVALID_INTENT_FORMAT,
             detail=f"Invalid trigger_type: {trigger_type}",
         )
 
@@ -52,7 +52,7 @@ def store_persistent_intent(
         )
         db.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
     return intent_id
 
@@ -76,7 +76,7 @@ def get_active_intents(
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def get_all_intents(db: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -87,7 +87,7 @@ def get_all_intents(db: sqlite3.Connection) -> list[dict[str, Any]]:
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def get_intent(db: sqlite3.Connection, intent_id: str) -> Optional[dict[str, Any]]:
@@ -98,14 +98,14 @@ def get_intent(db: sqlite3.Connection, intent_id: str) -> Optional[dict[str, Any
         ).fetchone()
         return _row_to_dict(row) if row else None
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def fire_intent(db: sqlite3.Connection, intent_id: str) -> None:
     """Record that a persistent intent has fired (update last_fired + fire_count)."""
     intent = get_intent(db, intent_id)
     if intent is None:
-        raise LeavesError(LeavesErrorCode.INTENT_NOT_FOUND, detail=intent_id)
+        raise MarshalError(MarshalErrorCode.INTENT_NOT_FOUND, detail=intent_id)
 
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -116,16 +116,16 @@ def fire_intent(db: sqlite3.Connection, intent_id: str) -> None:
         )
         db.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def deactivate_intent(db: sqlite3.Connection, intent_id: str) -> None:
     """Pause a persistent intent."""
     intent = get_intent(db, intent_id)
     if intent is None:
-        raise LeavesError(LeavesErrorCode.INTENT_NOT_FOUND, detail=intent_id)
+        raise MarshalError(MarshalErrorCode.INTENT_NOT_FOUND, detail=intent_id)
     if not intent["active"]:
-        raise LeavesError(LeavesErrorCode.INTENT_ALREADY_INACTIVE, detail=intent_id)
+        raise MarshalError(MarshalErrorCode.INTENT_ALREADY_INACTIVE, detail=intent_id)
 
     try:
         db.execute(
@@ -133,14 +133,14 @@ def deactivate_intent(db: sqlite3.Connection, intent_id: str) -> None:
         )
         db.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def activate_intent(db: sqlite3.Connection, intent_id: str) -> None:
     """Resume a paused persistent intent."""
     intent = get_intent(db, intent_id)
     if intent is None:
-        raise LeavesError(LeavesErrorCode.INTENT_NOT_FOUND, detail=intent_id)
+        raise MarshalError(MarshalErrorCode.INTENT_NOT_FOUND, detail=intent_id)
 
     try:
         db.execute(
@@ -148,20 +148,20 @@ def activate_intent(db: sqlite3.Connection, intent_id: str) -> None:
         )
         db.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def delete_intent(db: sqlite3.Connection, intent_id: str) -> None:
     """Permanently delete a persistent intent."""
     intent = get_intent(db, intent_id)
     if intent is None:
-        raise LeavesError(LeavesErrorCode.INTENT_NOT_FOUND, detail=intent_id)
+        raise MarshalError(MarshalErrorCode.INTENT_NOT_FOUND, detail=intent_id)
 
     try:
         db.execute("DELETE FROM persistent_intents WHERE id = ?", (intent_id,))
         db.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

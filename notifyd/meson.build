@@ -1,4 +1,4 @@
-project('leaves-notifyd', 'c',
+project('marshal-notifyd', 'c',
   version : '0.1.0',
   default_options : [
     'c_std=c11',
@@ -46,7 +46,7 @@ layer_shell_code = custom_target('layer-shell-client-code',
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
-executable('leaves-notifyd',
+executable('marshal-notifyd',
   'notifyd.c',
   xdg_shell_header,
   xdg_shell_code,

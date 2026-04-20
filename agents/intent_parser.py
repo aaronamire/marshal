@@ -35,7 +35,7 @@ from agents.registry import (
     supported_summary,
 )
 from agents.validators import validate_goal_spec
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 from inference.client import InferenceClient, InferenceRequest
 
 
@@ -92,7 +92,7 @@ class IntentParser:
     ) -> dict[str, Any]:
         """
         Parse a natural language intent into a validated GoalSpec dict.
-        Raises LeavesError on any failure.
+        Raises MarshalError on any failure.
 
         session_context: optional live session state block from
         CompositorEventWatcher.context.to_prompt_block(). Injected into
@@ -112,8 +112,8 @@ class IntentParser:
         l0 = layer0_match(user_text)
         if l0.matched:
             if not l0.is_implemented:
-                raise LeavesError(
-                    LeavesErrorCode.NOT_IMPLEMENTED,
+                raise MarshalError(
+                    MarshalErrorCode.NOT_IMPLEMENTED,
                     detail=not_implemented_detail() + " (L0 fast-path)",
                 )
             goal_spec = self._build_goal_spec_from_l0(l0, user_text)
@@ -136,14 +136,14 @@ class IntentParser:
                 # Fast-path: if L1 is confident the category is not implemented,
                 # skip the LLM call entirely (~18-51s saved per request).
                 if l1.is_confident and l1.category not in IMPLEMENTED_CATEGORIES:
-                    raise LeavesError(
-                        LeavesErrorCode.NOT_IMPLEMENTED,
+                    raise MarshalError(
+                        MarshalErrorCode.NOT_IMPLEMENTED,
                         detail=(
                             not_implemented_detail(category=l1.category)
                             + f" (L1 confidence: {l1.confidence:.0%})"
                         ),
                     )
-            except LeavesError:
+            except MarshalError:
                 raise
             except Exception:
                 pass
@@ -244,10 +244,10 @@ class IntentParser:
     def _validate_input(self, user_text: str) -> None:
         stripped = user_text.strip()
         if not stripped:
-            raise LeavesError(LeavesErrorCode.EMPTY_INTENT)
+            raise MarshalError(MarshalErrorCode.EMPTY_INTENT)
         if len(stripped) > MAX_INTENT_LENGTH:
-            raise LeavesError(
-                LeavesErrorCode.INTENT_TOO_LONG,
+            raise MarshalError(
+                MarshalErrorCode.INTENT_TOO_LONG,
                 detail=f"Input length {len(stripped)} > max {MAX_INTENT_LENGTH}",
             )
 
@@ -286,7 +286,7 @@ class IntentParser:
 
         # Inject past-turn history so the model can reference prior results
         # via $prev[N].action_id.path. The OS resolves these refs in
-        # leaves.py before the spec is sent to the runner.
+        # main.py before the spec is sent to the runner.
         if session_history:
             system_with_rag = f"{system_with_rag}\n\n{session_history}"
 
@@ -325,8 +325,8 @@ class IntentParser:
         try:
             return json.loads(raw.strip())
         except json.JSONDecodeError as e:
-            raise LeavesError(
-                LeavesErrorCode.JSON_PARSE_FAILED,
+            raise MarshalError(
+                MarshalErrorCode.JSON_PARSE_FAILED,
                 detail=(
                     f"GBNF grammar violation — this is a bug in goal_spec.gbnf: {e}. "
                     f"Raw ({len(raw)} chars): {raw[:300]!r}"
@@ -407,15 +407,15 @@ class IntentParser:
             if category in IMPLEMENTED_CATEGORIES:
                 # Model understands the category but failed to generate actions.
                 # This is a model output quality issue, not a missing feature.
-                raise LeavesError(
-                    LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                raise MarshalError(
+                    MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                     detail=(
                         f"Model returned no actions for '{category}'. "
                         f"Try rephrasing — e.g., name specific files or directories."
                     ),
                 )
-            raise LeavesError(
-                LeavesErrorCode.NOT_IMPLEMENTED,
+            raise MarshalError(
+                MarshalErrorCode.NOT_IMPLEMENTED,
                 detail=not_implemented_detail(category=category),
             )
 
@@ -425,8 +425,8 @@ class IntentParser:
         ]
         if len(unimplemented) == len(actions):
             missing = sorted({a.get("agent") or "?" for a in unimplemented})
-            raise LeavesError(
-                LeavesErrorCode.NOT_IMPLEMENTED,
+            raise MarshalError(
+                MarshalErrorCode.NOT_IMPLEMENTED,
                 detail=(
                     f"All actions require agent(s) not yet implemented: "
                     f"{missing}. Supported agents: {supported_summary()}."
@@ -437,8 +437,8 @@ class IntentParser:
         try:
             jsonschema.validate(goal_spec, self._schema)
         except jsonschema.ValidationError as e:
-            raise LeavesError(
-                LeavesErrorCode.SCHEMA_VALIDATION_FAILED,
+            raise MarshalError(
+                MarshalErrorCode.SCHEMA_VALIDATION_FAILED,
                 detail=f"Schema validation failed: {e.message}",
                 cause=e,
             )
@@ -447,7 +447,7 @@ class IntentParser:
         """
         Run semantic validators (ordering, dependency integrity, destructive flags).
 
-        Hard errors (DAG violations) raise LeavesError.
+        Hard errors (DAG violations) raise MarshalError.
         Soft errors (ordering heuristics) are suppressed for now — the 1B model
         sometimes generates extra actions that are semantically redundant but not
         wrong enough to fail the user's request. These will become hard errors
@@ -467,8 +467,8 @@ class IntentParser:
             hard = [e for e in result.errors if e.code in _HARD_ERROR_CODES]
             if hard:
                 detail = "; ".join(f"[{e.code}] {e.message}" for e in hard)
-                raise LeavesError(
-                    LeavesErrorCode.SEMANTIC_VALIDATION_FAILED,
+                raise MarshalError(
+                    MarshalErrorCode.SEMANTIC_VALIDATION_FAILED,
                     detail=f"GoalSpec semantic validation failed: {detail}",
                 )
 
@@ -505,8 +505,8 @@ class IntentParser:
             ]
             if bad:
                 types = [a["type"] for a in bad]
-                raise LeavesError(
-                    LeavesErrorCode.SEMANTIC_VALIDATION_FAILED,
+                raise MarshalError(
+                    MarshalErrorCode.SEMANTIC_VALIDATION_FAILED,
                     detail=(
                         f"Safety: user intent is read-only but model generated "
                         f"destructive action(s): {types}. Refusing to execute. "
@@ -517,8 +517,8 @@ class IntentParser:
     def _check_confidence(self, goal_spec: dict[str, Any]) -> None:
         confidence = goal_spec.get("metadata", {}).get("confidence", 0.0)
         if confidence < MIN_CONFIDENCE_THRESHOLD:
-            raise LeavesError(
-                LeavesErrorCode.LOW_CONFIDENCE,
+            raise MarshalError(
+                MarshalErrorCode.LOW_CONFIDENCE,
                 detail=(
                     f"Model confidence {confidence:.2f} < threshold {MIN_CONFIDENCE_THRESHOLD}. "
                     f"Try rephrasing."

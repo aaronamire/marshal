@@ -1,5 +1,5 @@
 """
-Observability primitives for Leaves OS.
+Observability primitives for Marshal.
 
 Two surfaces:
 
@@ -16,9 +16,9 @@ Two surfaces:
 
 Named metrics exposed at /v1/metrics:
 
-    leaves_intents_total{status,category}        Counter
-    leaves_inference_latency_ms_bucket{le}       Histogram (+ _sum, _count)
-    leaves_enforcer_rejections_total{reason}     Counter
+    marshal_intents_total{status,category}        Counter
+    marshal_inference_latency_ms_bucket{le}       Histogram (+ _sum, _count)
+    marshal_enforcer_rejections_total{reason}     Counter
 
 Buckets for inference latency are tuned for the local llama.cpp path on
 CPU: median request lands around 800-1500ms after KV warmup, so the
@@ -193,25 +193,25 @@ class Histogram:
 # ---------------------------------------------------------------------------
 
 intents_total = Counter(
-    "leaves_intents_total",
+    "marshal_intents_total",
     "Total intents executed by agentd, labelled by terminal status and category.",
 )
 
 # Buckets in milliseconds. Tuned for CPU llama.cpp where the warm-cache p50
 # is ~800-1500ms and the cold-start tail can hit 30s.
 inference_latency_ms = Histogram(
-    "leaves_inference_latency_ms",
+    "marshal_inference_latency_ms",
     "Latency of inference backend completion calls, in milliseconds.",
     buckets=[50, 100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000],
 )
 
 enforcer_rejections_total = Counter(
-    "leaves_enforcer_rejections_total",
+    "marshal_enforcer_rejections_total",
     "Action-contract enforcer rejections, labelled by rejection reason.",
 )
 
 runner_path_total = Counter(
-    "leaves_runner_path_total",
+    "marshal_runner_path_total",
     "Intents executed by runner path: warm (pre-forked pool) vs cold (fresh subprocess).",
 )
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Leaves OS eval harness (Phase 2).
+Marshal eval harness (Phase 2).
 
 Checks three distinct correctness levels for each test case:
   1. Schema validity   — output passes jsonschema (table stakes)
@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.intent_parser import IntentParser
 from agents.validators import validate_action_ordering
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 # ---------------------------------------------------------------------------
 # Test case definition
@@ -174,7 +174,7 @@ CASES: list[Case] = [
     # --- Additional READ ---
     Case(
         label="open config file",
-        intent="open ~/dev/leaves-os/config.py",
+        intent="open ~/dev/marshal/config.py",
         expected_category="file_task",
         expected_action_types=["READ"],
     ),
@@ -498,9 +498,9 @@ def evaluate(case: Case, parser: IntentParser, timeout_s: int) -> Result:
             result.passed_schema = False  # parsing was supposed to fail gracefully
             result.error = "Expected NOT_IMPLEMENTED but got a parsed GoalSpec"
 
-    except LeavesError as e:
+    except MarshalError as e:
         result.latency_ms = (time.monotonic() - t0) * 1000
-        if case.expect_not_implemented and e.code == LeavesErrorCode.NOT_IMPLEMENTED:
+        if case.expect_not_implemented and e.code == MarshalErrorCode.NOT_IMPLEMENTED:
             # Correct: unimplemented category correctly rejected
             result.passed_not_impl = True
             result.passed_schema = True  # the model did produce parseable JSON
@@ -624,7 +624,7 @@ def print_summary(results: list[Result], cases: list[Case], config_label: str,
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Leaves OS Phase 0 eval harness")
+    parser = argparse.ArgumentParser(description="Marshal Phase 0 eval harness")
     parser.add_argument("--no-gbnf", action="store_true",
                         help="Disable GBNF grammar constraints (baseline comparison)")
     parser.add_argument("--no-layer1", action="store_true",
@@ -657,7 +657,7 @@ def main() -> int:
         config_parts.append("Layer1")
     config_label = " + ".join(config_parts) if config_parts else "no-infra (baseline)"
 
-    print(f"Leaves OS eval harness — {config_label}")
+    print(f"Marshal eval harness — {config_label}")
     print(f"Timeout: {args.timeout}s per intent | "
           f"Cooldown: {'off (--fast)' if args.fast else f'{cooldown_s}s between cases'}\n")
 

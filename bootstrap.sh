@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Leaves OS bootstrap — one-shot installer for any modern Linux.
+# Marshal bootstrap — one-shot installer for any modern Linux.
 #
 # What this does:
 #   1. Detects package manager (pacman, apt, dnf) and installs system deps
 #   2. Builds llama.cpp at a pinned commit (CPU-only, native ISA)
-#   3. Creates a Python venv at .os/ and installs the Leaves package
+#   3. Creates a Python venv at .os/ and installs the Marshal package
 #   4. Downloads the GoalSpec model (verified by SHA-256)
 #   5. Optionally builds the Wayland compositor (--with-compositor)
 #   6. Optionally installs systemd --user units (--with-systemd)
@@ -61,12 +61,12 @@ warn() { printf "${C_WARN}[bootstrap]${C_OFF} %s\n" "$*" >&2; }
 err()  { printf "${C_ERR}[bootstrap]${C_OFF} %s\n" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
-LEAVES_ROOT="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
-cd "$LEAVES_ROOT"
+MARSHAL_ROOT="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+cd "$MARSHAL_ROOT"
 
 # --- preflight --------------------------------------------------------------
-log "Leaves OS bootstrap"
-log "root: $LEAVES_ROOT"
+log "Marshal bootstrap"
+log "root: $MARSHAL_ROOT"
 
 [[ "$(uname -s)" == "Linux" ]] || die "Linux only — detected $(uname -s)"
 
@@ -155,7 +155,7 @@ else
 fi
 
 # --- python venv ------------------------------------------------------------
-VENV_DIR="$LEAVES_ROOT/.os"
+VENV_DIR="$MARSHAL_ROOT/.os"
 if [[ ! -d "$VENV_DIR" ]]; then
     log "creating venv at $VENV_DIR"
     python3 -m venv "$VENV_DIR"
@@ -163,7 +163,7 @@ fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 
-log "installing Leaves OS into venv..."
+log "installing Marshal into venv..."
 pip install --upgrade pip wheel >/dev/null
 pip install -e ".[rag,remote]" >/dev/null
 ok "Python deps installed"
@@ -171,7 +171,7 @@ ok "Python deps installed"
 # --- model download ---------------------------------------------------------
 if [[ $SKIP_MODEL -eq 0 ]]; then
     log "downloading GoalSpec model..."
-    bash "$LEAVES_ROOT/scripts/download-model.sh"
+    bash "$MARSHAL_ROOT/scripts/download-model.sh"
 else
     warn "model download skipped (--skip-model). Inference will not work until you fetch a model."
 fi
@@ -179,19 +179,19 @@ fi
 # --- compositor build (optional) --------------------------------------------
 if [[ $WITH_COMPOSITOR -eq 1 ]]; then
     log "building Wayland compositor..."
-    pushd "$LEAVES_ROOT/compositor" >/dev/null
+    pushd "$MARSHAL_ROOT/compositor" >/dev/null
     if [[ ! -d builddir ]]; then
         meson setup builddir
     fi
     meson compile -C builddir
     popd >/dev/null
-    ok "compositor built — $LEAVES_ROOT/compositor/builddir/leaves-compositor"
+    ok "compositor built — $MARSHAL_ROOT/compositor/builddir/marshal-compositor"
 fi
 
 # --- systemd units (optional) -----------------------------------------------
 if [[ $WITH_SYSTEMD -eq 1 ]]; then
     log "installing systemd --user units..."
-    bash "$LEAVES_ROOT/systemd/install.sh"
+    bash "$MARSHAL_ROOT/systemd/install.sh"
 fi
 
 # --- verify -----------------------------------------------------------------
@@ -209,9 +209,9 @@ ok "bootstrap complete"
 echo
 echo "Next steps:"
 echo "  1. Start the inference server:  ./scripts/start-inference.sh"
-echo "  2. In another shell:            source .os/bin/activate && python leaves.py"
+echo "  2. In another shell:            source .os/bin/activate && python main.py"
 echo
-echo "  Optional remote inference:      export LEAVES_ANTHROPIC_KEY=sk-ant-..."
+echo "  Optional remote inference:      export MARSHAL_ANTHROPIC_KEY=sk-ant-..."
 if [[ $WITH_COMPOSITOR -eq 1 ]]; then
-    echo "  Run the compositor (nested):    ./compositor/builddir/leaves-compositor"
+    echo "  Run the compositor (nested):    ./compositor/builddir/marshal-compositor"
 fi

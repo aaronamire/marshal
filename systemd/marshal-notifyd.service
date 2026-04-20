@@ -1,0 +1,15 @@
+[Unit]
+Description=Marshal notification daemon
+After=marshal-compositor.service
+PartOf=marshal-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/local/bin/marshal-notifyd
+Restart=on-failure
+RestartSec=3
+Environment=HOME=%h
+
+[Install]
+WantedBy=marshal-session.target

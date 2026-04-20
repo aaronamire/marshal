@@ -1,4 +1,4 @@
-project('leaves-terminal', 'c',
+project('marshal-terminal', 'c',
   version : '0.1.0',
   default_options : [
     'c_std=c11',
@@ -33,7 +33,7 @@ xdg_shell_code = custom_target('xdg-shell-client-code',
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
-executable('leaves-terminal',
+executable('marshal-terminal',
   'terminal.c',
   xdg_shell_header,
   xdg_shell_code,

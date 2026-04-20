@@ -3,7 +3,7 @@
 #include <ctype.h>
 #include <string.h>
 
-void input_init(struct leaves_input *input, struct leaves_feed *feed) {
+void input_init(struct marshal_input *input, struct marshal_feed *feed) {
 	memset(input, 0, sizeof(*input));
 	input->cursor_visible = true;
 	input->feed = feed;
@@ -33,7 +33,7 @@ static int utf8_next(const char *buf, int len, int pos) {
 /* Modifier bit flags (matching xkbcommon) */
 #define MOD_CTRL (1 << 0)
 
-bool input_handle_key(struct leaves_input *input, uint32_t keycode,
+bool input_handle_key(struct marshal_input *input, uint32_t keycode,
 		uint32_t mods, const char *utf8, int utf8_len) {
 	/* When overlay is active, capture all keys */
 	if (input->feed && input->feed->awaiting_confirm) {
@@ -189,7 +189,7 @@ bool input_handle_key(struct leaves_input *input, uint32_t keycode,
 	return false;
 }
 
-bool input_tick_cursor(struct leaves_input *input, uint32_t dt_ms) {
+bool input_tick_cursor(struct marshal_input *input, uint32_t dt_ms) {
 	input->cursor_blink_ms += dt_ms;
 	if (input->cursor_blink_ms >= 530) {
 		input->cursor_blink_ms -= 530;
@@ -199,7 +199,7 @@ bool input_tick_cursor(struct leaves_input *input, uint32_t dt_ms) {
 	return false;
 }
 
-void input_paste(struct leaves_input *input, const char *text, int len) {
+void input_paste(struct marshal_input *input, const char *text, int len) {
 	/* Delete any active selection first */
 	input_delete_selection(input);
 
@@ -228,11 +228,11 @@ void input_paste(struct leaves_input *input, const char *text, int len) {
 	input->buf[input->len] = '\0';
 }
 
-void input_clear_selection(struct leaves_input *input) {
+void input_clear_selection(struct marshal_input *input) {
 	input->sel_anchor = -1;
 }
 
-bool input_delete_selection(struct leaves_input *input) {
+bool input_delete_selection(struct marshal_input *input) {
 	if (input->sel_anchor == -1 || input->sel_anchor == input->sel_focus)
 		return false;
 	int start = input->sel_anchor < input->sel_focus
@@ -247,7 +247,7 @@ bool input_delete_selection(struct leaves_input *input) {
 	return true;
 }
 
-void input_select_word(struct leaves_input *input, int byte_pos) {
+void input_select_word(struct marshal_input *input, int byte_pos) {
 	if (input->len == 0) return;
 	if (byte_pos > input->len) byte_pos = input->len;
 

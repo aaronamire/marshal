@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Leaves OS — Main CLI entry point.
+Marshal — Main CLI entry point.
 
 Three-layer intent pipeline:
   Layer 0 (<0.1ms): regex matcher → unambiguous commands skip LLM entirely
@@ -36,8 +36,8 @@ from agents.session_memory import SessionMemory
 from agents.state_machine import IntentLifecycle, IntentState
 from config import (
     APP_NAME, APP_VERSION,
-    LEAVES_PRIMARY_COLOR, LEAVES_SUCCESS_COLOR,
-    LEAVES_ERROR_COLOR, LEAVES_WARNING_COLOR, LEAVES_DIM_COLOR,
+    MARSHAL_PRIMARY_COLOR, MARSHAL_SUCCESS_COLOR,
+    MARSHAL_ERROR_COLOR, MARSHAL_WARNING_COLOR, MARSHAL_DIM_COLOR,
 )
 from db.audit import (
     get_db, log_intent_created, log_state_transition,
@@ -51,15 +51,15 @@ from db.intent_store import (
     store_persistent_intent, get_active_intents, get_intent,
     deactivate_intent, delete_intent,
 )
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 _LANCE_PATH = pathlib.Path(__file__).parent / "rag" / ".lancedb"
 
 # Verbose mode: dump GoalSpec JSON after every parse and include full
-# LeavesError code + detail on failures. Set via --verbose CLI flag or
-# LEAVES_VERBOSE=1 env var (the env var is honored even when the REPL is
+# MarshalError code + detail on failures. Set via --verbose CLI flag or
+# MARSHAL_VERBOSE=1 env var (the env var is honored even when the REPL is
 # launched with no argv, e.g. from a systemd unit).
-_VERBOSE = os.environ.get("LEAVES_VERBOSE", "").lower() in ("1", "true", "yes")
+_VERBOSE = os.environ.get("MARSHAL_VERBOSE", "").lower() in ("1", "true", "yes")
 
 console = Console()
 
@@ -67,7 +67,7 @@ console = Console()
 # agentd socket client
 # ---------------------------------------------------------------------------
 
-_AGENTD_SOCK = pathlib.Path.home() / ".leaves" / "agentd.sock"
+_AGENTD_SOCK = pathlib.Path.home() / ".marshal" / "agentd.sock"
 
 
 def _ensure_agentd() -> bool:
@@ -103,7 +103,7 @@ def _send_goalspec(
     channel messages arrive from the runner, followed by a single
     {"final": true, ...} frame. `on_event` is called once per event frame.
 
-    Raises LeavesError if the daemon reports an execution failure.
+    Raises MarshalError if the daemon reports an execution failure.
     Raises OSError / other exceptions on communication failure
     (caller falls back).
     """
@@ -152,13 +152,13 @@ def _send_goalspec(
     if final_resp.get("ok"):
         return final_resp["results"], final_resp["summary"]
 
-    # Daemon reported an execution failure — re-raise as LeavesError.
+    # Daemon reported an execution failure — re-raise as MarshalError.
     code_str = final_resp.get("code", "INTERNAL_ERROR")
     try:
-        code = LeavesErrorCode[code_str]
+        code = MarshalErrorCode[code_str]
     except KeyError:
-        code = LeavesErrorCode.INTERNAL_ERROR
-    raise LeavesError(
+        code = MarshalErrorCode.INTERNAL_ERROR
+    raise MarshalError(
         code, detail=final_resp.get("detail") or final_resp.get("error"))
 
 
@@ -210,32 +210,32 @@ def _get_db():
 # ---------------------------------------------------------------------------
 
 def _banner() -> None:
-    title = Text(f" {APP_NAME} ", style=f"bold {LEAVES_PRIMARY_COLOR}")
-    subtitle = Text(f"v{APP_VERSION}", style=LEAVES_DIM_COLOR)
+    title = Text(f" {APP_NAME} ", style=f"bold {MARSHAL_PRIMARY_COLOR}")
+    subtitle = Text(f"v{APP_VERSION}", style=MARSHAL_DIM_COLOR)
     console.print(Panel(
         f"{title}\n{subtitle}",
-        border_style=LEAVES_PRIMARY_COLOR,
+        border_style=MARSHAL_PRIMARY_COLOR,
         padding=(0, 2),
     ))
     console.print()
 
 
 def _show_error(msg: str) -> None:
-    console.print(f"[{LEAVES_ERROR_COLOR}]Error:[/{LEAVES_ERROR_COLOR}] {msg}")
+    console.print(f"[{MARSHAL_ERROR_COLOR}]Error:[/{MARSHAL_ERROR_COLOR}] {msg}")
 
 
-def _show_leaves_error(e: LeavesError) -> None:
-    """Render a LeavesError with the user-facing message; in verbose mode
+def _show_marshal_error(e: MarshalError) -> None:
+    """Render a MarshalError with the user-facing message; in verbose mode
     also print the error code and the structured detail (which often
     contains the offending value, e.g. the raw model output that failed
     to parse, or the path that was outside the authorization scope)."""
     _show_error(e.user_message)
     if _VERBOSE:
-        console.print(f"  [{LEAVES_DIM_COLOR}]code:   {e.code.value}[/{LEAVES_DIM_COLOR}]")
+        console.print(f"  [{MARSHAL_DIM_COLOR}]code:   {e.code.value}[/{MARSHAL_DIM_COLOR}]")
         if e.detail:
-            console.print(f"  [{LEAVES_DIM_COLOR}]detail: {e.detail}[/{LEAVES_DIM_COLOR}]")
+            console.print(f"  [{MARSHAL_DIM_COLOR}]detail: {e.detail}[/{MARSHAL_DIM_COLOR}]")
         if e.cause is not None:
-            console.print(f"  [{LEAVES_DIM_COLOR}]cause:  {type(e.cause).__name__}: {e.cause}[/{LEAVES_DIM_COLOR}]")
+            console.print(f"  [{MARSHAL_DIM_COLOR}]cause:  {type(e.cause).__name__}: {e.cause}[/{MARSHAL_DIM_COLOR}]")
 
 
 def _dump_goal_spec(goal_spec: dict) -> None:
@@ -245,12 +245,12 @@ def _dump_goal_spec(goal_spec: dict) -> None:
     if not _VERBOSE:
         return
     rendered = json.dumps(goal_spec, indent=2, sort_keys=False)
-    console.print(f"[{LEAVES_DIM_COLOR}]GoalSpec:[/{LEAVES_DIM_COLOR}]")
-    console.print(f"[{LEAVES_DIM_COLOR}]{rendered}[/{LEAVES_DIM_COLOR}]")
+    console.print(f"[{MARSHAL_DIM_COLOR}]GoalSpec:[/{MARSHAL_DIM_COLOR}]")
+    console.print(f"[{MARSHAL_DIM_COLOR}]{rendered}[/{MARSHAL_DIM_COLOR}]")
 
 
 def _show_warning(msg: str) -> None:
-    console.print(f"[{LEAVES_WARNING_COLOR}]Warning:[/{LEAVES_WARNING_COLOR}] {msg}")
+    console.print(f"[{MARSHAL_WARNING_COLOR}]Warning:[/{MARSHAL_WARNING_COLOR}] {msg}")
 
 
 def _render_file_list(result: dict) -> None:
@@ -259,19 +259,19 @@ def _render_file_list(result: dict) -> None:
     count = result.get("count", 0)
 
     if not files:
-        console.print(f"[{LEAVES_DIM_COLOR}]No files found in {path}[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]No files found in {path}[/{MARSHAL_DIM_COLOR}]")
         return
 
     table = Table(
         title=f"{count} file(s) in {path}",
         box=box.SIMPLE_HEAD,
         show_header=True,
-        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+        header_style=f"bold {MARSHAL_PRIMARY_COLOR}",
     )
     table.add_column("Name", style="white")
-    table.add_column("Size", justify="right", style=LEAVES_DIM_COLOR)
-    table.add_column("Modified", style=LEAVES_DIM_COLOR)
-    table.add_column("Type", style=LEAVES_DIM_COLOR)
+    table.add_column("Size", justify="right", style=MARSHAL_DIM_COLOR)
+    table.add_column("Modified", style=MARSHAL_DIM_COLOR)
+    table.add_column("Type", style=MARSHAL_DIM_COLOR)
 
     for f in files:
         size = _fmt_size(f.get("size_bytes", 0))
@@ -325,9 +325,9 @@ def _render_cpu(result: dict) -> None:
     if cores:
         lines.append(f"  Cores: [white]{cores}[/white]")
     if temp is not None:
-        color = LEAVES_SUCCESS_COLOR if temp < 70 else LEAVES_WARNING_COLOR if temp < 85 else LEAVES_ERROR_COLOR
+        color = MARSHAL_SUCCESS_COLOR if temp < 70 else MARSHAL_WARNING_COLOR if temp < 85 else MARSHAL_ERROR_COLOR
         lines.append(f"  Temperature: [{color}]{temp}°C[/{color}]")
-    console.print(Panel("\n".join(lines), title="CPU", border_style=LEAVES_PRIMARY_COLOR))
+    console.print(Panel("\n".join(lines), title="CPU", border_style=MARSHAL_PRIMARY_COLOR))
 
 
 def _render_memory(result: dict) -> None:
@@ -336,11 +336,11 @@ def _render_memory(result: dict) -> None:
     used = result.get("used_gb", 0)
     avail = result.get("available_gb", 0)
 
-    color = LEAVES_SUCCESS_COLOR if pct < 70 else LEAVES_WARNING_COLOR if pct < 90 else LEAVES_ERROR_COLOR
+    color = MARSHAL_SUCCESS_COLOR if pct < 70 else MARSHAL_WARNING_COLOR if pct < 90 else MARSHAL_ERROR_COLOR
     console.print(Panel(
         f"  Used: [{color}]{used:.1f} GB / {total:.1f} GB ({pct}%)[/{color}]\n"
         f"  Available: [white]{avail:.1f} GB[/white]",
-        title="Memory", border_style=LEAVES_PRIMARY_COLOR,
+        title="Memory", border_style=MARSHAL_PRIMARY_COLOR,
     ))
 
 
@@ -351,34 +351,34 @@ def _render_disk(result: dict) -> None:
     free = result.get("free_gb", 0)
     path = result.get("path", "/")
 
-    color = LEAVES_SUCCESS_COLOR if pct < 70 else LEAVES_WARNING_COLOR if pct < 90 else LEAVES_ERROR_COLOR
+    color = MARSHAL_SUCCESS_COLOR if pct < 70 else MARSHAL_WARNING_COLOR if pct < 90 else MARSHAL_ERROR_COLOR
     console.print(Panel(
         f"  Used: [{color}]{used:.1f} GB / {total:.1f} GB ({pct}%)[/{color}]\n"
         f"  Free: [white]{free:.1f} GB[/white]",
-        title=f"Disk ({path})", border_style=LEAVES_PRIMARY_COLOR,
+        title=f"Disk ({path})", border_style=MARSHAL_PRIMARY_COLOR,
     ))
 
 
 def _render_processes(result: dict) -> None:
     procs = result.get("processes", [])
     if not procs:
-        console.print(f"[{LEAVES_DIM_COLOR}]No processes found.[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]No processes found.[/{MARSHAL_DIM_COLOR}]")
         return
 
     table = Table(
         title=f"Top {len(procs)} Processes",
         box=box.SIMPLE_HEAD,
-        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+        header_style=f"bold {MARSHAL_PRIMARY_COLOR}",
     )
-    table.add_column("PID", style=LEAVES_DIM_COLOR, justify="right")
+    table.add_column("PID", style=MARSHAL_DIM_COLOR, justify="right")
     table.add_column("Name", style="white")
     table.add_column("CPU%", justify="right")
-    table.add_column("Memory", justify="right", style=LEAVES_DIM_COLOR)
-    table.add_column("Status", style=LEAVES_DIM_COLOR)
+    table.add_column("Memory", justify="right", style=MARSHAL_DIM_COLOR)
+    table.add_column("Status", style=MARSHAL_DIM_COLOR)
 
     for p in procs:
         cpu = p.get("cpu_percent", 0)
-        cpu_color = LEAVES_ERROR_COLOR if cpu > 50 else LEAVES_WARNING_COLOR if cpu > 20 else "white"
+        cpu_color = MARSHAL_ERROR_COLOR if cpu > 50 else MARSHAL_WARNING_COLOR if cpu > 20 else "white"
         table.add_row(
             str(p["pid"]),
             p["name"],
@@ -393,9 +393,9 @@ def _render_uptime(result: dict) -> None:
     secs = result.get("uptime_seconds", 0)
     boot = result.get("boot_time_iso", "")
     console.print(
-        f"  [{LEAVES_PRIMARY_COLOR}]Uptime:[/{LEAVES_PRIMARY_COLOR}] "
+        f"  [{MARSHAL_PRIMARY_COLOR}]Uptime:[/{MARSHAL_PRIMARY_COLOR}] "
         f"[white]{_fmt_uptime(secs)}[/white]  "
-        f"[{LEAVES_DIM_COLOR}](booted {boot})[/{LEAVES_DIM_COLOR}]"
+        f"[{MARSHAL_DIM_COLOR}](booted {boot})[/{MARSHAL_DIM_COLOR}]"
     )
 
 
@@ -415,8 +415,8 @@ def _render_system_result(result: dict) -> None:
         prog = result["launched"]
         pid = result.get("pid", "?")
         console.print(
-            f"  [{LEAVES_SUCCESS_COLOR}]Launched[/{LEAVES_SUCCESS_COLOR}] "
-            f"[white]{prog}[/white] [{LEAVES_DIM_COLOR}](PID {pid})[/{LEAVES_DIM_COLOR}]"
+            f"  [{MARSHAL_SUCCESS_COLOR}]Launched[/{MARSHAL_SUCCESS_COLOR}] "
+            f"[white]{prog}[/white] [{MARSHAL_DIM_COLOR}](PID {pid})[/{MARSHAL_DIM_COLOR}]"
         )
     elif "terminated" in result:
         target = result.get("target", "?")
@@ -424,12 +424,12 @@ def _render_system_result(result: dict) -> None:
         for info in result.get("terminated", []):
             sig = info.get("signal", "?")
             console.print(
-                f"  [{LEAVES_WARNING_COLOR}]Terminated[/{LEAVES_WARNING_COLOR}] "
+                f"  [{MARSHAL_WARNING_COLOR}]Terminated[/{MARSHAL_WARNING_COLOR}] "
                 f"[white]{info.get('name', target)}[/white] "
-                f"[{LEAVES_DIM_COLOR}](PID {info.get('pid', '?')}, {sig})[/{LEAVES_DIM_COLOR}]"
+                f"[{MARSHAL_DIM_COLOR}](PID {info.get('pid', '?')}, {sig})[/{MARSHAL_DIM_COLOR}]"
             )
     else:
-        console.print(f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}")
+        console.print(f"  [{MARSHAL_SUCCESS_COLOR}]✓[/{MARSHAL_SUCCESS_COLOR}] {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -446,17 +446,17 @@ def _render_web_search(result: dict) -> None:
         return
 
     if not results_list:
-        console.print(f"[{LEAVES_DIM_COLOR}]No results for '{query}'[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]No results for '{query}'[/{MARSHAL_DIM_COLOR}]")
         return
 
-    console.print(f"  [{LEAVES_PRIMARY_COLOR}]Search:[/{LEAVES_PRIMARY_COLOR}] {query}")
+    console.print(f"  [{MARSHAL_PRIMARY_COLOR}]Search:[/{MARSHAL_PRIMARY_COLOR}] {query}")
     for i, r in enumerate(results_list, 1):
         title = r.get("title", "Untitled")
         url = r.get("url", "")
         snippet = r.get("snippet", "")
-        console.print(f"  [{LEAVES_DIM_COLOR}]{i}.[/{LEAVES_DIM_COLOR}] [bold white]{title}[/bold white]")
+        console.print(f"  [{MARSHAL_DIM_COLOR}]{i}.[/{MARSHAL_DIM_COLOR}] [bold white]{title}[/bold white]")
         if url:
-            console.print(f"     [{LEAVES_DIM_COLOR}]{url}[/{LEAVES_DIM_COLOR}]")
+            console.print(f"     [{MARSHAL_DIM_COLOR}]{url}[/{MARSHAL_DIM_COLOR}]")
         if snippet:
             console.print(f"     {snippet[:200]}")
 
@@ -475,7 +475,7 @@ def _render_web_fetch(result: dict) -> None:
     console.print(Panel(
         content[:3000],
         title=header,
-        border_style=LEAVES_PRIMARY_COLOR,
+        border_style=MARSHAL_PRIMARY_COLOR,
     ))
 
 
@@ -488,7 +488,7 @@ def _render_web_result(result: dict) -> None:
     elif "error" in result:
         _show_error(result["error"])
     else:
-        console.print(f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}")
+        console.print(f"  [{MARSHAL_SUCCESS_COLOR}]✓[/{MARSHAL_SUCCESS_COLOR}] {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -506,16 +506,16 @@ def _show_auth_dialog(goal_spec: dict) -> bool:
 
     console.print()
     console.print(Panel(
-        f"[bold {LEAVES_WARNING_COLOR}]Authorization Required[/bold {LEAVES_WARNING_COLOR}]\n\n"
+        f"[bold {MARSHAL_WARNING_COLOR}]Authorization Required[/bold {MARSHAL_WARNING_COLOR}]\n\n"
         f"Intent: [white]{goal_spec['natural_text']}[/white]\n"
         f"Resources: {', '.join(resources) or 'none'}\n"
         f"Reversible: {'yes' if reversible else '[red]NO[/red]'}\n\n"
         "Actions:\n" + "\n".join(
-            f"  [{LEAVES_DIM_COLOR}]{a['action_id']}[/{LEAVES_DIM_COLOR}] "
+            f"  [{MARSHAL_DIM_COLOR}]{a['action_id']}[/{MARSHAL_DIM_COLOR}] "
             f"[yellow]{a['type']}[/yellow] ({a.get('agent', '?')})"
             for a in goal_spec.get("actions", [])
         ),
-        border_style=LEAVES_WARNING_COLOR,
+        border_style=MARSHAL_WARNING_COLOR,
         title="Confirm",
     ))
 
@@ -556,7 +556,7 @@ def handle_intent(user_text: str) -> None:
 
     # Layer 1 callback — fires immediately from inside parser.parse()
     def on_classified(result):
-        color = LEAVES_PRIMARY_COLOR if result.is_confident else LEAVES_WARNING_COLOR
+        color = MARSHAL_PRIMARY_COLOR if result.is_confident else MARSHAL_WARNING_COLOR
         console.print(
             f"  [bold {color}]◆[/bold {color}] "
             f"{result.category} · {result.confidence:.0%} · {result.latency_ms:.0f}ms"
@@ -569,11 +569,11 @@ def handle_intent(user_text: str) -> None:
     try:
         lifecycle.transition(IntentState.PARSING)
         history_block = session.to_prompt_block() if session is not None else None
-        with console.status(f"[{LEAVES_DIM_COLOR}]Generating plan…[/{LEAVES_DIM_COLOR}]"):
+        with console.status(f"[{MARSHAL_DIM_COLOR}]Generating plan…[/{MARSHAL_DIM_COLOR}]"):
             goal_spec = parser.parse(user_text, session_history=history_block)
 
         # Resolve $prev[N].action_id.path references in action params
-        # against session memory BEFORE the spec leaves this process.
+        # against session memory BEFORE the spec marshal this process.
         # The runner subprocess sees fully-expanded params.
         if session is not None and len(session) > 0:
             for action in goal_spec.get("actions", []):
@@ -598,15 +598,15 @@ def handle_intent(user_text: str) -> None:
             hit_pct = (cached / total_prompt * 100) if total_prompt else 0
             cache_tag = f" · cache {hit_pct:.0f}%"
         console.print(
-            f"  [{LEAVES_DIM_COLOR}]Plan: "
+            f"  [{MARSHAL_DIM_COLOR}]Plan: "
             f"{len(goal_spec.get('actions', []))} action(s) via {goal_spec['category']} "
             f"· L2 confidence {confidence:.0%} · {latency:.0f}ms"
-            f"{cache_tag}[/{LEAVES_DIM_COLOR}]"
+            f"{cache_tag}[/{MARSHAL_DIM_COLOR}]"
         )
         _dump_goal_spec(goal_spec)
 
-    except LeavesError as e:
-        _show_leaves_error(e)
+    except MarshalError as e:
+        _show_marshal_error(e)
         log_error(_get_db(), e.code.value, e.detail)
         return
 
@@ -645,7 +645,7 @@ def handle_intent(user_text: str) -> None:
                 else:
                     label = ", ".join(f"{k}={v}" for k, v in data.items())
             console.print(
-                f"[{LEAVES_DIM_COLOR}]  ↳ {aid} {label}[/{LEAVES_DIM_COLOR}]")
+                f"[{MARSHAL_DIM_COLOR}]  ↳ {aid} {label}[/{MARSHAL_DIM_COLOR}]")
         elif kind == "partial":
             preview = ""
             if isinstance(data, dict):
@@ -653,10 +653,10 @@ def handle_intent(user_text: str) -> None:
             elif isinstance(data, str):
                 preview = data
             console.print(
-                f"[{LEAVES_DIM_COLOR}]  ⋯ {aid} {preview}[/{LEAVES_DIM_COLOR}]")
+                f"[{MARSHAL_DIM_COLOR}]  ⋯ {aid} {preview}[/{MARSHAL_DIM_COLOR}]")
         elif kind == "log":
             console.print(
-                f"[{LEAVES_DIM_COLOR}]  · {aid} {data}[/{LEAVES_DIM_COLOR}]")
+                f"[{MARSHAL_DIM_COLOR}]  · {aid} {data}[/{MARSHAL_DIM_COLOR}]")
 
     # Install a SIGINT handler for the duration of the EXECUTING window.
     # Ctrl-C asks agentd to cancel the in-flight intent rather than tearing
@@ -671,7 +671,7 @@ def handle_intent(user_text: str) -> None:
             ok = _send_cancel(target)
             tag = "cancel sent" if ok else "cancel failed"
             console.print(
-                f"[{LEAVES_WARNING_COLOR}]  ⌃C — {tag}[/{LEAVES_WARNING_COLOR}]"
+                f"[{MARSHAL_WARNING_COLOR}]  ⌃C — {tag}[/{MARSHAL_WARNING_COLOR}]"
             )
 
     try:
@@ -687,7 +687,7 @@ def handle_intent(user_text: str) -> None:
                 # Daemon advanced its own lifecycle to EXECUTING; mirror that here
                 # so subsequent transitions (→DONE / →FAILED) remain valid.
                 lifecycle.transition(IntentState.EXECUTING)
-            except LeavesError:
+            except MarshalError:
                 lifecycle.transition(IntentState.EXECUTING)
                 raise
             except Exception:
@@ -696,8 +696,8 @@ def handle_intent(user_text: str) -> None:
         else:
             _show_warning("agentd unavailable — running in-process.")
             results, summary = AgentCoordinator(db).execute(goal_spec, lifecycle)
-    except LeavesError as e:
-        _show_leaves_error(e)
+    except MarshalError as e:
+        _show_marshal_error(e)
         log_state_transition(db, intent_id, "EXECUTING", "FAILED")
         complete_intent(
             db, intent_id, "FAILED", e.detail,
@@ -724,7 +724,7 @@ def handle_intent(user_text: str) -> None:
         if not isinstance(result, dict):
             if result:
                 console.print(
-                    f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}"
+                    f"  [{MARSHAL_SUCCESS_COLOR}]✓[/{MARSHAL_SUCCESS_COLOR}] {result}"
                 )
             continue
 
@@ -739,11 +739,11 @@ def handle_intent(user_text: str) -> None:
             console.print(Panel(
                 result["content"][:2000],
                 title=result.get("path", ""),
-                border_style=LEAVES_PRIMARY_COLOR,
+                border_style=MARSHAL_PRIMARY_COLOR,
             ))
         elif result:
             console.print(
-                f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] {result}"
+                f"  [{MARSHAL_SUCCESS_COLOR}]✓[/{MARSHAL_SUCCESS_COLOR}] {result}"
             )
 
     # --- DONE ---
@@ -768,7 +768,7 @@ def handle_intent(user_text: str) -> None:
     reversible = auth.get("reversible", True)
     rev_str = "reversible" if reversible else "[red]irreversible[/red]"
     console.print(
-        f"  [{LEAVES_DIM_COLOR}]Done in {duration_ms:.0f}ms · {rev_str} · logged[/{LEAVES_DIM_COLOR}]"
+        f"  [{MARSHAL_DIM_COLOR}]Done in {duration_ms:.0f}ms · {rev_str} · logged[/{MARSHAL_DIM_COLOR}]"
     )
 
 
@@ -780,25 +780,25 @@ def cmd_history() -> None:
     db = _get_db()
     intents = get_recent_intents(db, limit=20)
     if not intents:
-        console.print(f"[{LEAVES_DIM_COLOR}]No history yet.[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]No history yet.[/{MARSHAL_DIM_COLOR}]")
         return
 
     table = Table(
         title="Recent Intents",
         box=box.SIMPLE_HEAD,
-        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+        header_style=f"bold {MARSHAL_PRIMARY_COLOR}",
     )
-    table.add_column("#", style=LEAVES_DIM_COLOR, justify="right")
+    table.add_column("#", style=MARSHAL_DIM_COLOR, justify="right")
     table.add_column("Intent", style="white", max_width=50)
-    table.add_column("Category", style=LEAVES_DIM_COLOR)
+    table.add_column("Category", style=MARSHAL_DIM_COLOR)
     table.add_column("State", style="white")
-    table.add_column("Duration", style=LEAVES_DIM_COLOR, justify="right")
-    table.add_column("Time", style=LEAVES_DIM_COLOR)
+    table.add_column("Duration", style=MARSHAL_DIM_COLOR, justify="right")
+    table.add_column("Time", style=MARSHAL_DIM_COLOR)
 
     state_styles = {
-        "DONE": LEAVES_SUCCESS_COLOR,
-        "FAILED": LEAVES_ERROR_COLOR,
-        "CANCELLED": LEAVES_WARNING_COLOR,
+        "DONE": MARSHAL_SUCCESS_COLOR,
+        "FAILED": MARSHAL_ERROR_COLOR,
+        "CANCELLED": MARSHAL_WARNING_COLOR,
     }
 
     for i, row in enumerate(intents, 1):
@@ -833,15 +833,15 @@ def cmd_detail(intent_id_prefix: str) -> None:
         f"[bold]State:[/bold] {intent['state']}\n"
         f"[bold]Duration:[/bold] {dur}",
         title="Intent Detail",
-        border_style=LEAVES_PRIMARY_COLOR,
+        border_style=MARSHAL_PRIMARY_COLOR,
     ))
 
     transitions = get_intent_transitions(db, intent["intent_id"])
     if transitions:
         t_table = Table(title="State Transitions", box=box.SIMPLE_HEAD)
-        t_table.add_column("From", style=LEAVES_DIM_COLOR)
+        t_table.add_column("From", style=MARSHAL_DIM_COLOR)
         t_table.add_column("To", style="white")
-        t_table.add_column("At", style=LEAVES_DIM_COLOR)
+        t_table.add_column("At", style=MARSHAL_DIM_COLOR)
         for t in transitions:
             t_table.add_row(t["from_state"], t["to_state"], _fmt_time(t["transitioned_at"]))
         console.print(t_table)
@@ -849,15 +849,15 @@ def cmd_detail(intent_id_prefix: str) -> None:
     actions = get_intent_actions(db, intent["intent_id"])
     if actions:
         a_table = Table(title="Actions", box=box.SIMPLE_HEAD)
-        a_table.add_column("ID", style=LEAVES_DIM_COLOR)
+        a_table.add_column("ID", style=MARSHAL_DIM_COLOR)
         a_table.add_column("Type", style="white")
-        a_table.add_column("Agent", style=LEAVES_DIM_COLOR)
+        a_table.add_column("Agent", style=MARSHAL_DIM_COLOR)
         a_table.add_column("Status", style="white")
         for a in actions:
             if a["error_code"]:
-                status = f"[{LEAVES_ERROR_COLOR}]{a['error_code']}[/{LEAVES_ERROR_COLOR}]"
+                status = f"[{MARSHAL_ERROR_COLOR}]{a['error_code']}[/{MARSHAL_ERROR_COLOR}]"
             else:
-                status = f"[{LEAVES_SUCCESS_COLOR}]OK[/{LEAVES_SUCCESS_COLOR}]"
+                status = f"[{MARSHAL_SUCCESS_COLOR}]OK[/{MARSHAL_SUCCESS_COLOR}]"
             a_table.add_row(a["action_id"], a["action_type"], a["agent"], status)
         console.print(a_table)
 
@@ -882,8 +882,8 @@ def cmd_help() -> None:
         "  watch organize PDFs on ~/Downloads\n"
         "  search the web for Python tutorials\n"
         "  move ~/Desktop/screenshot.png to ~/Pictures",
-        title="Leaves OS Help",
-        border_style=LEAVES_PRIMARY_COLOR,
+        title="Marshal Help",
+        border_style=MARSHAL_PRIMARY_COLOR,
     ))
 
 
@@ -916,7 +916,7 @@ def cmd_watch(raw: str) -> None:
     parts = raw.rsplit(" on ", 1)
     if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
         _show_error("Usage: watch <intent text> on <path>")
-        console.print(f"  [{LEAVES_DIM_COLOR}]Example: watch organize PDFs on ~/Downloads[/{LEAVES_DIM_COLOR}]")
+        console.print(f"  [{MARSHAL_DIM_COLOR}]Example: watch organize PDFs on ~/Downloads[/{MARSHAL_DIM_COLOR}]")
         return
 
     intent_text = parts[0].strip()
@@ -937,10 +937,10 @@ def cmd_watch(raw: str) -> None:
         return
 
     try:
-        with console.status(f"[{LEAVES_DIM_COLOR}]Parsing intent…[/{LEAVES_DIM_COLOR}]"):
+        with console.status(f"[{MARSHAL_DIM_COLOR}]Parsing intent…[/{MARSHAL_DIM_COLOR}]"):
             goal_spec = parser.parse(intent_text)
-    except LeavesError as e:
-        _show_leaves_error(e)
+    except MarshalError as e:
+        _show_marshal_error(e)
         return
 
     # Store as persistent intent
@@ -955,22 +955,22 @@ def cmd_watch(raw: str) -> None:
             db, name=name, goalspec=goal_spec,
             trigger_type="filesystem", trigger_config=trigger_config,
         )
-    except LeavesError as e:
-        _show_leaves_error(e)
+    except MarshalError as e:
+        _show_marshal_error(e)
         return
 
     # Notify agentd to reload watches
     _notify_watcher_reload()
 
     console.print(
-        f"  [{LEAVES_SUCCESS_COLOR}]✓[/{LEAVES_SUCCESS_COLOR}] "
+        f"  [{MARSHAL_SUCCESS_COLOR}]✓[/{MARSHAL_SUCCESS_COLOR}] "
         f"Watcher created: [white]{name}[/white]"
     )
     console.print(
-        f"  [{LEAVES_DIM_COLOR}]Watching: {expanded}[/{LEAVES_DIM_COLOR}]"
+        f"  [{MARSHAL_DIM_COLOR}]Watching: {expanded}[/{MARSHAL_DIM_COLOR}]"
     )
     console.print(
-        f"  [{LEAVES_DIM_COLOR}]ID: {intent_id[:8]}…[/{LEAVES_DIM_COLOR}]"
+        f"  [{MARSHAL_DIM_COLOR}]ID: {intent_id[:8]}…[/{MARSHAL_DIM_COLOR}]"
     )
 
 
@@ -980,20 +980,20 @@ def cmd_watchers() -> None:
     intents = get_active_intents(db)
 
     if not intents:
-        console.print(f"[{LEAVES_DIM_COLOR}]No active watchers.[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]No active watchers.[/{MARSHAL_DIM_COLOR}]")
         return
 
     table = Table(
         title="Active Watchers",
         box=box.SIMPLE_HEAD,
-        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+        header_style=f"bold {MARSHAL_PRIMARY_COLOR}",
     )
-    table.add_column("ID", style=LEAVES_DIM_COLOR)
+    table.add_column("ID", style=MARSHAL_DIM_COLOR)
     table.add_column("Name", style="white")
-    table.add_column("Trigger", style=LEAVES_DIM_COLOR)
-    table.add_column("Path", style=LEAVES_DIM_COLOR)
-    table.add_column("Fires", justify="right", style=LEAVES_DIM_COLOR)
-    table.add_column("Last Fired", style=LEAVES_DIM_COLOR)
+    table.add_column("Trigger", style=MARSHAL_DIM_COLOR)
+    table.add_column("Path", style=MARSHAL_DIM_COLOR)
+    table.add_column("Fires", justify="right", style=MARSHAL_DIM_COLOR)
+    table.add_column("Last Fired", style=MARSHAL_DIM_COLOR)
 
     for i in intents:
         trigger_conf = i.get("trigger_config") or {}
@@ -1030,12 +1030,12 @@ def cmd_unwatch(id_prefix: str) -> None:
     intent = matches[0]
     try:
         deactivate_intent(db, intent["id"])
-    except LeavesError as e:
-        _show_leaves_error(e)
+    except MarshalError as e:
+        _show_marshal_error(e)
         return
 
     console.print(
-        f"  [{LEAVES_WARNING_COLOR}]Unwatched:[/{LEAVES_WARNING_COLOR}] "
+        f"  [{MARSHAL_WARNING_COLOR}]Unwatched:[/{MARSHAL_WARNING_COLOR}] "
         f"[white]{intent['name']}[/white]"
     )
 
@@ -1062,23 +1062,23 @@ def cmd_search(query: str) -> None:
         return
 
     indexer = _get_indexer()
-    with console.status(f"[{LEAVES_DIM_COLOR}]Searching…[/{LEAVES_DIM_COLOR}]"):
+    with console.status(f"[{MARSHAL_DIM_COLOR}]Searching…[/{MARSHAL_DIM_COLOR}]"):
         results = indexer.search(query, top_k=10)
 
     if not results:
-        console.print(f"[{LEAVES_DIM_COLOR}]No results for '{query}'[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]No results for '{query}'[/{MARSHAL_DIM_COLOR}]")
         return
 
     table = Table(
         title=f"Search: {query}",
         box=box.SIMPLE_HEAD,
-        header_style=f"bold {LEAVES_PRIMARY_COLOR}",
+        header_style=f"bold {MARSHAL_PRIMARY_COLOR}",
     )
-    table.add_column("#", style=LEAVES_DIM_COLOR, justify="right")
+    table.add_column("#", style=MARSHAL_DIM_COLOR, justify="right")
     table.add_column("Title", style="white", max_width=40)
-    table.add_column("Type", style=LEAVES_DIM_COLOR)
-    table.add_column("Score", justify="right", style=LEAVES_DIM_COLOR)
-    table.add_column("Path", style=LEAVES_DIM_COLOR, max_width=50)
+    table.add_column("Type", style=MARSHAL_DIM_COLOR)
+    table.add_column("Score", justify="right", style=MARSHAL_DIM_COLOR)
+    table.add_column("Path", style=MARSHAL_DIM_COLOR, max_width=50)
 
     for i, r in enumerate(results, 1):
         dist = r.get("_distance", 0)
@@ -1119,18 +1119,18 @@ def cmd_briefing(hours: int = 12) -> None:
     indexer = _get_indexer()
     bg = BriefingGenerator(indexer._kg)
 
-    with console.status(f"[{LEAVES_DIM_COLOR}]Generating briefing…[/{LEAVES_DIM_COLOR}]"):
+    with console.status(f"[{MARSHAL_DIM_COLOR}]Generating briefing…[/{MARSHAL_DIM_COLOR}]"):
         briefing = bg.generate(hours=hours)
 
     if briefing["empty"]:
         console.print(
-            f"  [{LEAVES_DIM_COLOR}]{briefing['headline']}[/{LEAVES_DIM_COLOR}]"
+            f"  [{MARSHAL_DIM_COLOR}]{briefing['headline']}[/{MARSHAL_DIM_COLOR}]"
         )
         return
 
     # Headline
     console.print(
-        f"  [{LEAVES_PRIMARY_COLOR}]{briefing['headline']}[/{LEAVES_PRIMARY_COLOR}]"
+        f"  [{MARSHAL_PRIMARY_COLOR}]{briefing['headline']}[/{MARSHAL_PRIMARY_COLOR}]"
     )
     console.print()
 
@@ -1140,25 +1140,25 @@ def cmd_briefing(hours: int = 12) -> None:
         count = section["count"]
         console.print(
             f"  [bold white]{src}[/bold white] "
-            f"[{LEAVES_DIM_COLOR}]({count} changed)[/{LEAVES_DIM_COLOR}]"
+            f"[{MARSHAL_DIM_COLOR}]({count} changed)[/{MARSHAL_DIM_COLOR}]"
         )
 
         for group in section["groups"]:
             directory = group["directory"]
             g_count = group["count"]
             console.print(
-                f"    [{LEAVES_DIM_COLOR}]📁[/{LEAVES_DIM_COLOR}] "
+                f"    [{MARSHAL_DIM_COLOR}]📁[/{MARSHAL_DIM_COLOR}] "
                 f"[white]{directory}[/white] "
-                f"[{LEAVES_DIM_COLOR}]({g_count})[/{LEAVES_DIM_COLOR}]"
+                f"[{MARSHAL_DIM_COLOR}]({g_count})[/{MARSHAL_DIM_COLOR}]"
             )
             for item in group["items"]:
                 ext = item.get("extension", "")
                 console.print(
-                    f"      [{LEAVES_DIM_COLOR}]·[/{LEAVES_DIM_COLOR}] "
+                    f"      [{MARSHAL_DIM_COLOR}]·[/{MARSHAL_DIM_COLOR}] "
                     f"{item['title']}"
-                    f"[{LEAVES_DIM_COLOR}]{ext}[/{LEAVES_DIM_COLOR}]"
+                    f"[{MARSHAL_DIM_COLOR}]{ext}[/{MARSHAL_DIM_COLOR}]"
                     if not ext or ext in item['title'] else
-                    f"      [{LEAVES_DIM_COLOR}]·[/{LEAVES_DIM_COLOR}] "
+                    f"      [{MARSHAL_DIM_COLOR}]·[/{MARSHAL_DIM_COLOR}] "
                     f"{item['title']}"
                 )
         console.print()
@@ -1178,7 +1178,7 @@ def repl() -> None:
     _session = SessionMemory()
     if len(_session) > 0:
         console.print(
-            f"[{LEAVES_DIM_COLOR}]Session: resumed {len(_session)} prior turn(s)[/{LEAVES_DIM_COLOR}]"
+            f"[{MARSHAL_DIM_COLOR}]Session: resumed {len(_session)} prior turn(s)[/{MARSHAL_DIM_COLOR}]"
         )
 
     # Try to load Layer 1 classifier
@@ -1186,27 +1186,27 @@ def repl() -> None:
     try:
         from agents.classifier import IntentClassifier
         classifier = IntentClassifier()
-        console.print(f"[{LEAVES_DIM_COLOR}]Layer 1 classifier: loaded (1.8ms avg)[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]Layer 1 classifier: loaded (1.8ms avg)[/{MARSHAL_DIM_COLOR}]")
     except FileNotFoundError:
         console.print(
-            f"[{LEAVES_WARNING_COLOR}]Layer 1 classifier not found.[/{LEAVES_WARNING_COLOR}] "
-            f"[{LEAVES_DIM_COLOR}]Run: python3 scripts/train_classifier.py[/{LEAVES_DIM_COLOR}]"
+            f"[{MARSHAL_WARNING_COLOR}]Layer 1 classifier not found.[/{MARSHAL_WARNING_COLOR}] "
+            f"[{MARSHAL_DIM_COLOR}]Run: python3 scripts/train_classifier.py[/{MARSHAL_DIM_COLOR}]"
         )
     except Exception as e:
-        console.print(f"[{LEAVES_DIM_COLOR}]Layer 1 unavailable: {e}[/{LEAVES_DIM_COLOR}]")
+        console.print(f"[{MARSHAL_DIM_COLOR}]Layer 1 unavailable: {e}[/{MARSHAL_DIM_COLOR}]")
 
     _parser = IntentParser(classifier=classifier)
 
     if not _parser._client.is_available():
         console.print(
-            f"[{LEAVES_WARNING_COLOR}]Inference server not running.[/{LEAVES_WARNING_COLOR}] "
+            f"[{MARSHAL_WARNING_COLOR}]Inference server not running.[/{MARSHAL_WARNING_COLOR}] "
             f"Start: bash scripts/start-inference.sh"
         )
     console.print()
 
     while True:
         try:
-            raw = input("[leaves] ").strip()
+            raw = input("[marshal] ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\nGoodbye.")
             break
@@ -1237,7 +1237,7 @@ def repl() -> None:
         elif lower == "verbose":
             global _VERBOSE
             _VERBOSE = not _VERBOSE
-            console.print(f"  [{LEAVES_DIM_COLOR}]verbose mode: {'on' if _VERBOSE else 'off'}[/{LEAVES_DIM_COLOR}]")
+            console.print(f"  [{MARSHAL_DIM_COLOR}]verbose mode: {'on' if _VERBOSE else 'off'}[/{MARSHAL_DIM_COLOR}]")
         elif _is_briefing_trigger(raw):
             cmd_briefing()
         else:
@@ -1250,13 +1250,13 @@ def main() -> None:
     """CLI entry. Parses args, sets _VERBOSE, then runs the REPL."""
     global _VERBOSE
     p = argparse.ArgumentParser(
-        prog="leaves",
-        description="Leaves OS — local AI agents that can't escape their plan.",
+        prog="marshal",
+        description="Marshal — local AI agents that can't escape their plan.",
     )
     p.add_argument(
         "-v", "--verbose", action="store_true",
         help="Dump full GoalSpec after each parse and show error code/detail on failures. "
-             "Also enabled by LEAVES_VERBOSE=1.",
+             "Also enabled by MARSHAL_VERBOSE=1.",
     )
     p.add_argument(
         "--version", action="version",

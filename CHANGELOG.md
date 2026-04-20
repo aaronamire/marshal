@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Leaves OS are documented in this file.
+All notable changes to Marshal are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **F-1 (HIGH)** — agentd now validates `intent_id` against the
     UUID-v4 regex at the socket trust boundary. Previously, a same-uid
     process could submit `intent_id = "/../foo"` and cause cgroup-path
-    traversal under `/sys/fs/cgroup/leaves`.
-  - **F-2 (MED)** — `~/.leaves/agentd.sock` is `chmod 0o600` immediately
+    traversal under `/sys/fs/cgroup/marshal`.
+  - **F-2 (MED)** — `~/.marshal/agentd.sock` is `chmod 0o600` immediately
     after bind, regardless of parent-directory perms.
   - **F-3 (MED)** — added `SO_PEERCRED` peer-uid check in `_handle_client`;
     the daemon now refuses connections from any uid other than its own.
@@ -79,16 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Domain errors from the worker propagate normally — no double-charge.
   - Bench: **24ms warm p50 vs 452ms cold p50 = 18.5× speedup, 427ms
     saved per intent** on a `file QUERY` GoalSpec (`scripts/bench_runner_paths.py`).
-- `leaves_runner_path_total{path}` Counter exposed at `/v1/metrics`,
+- `marshal_runner_path_total{path}` Counter exposed at `/v1/metrics`,
   labelled `warm` or `cold` so dispatch ratios are observable.
 - `observability.py` — JSON log formatter and a tiny in-process metrics
   registry (Counter + Histogram, no `prometheus_client` dep). Exposes
   three named series:
-    - `leaves_intents_total{status,category}` — incremented on every
+    - `marshal_intents_total{status,category}` — incremented on every
       terminal intent disposition in agentd.
-    - `leaves_inference_latency_ms` — histogram of `LocalLlamaCppBackend`
+    - `marshal_inference_latency_ms` — histogram of `LocalLlamaCppBackend`
       `/completion` latencies, with buckets tuned for the CPU path.
-    - `leaves_enforcer_rejections_total{reason}` — incremented on every
+    - `marshal_enforcer_rejections_total{reason}` — incremented on every
       `AUTHORIZATION_VIOLATION` raise inside `agents/enforcer.enforce()`,
       labelled by which check fired.
 - `/v1/metrics` endpoint serving the registry in Prometheus 0.0.4 text
@@ -102,12 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint.
 - Inference KV cache warmup at agentd boot (`_warm_inference_kv_cache`).
   Moves the ~30s cold-prefill cost out of the user's first request.
-- `LEAVES_ANTHROPIC_MODEL` env var to override the default Claude model
+- `MARSHAL_ANTHROPIC_MODEL` env var to override the default Claude model
   used by `RemoteAnthropicBackend` without code changes.
 - `research/` directory with `README.md` clearly marking unshipped designs.
 - `tests/demo_suite.py` — guaranteed-working intents with asserted p95
-  latency budgets. `LEAVES_DEMO_MODE=stub` (CI default) exercises the L0
-  regex path only; `LEAVES_DEMO_MODE=full` adds Layer-2 inference cases.
+  latency budgets. `MARSHAL_DEMO_MODE=stub` (CI default) exercises the L0
+  regex path only; `MARSHAL_DEMO_MODE=full` adds Layer-2 inference cases.
 - `pytest-timeout` dev dep with a 30s default per-test budget. Slow
   inference tests now fail loudly instead of hanging the suite.
 
@@ -116,14 +116,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pytest -m inference` explicitly when llama-server is up.
 - Consolidated pytest config: removed `pytest.ini` in favor of
   `[tool.pytest.ini_options]` in `pyproject.toml`.
-- `leaves` REPL gained `--verbose` / `-v` (and `LEAVES_VERBOSE=1` env var)
+- `marshal` REPL gained `--verbose` / `-v` (and `MARSHAL_VERBOSE=1` env var)
   that dumps the full GoalSpec after every parse and shows the
-  `LeavesError` code + structured detail on failures. The `verbose` REPL
+  `MarshalError` code + structured detail on failures. The `verbose` REPL
   command toggles it at runtime. Replaces the previous "user message
   only" surface that hid the offending value.
-- `leaves --version` prints the package version (was previously hidden).
+- `marshal --version` prints the package version (was previously hidden).
 - `[project.scripts]` re-enabled: `pip install -e .` now installs a
-  `leaves` console script (was deferred until `main()` existed).
+  `marshal` console script (was deferred until `main()` existed).
 - 10 new `web_task` examples in `rag/seed_examples.jsonl` covering
   natural-language search phrasings ("tell me about X", "explain Y",
   "google Z") and fetch-style intents ("open <url>", "scrape <url>",

@@ -1,9 +1,9 @@
 /*
- * leaves-notifyd — Notification daemon for Leaves OS.
+ * marshal-notifyd — Notification daemon for Marshal.
  *
  * Implements org.freedesktop.Notifications D-Bus interface.
  * Renders notifications as layer-shell popup surfaces using Cairo/Pango.
- * Integrates with the Leaves intent feed via Unix socket.
+ * Integrates with the Marshal intent feed via Unix socket.
  *
  * Architecture:
  *   - sd-bus for D-Bus interface
@@ -89,7 +89,7 @@ static uint64_t now_ms(void) {
 /* ── SHM buffer ── */
 
 static int create_shm_file(size_t size) {
-	int fd = memfd_create("leaves-notif", MFD_CLOEXEC);
+	int fd = memfd_create("marshal-notif", MFD_CLOEXEC);
 	if (fd < 0) return -1;
 	if (ftruncate(fd, size) < 0) { close(fd); return -1; }
 	return fd;
@@ -162,7 +162,7 @@ static void render_notification(struct notification *n) {
 	cairo_stroke(cr);
 
 	/* Accent bar on left */
-	cairo_set_source_rgba(cr, 0.15, 0.39, 0.92, 1.0); /* Leaves accent blue */
+	cairo_set_source_rgba(cr, 0.15, 0.39, 0.92, 1.0); /* Marshal accent blue */
 	cairo_rectangle(cr, 0, NOTIF_RADIUS, 3, h - 2 * NOTIF_RADIUS);
 	cairo_fill(cr);
 
@@ -317,7 +317,7 @@ static uint32_t show_notification(const char *app, const char *summary,
 	n->surface = wl_compositor_create_surface(wl_compositor);
 	n->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
 		layer_shell, n->surface, wl_output,
-		ZWLR_LAYER_SHELL_V1_LAYER_TOP, "leaves-notification");
+		ZWLR_LAYER_SHELL_V1_LAYER_TOP, "marshal-notification");
 
 	zwlr_layer_surface_v1_set_size(n->layer_surface, NOTIF_WIDTH, NOTIF_HEIGHT);
 	zwlr_layer_surface_v1_set_anchor(n->layer_surface,
@@ -407,8 +407,8 @@ static int method_get_server_info(sd_bus_message *m, void *userdata,
 		sd_bus_error *error) {
 	(void)userdata; (void)error;
 	return sd_bus_reply_method_return(m, "ssss",
-		"leaves-notifyd",     /* name */
-		"Leaves OS",          /* vendor */
+		"marshal-notifyd",     /* name */
+		"Marshal",          /* vendor */
 		"0.1.0",              /* version */
 		"1.2");               /* spec version */
 }
@@ -456,7 +456,7 @@ int main(int argc, char *argv[]) {
 	/* Wayland connection */
 	wl_display = wl_display_connect(NULL);
 	if (!wl_display) {
-		fprintf(stderr, "leaves-notifyd: cannot connect to Wayland\n");
+		fprintf(stderr, "marshal-notifyd: cannot connect to Wayland\n");
 		return 1;
 	}
 
@@ -465,7 +465,7 @@ int main(int argc, char *argv[]) {
 	wl_display_roundtrip(wl_display);
 
 	if (!layer_shell) {
-		fprintf(stderr, "leaves-notifyd: compositor lacks layer-shell support\n");
+		fprintf(stderr, "marshal-notifyd: compositor lacks layer-shell support\n");
 		return 1;
 	}
 
@@ -473,7 +473,7 @@ int main(int argc, char *argv[]) {
 	sd_bus *bus = NULL;
 	int r = sd_bus_open_user(&bus);
 	if (r < 0) {
-		fprintf(stderr, "leaves-notifyd: failed to connect to session bus: %s\n",
+		fprintf(stderr, "marshal-notifyd: failed to connect to session bus: %s\n",
 			strerror(-r));
 		return 1;
 	}
@@ -485,19 +485,19 @@ int main(int argc, char *argv[]) {
 		notifications_vtable,
 		NULL);
 	if (r < 0) {
-		fprintf(stderr, "leaves-notifyd: failed to add vtable: %s\n", strerror(-r));
+		fprintf(stderr, "marshal-notifyd: failed to add vtable: %s\n", strerror(-r));
 		return 1;
 	}
 
 	r = sd_bus_request_name(bus, "org.freedesktop.Notifications",
 		SD_BUS_NAME_REPLACE_EXISTING | SD_BUS_NAME_ALLOW_REPLACEMENT);
 	if (r < 0) {
-		fprintf(stderr, "leaves-notifyd: failed to acquire bus name: %s\n",
+		fprintf(stderr, "marshal-notifyd: failed to acquire bus name: %s\n",
 			strerror(-r));
 		return 1;
 	}
 
-	fprintf(stderr, "leaves-notifyd: listening on org.freedesktop.Notifications\n");
+	fprintf(stderr, "marshal-notifyd: listening on org.freedesktop.Notifications\n");
 
 	/* Main event loop: poll both Wayland and D-Bus fds */
 	int wl_fd = wl_display_get_fd(wl_display);

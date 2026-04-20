@@ -1,5 +1,5 @@
 """
-WAL-mode SQLite audit database for Leaves OS.
+WAL-mode SQLite audit database for Marshal.
 
 All intent lifecycle events are recorded here. The database uses:
   - WAL journal mode (crash-safe concurrent reads)
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from config import AUDIT_DB_PATH
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 def get_db(path: Path = AUDIT_DB_PATH) -> sqlite3.Connection:
@@ -158,7 +158,7 @@ def log_intent_created(
         )
         conn.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def log_state_transition(
@@ -182,7 +182,7 @@ def log_state_transition(
         )
         conn.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def log_action_started(
@@ -214,7 +214,7 @@ def log_action_started(
         conn.commit()
         return cur.lastrowid
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def log_action_completed(
@@ -242,7 +242,7 @@ def log_action_completed(
         )
         conn.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def log_error(
@@ -262,7 +262,7 @@ def log_error(
         )
         conn.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def complete_intent(
@@ -284,7 +284,7 @@ def complete_intent(
         )
         conn.commit()
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ def get_recent_intents(
         ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def get_intent_transitions(
@@ -320,7 +320,7 @@ def get_intent_transitions(
         ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)
 
 
 def get_intent_actions(
@@ -334,4 +334,4 @@ def get_intent_actions(
         ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error as e:
-        raise LeavesError(LeavesErrorCode.DB_ERROR, detail=str(e), cause=e)
+        raise MarshalError(MarshalErrorCode.DB_ERROR, detail=str(e), cause=e)

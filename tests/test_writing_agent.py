@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.writing_agent import WritingAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 from inference.client import InferenceResponse
 
 
@@ -133,7 +133,7 @@ class TestComposeErrors:
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_missing_topic_raises(self, _s, _e, db_conn):
         agent = WritingAgent("test-err1", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action({"action_id": "a1", "type": "COMPOSE",
                                   "params": {"format": "text"}})
         assert "topic" in exc.value.detail.lower()
@@ -142,7 +142,7 @@ class TestComposeErrors:
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_empty_topic_raises(self, _s, _e, db_conn):
         agent = WritingAgent("test-err2", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(_action(""))
         assert "topic" in exc.value.detail.lower()
 
@@ -150,10 +150,10 @@ class TestComposeErrors:
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_unsupported_action_type_raises(self, _s, _e, db_conn):
         agent = WritingAgent("test-err3", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action({"action_id": "a1", "type": "DELETE",
                                   "params": {"topic": "anything"}})
-        assert exc.value.code == LeavesErrorCode.AGENT_NOT_AVAILABLE
+        assert exc.value.code == MarshalErrorCode.AGENT_NOT_AVAILABLE
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -163,12 +163,12 @@ class TestComposeErrors:
         mock_remote = MockRemote.return_value
         mock_remote.is_available.return_value = False
         mock_client = MockClient.return_value
-        mock_client.complete.side_effect = LeavesError(
-            LeavesErrorCode.INFERENCE_UNAVAILABLE, detail="server down")
+        mock_client.complete.side_effect = MarshalError(
+            MarshalErrorCode.INFERENCE_UNAVAILABLE, detail="server down")
         agent = WritingAgent("test-err4", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(_action("write something"))
-        assert exc.value.code == LeavesErrorCode.INFERENCE_UNAVAILABLE
+        assert exc.value.code == MarshalErrorCode.INFERENCE_UNAVAILABLE
 
 
 # ---------------------------------------------------------------------------

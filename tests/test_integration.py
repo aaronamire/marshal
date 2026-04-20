@@ -1,5 +1,5 @@
 """
-End-to-end integration test for the Leaves OS pipeline.
+End-to-end integration test for the Marshal pipeline.
 
 Tests the full flow: parse → audit → execute → history → detail → replay.
 Uses real SQLite audit DB but mocks inference and agent execution.
@@ -261,7 +261,7 @@ class TestEnforcerAgentAudit:
 
     def test_enforcer_blocks_unauthorized_path(self, audit_db):
         from agents.enforcer import enforce
-        from errors import LeavesError, LeavesErrorCode
+        from errors import MarshalError, MarshalErrorCode
 
         goal_spec = {
             "intent_id": "enforcer-test",
@@ -269,9 +269,9 @@ class TestEnforcerAgentAudit:
             "actions": [{"action_id": "a1", "type": "READ", "agent": "file",
                          "params": {"path": "/etc/shadow"}}],
         }
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             enforce(goal_spec["actions"][0], goal_spec)
-        assert exc.value.code == LeavesErrorCode.AUTHORIZATION_VIOLATION
+        assert exc.value.code == MarshalErrorCode.AUTHORIZATION_VIOLATION
 
     def test_enforcer_allows_authorized_path(self, audit_db, tmp_path):
         from agents.enforcer import enforce

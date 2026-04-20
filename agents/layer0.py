@@ -547,7 +547,7 @@ def match(user_text: str) -> Layer0Result:
     Typical latency: <0.05ms.
 
     If a NOT_IMPLEMENTED pattern matches, returns matched=True, is_implemented=False.
-    The caller should raise LeavesError(NOT_IMPLEMENTED) immediately in that case.
+    The caller should raise MarshalError(NOT_IMPLEMENTED) immediately in that case.
     """
     t0 = time.monotonic()
     for pattern, action_type, destructive, extractor in _RULES:

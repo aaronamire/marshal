@@ -72,14 +72,14 @@ static double monotonic_time_s(void) {
 
 /* ── Card state helpers ── */
 
-static bool state_is_pending(LeavesCardState s) {
+static bool state_is_pending(MarshalCardState s) {
 	return s == CARD_STATE_PENDING || s == CARD_STATE_EXECUTING;
 }
 
 /* ── Renderer lifecycle ── */
 
-struct leaves_renderer *renderer_create(void) {
-	struct leaves_renderer *r = calloc(1, sizeof(*r));
+struct marshal_renderer *renderer_create(void) {
+	struct marshal_renderer *r = calloc(1, sizeof(*r));
 	if (!r) return NULL;
 
 	r->font_intent_title = pango_font_description_from_string(FONT_DESC_INTENT_TITLE);
@@ -105,7 +105,7 @@ struct leaves_renderer *renderer_create(void) {
 	return r;
 }
 
-void renderer_destroy(struct leaves_renderer *r) {
+void renderer_destroy(struct marshal_renderer *r) {
 	if (!r) return;
 	if (r->cr) cairo_destroy(r->cr);
 	if (r->surface) cairo_surface_destroy(r->surface);
@@ -127,7 +127,7 @@ void renderer_destroy(struct leaves_renderer *r) {
 	free(r);
 }
 
-void renderer_resize(struct leaves_renderer *r, int width, int height) {
+void renderer_resize(struct marshal_renderer *r, int width, int height) {
 	if (r->cr) cairo_destroy(r->cr);
 	if (r->surface) cairo_surface_destroy(r->surface);
 	r->width = width;
@@ -138,8 +138,8 @@ void renderer_resize(struct leaves_renderer *r, int width, int height) {
 
 /* ── Measure card height ── */
 
-static int measure_card_height(struct leaves_renderer *r,
-		LeavesIntent *intent, bool expanded) {
+static int measure_card_height(struct marshal_renderer *r,
+		MarshalIntent *intent, bool expanded) {
 	cairo_t *cr = r->cr;
 	int inner_w = r->width - 2 * CARD_MARGIN_H - CARD_INDICATOR_W
 		- CARD_PADDING_H * 2;
@@ -254,7 +254,7 @@ static int measure_card_height(struct leaves_renderer *r,
 
 /* ── Indicator color per state ── */
 
-static struct color indicator_for_state(LeavesCardState state, float opacity) {
+static struct color indicator_for_state(MarshalCardState state, float opacity) {
 	struct color c;
 	switch (state) {
 	case CARD_STATE_PENDING:
@@ -293,7 +293,7 @@ static struct color indicator_for_state(LeavesCardState state, float opacity) {
 
 /* ── Draw a single intent card ── */
 
-static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
+static int draw_card(struct marshal_renderer *r, MarshalIntent *intent,
 		int y_base, bool selected, int card_index, bool expanded) {
 	cairo_t *cr = r->cr;
 	int card_w = r->width - 2 * CARD_MARGIN_H;
@@ -536,7 +536,7 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 		int max_hits = intent->search_hit_count;
 		if (max_hits > 5) max_hits = 5;
 		for (int h = 0; h < max_hits; h++) {
-			LeavesSearchHit *hit = &intent->search_hits[h];
+			MarshalSearchHit *hit = &intent->search_hits[h];
 
 			/* Title */
 			PangoLayout *tl = create_layout(cr,
@@ -967,8 +967,8 @@ static int draw_card(struct leaves_renderer *r, LeavesIntent *intent,
 
 /* ── Briefing card ── */
 
-static int draw_briefing_card(struct leaves_renderer *r,
-		LeavesBriefing *briefing, int y) {
+static int draw_briefing_card(struct marshal_renderer *r,
+		MarshalBriefing *briefing, int y) {
 	if (!briefing->loaded) return 0;
 
 	cairo_t *cr = r->cr;
@@ -993,10 +993,10 @@ static int draw_briefing_card(struct leaves_renderer *r,
 	/* Group lines */
 	int group_lines = 0;
 	for (int s = 0; s < briefing->section_count; s++) {
-		LeavesBriefingSection *sec = &briefing->sections[s];
+		MarshalBriefingSection *sec = &briefing->sections[s];
 		for (int g = 0; g < sec->group_count; g++) {
 			group_lines++;
-			LeavesBriefingGroup *grp = &sec->groups[g];
+			MarshalBriefingGroup *grp = &sec->groups[g];
 			group_lines += (grp->item_count > 3) ? 3 : grp->item_count;
 		}
 	}
@@ -1036,9 +1036,9 @@ static int draw_briefing_card(struct leaves_renderer *r,
 
 	/* Groups */
 	for (int s = 0; s < briefing->section_count; s++) {
-		LeavesBriefingSection *sec = &briefing->sections[s];
+		MarshalBriefingSection *sec = &briefing->sections[s];
 		for (int g = 0; g < sec->group_count; g++) {
-			LeavesBriefingGroup *grp = &sec->groups[g];
+			MarshalBriefingGroup *grp = &sec->groups[g];
 			char dir_line[300];
 			snprintf(dir_line, sizeof(dir_line), "%s (%d)",
 				grp->directory, grp->count);
@@ -1077,8 +1077,8 @@ static int draw_briefing_card(struct leaves_renderer *r,
 
 /* ── Watcher cards ── */
 
-static int draw_watcher_cards(struct leaves_renderer *r,
-		struct leaves_feed *feed, int y) {
+static int draw_watcher_cards(struct marshal_renderer *r,
+		struct marshal_feed *feed, int y) {
 	if (feed->watcher_count == 0) return 0;
 
 	cairo_t *cr = r->cr;
@@ -1088,7 +1088,7 @@ static int draw_watcher_cards(struct leaves_renderer *r,
 	int total_h = 0;
 
 	for (int w = 0; w < feed->watcher_count; w++) {
-		LeavesWatcher *watcher = &feed->watchers[w];
+		MarshalWatcher *watcher = &feed->watchers[w];
 		float alpha = watcher->anim_opacity.pos;
 		if (alpha < 0.01f) continue;
 
@@ -1204,7 +1204,7 @@ static int draw_watcher_cards(struct leaves_renderer *r,
 
 /* ── JPEG wallpaper loader ── */
 
-void renderer_load_wallpaper(struct leaves_renderer *r, const char *path) {
+void renderer_load_wallpaper(struct marshal_renderer *r, const char *path) {
 	if (r->wallpaper) {
 		cairo_surface_destroy(r->wallpaper);
 		r->wallpaper = NULL;
@@ -1274,7 +1274,7 @@ void renderer_load_wallpaper(struct leaves_renderer *r, const char *path) {
 }
 
 /* Draw wallpaper in "cover" mode within [0, y .. y+h] */
-static void draw_wallpaper(struct leaves_renderer *r, int y, int h) {
+static void draw_wallpaper(struct marshal_renderer *r, int y, int h) {
 	if (!r->wallpaper) return;
 	cairo_t *cr = r->cr;
 	int iw = cairo_image_surface_get_width(r->wallpaper);
@@ -1318,13 +1318,13 @@ static void draw_history_icon(cairo_t *cr, int cx, int cy, bool active) {
 	}
 }
 
-static void draw_empty_state(struct leaves_renderer *r, int top, int bottom) {
+static void draw_empty_state(struct marshal_renderer *r, int top, int bottom) {
 	cairo_t *cr = r->cr;
 	int center_x = r->width / 2;
 
 	PangoLayout *heading = create_layout(cr, r->font_empty_heading,
 		TRACKING_EMPTY_H);
-	pango_layout_set_text(heading, "Leaves OS", -1);
+	pango_layout_set_text(heading, "Marshal", -1);
 	int hw, hh;
 	pango_layout_get_pixel_size(heading, &hw, &hh);
 
@@ -1354,7 +1354,7 @@ static void draw_empty_state(struct leaves_renderer *r, int top, int bottom) {
 
 /* ── Status banner ── */
 
-static void draw_status_banner(struct leaves_renderer *r) {
+static void draw_status_banner(struct marshal_renderer *r) {
 	cairo_t *cr = r->cr;
 
 	cairo_set_source_rgba(cr, 0xD9 / 255.0, 0x77 / 255.0,
@@ -1487,8 +1487,8 @@ static void draw_volume_icon(cairo_t *cr, int x, int cy, int pct, bool muted) {
 	}
 }
 
-static void draw_taskbar(struct leaves_renderer *r,
-		struct leaves_input *input, struct leaves_feed *feed) {
+static void draw_taskbar(struct marshal_renderer *r,
+		struct marshal_input *input, struct marshal_feed *feed) {
 	cairo_t *cr = r->cr;
 	int bar_y = r->height - INPUT_HEIGHT;
 
@@ -1595,7 +1595,7 @@ static void draw_taskbar(struct leaves_renderer *r,
 	g_object_unref(layout);
 
 	/* ── Right zone: history icon + status indicators ── */
-	struct leaves_status *st = r->status;
+	struct marshal_status *st = r->status;
 	int bar_cy = bar_y + INPUT_HEIGHT / 2;
 
 	/* Build the right zone right-to-left */
@@ -1708,8 +1708,8 @@ static void draw_taskbar(struct leaves_renderer *r,
 
 /* ── Quick-settings dropdown ── */
 
-static void draw_dropdown(struct leaves_renderer *r,
-		struct leaves_status *s) {
+static void draw_dropdown(struct marshal_renderer *r,
+		struct marshal_status *s) {
 	if (!s || !s->dropdown_open) return;
 	cairo_t *cr = r->cr;
 
@@ -1944,15 +1944,15 @@ static void draw_dropdown(struct leaves_renderer *r,
 
 /* ── Authorization overlay ── */
 
-static void draw_auth_overlay(struct leaves_renderer *r,
-		struct leaves_feed *feed) {
+static void draw_auth_overlay(struct marshal_renderer *r,
+		struct marshal_feed *feed) {
 	cairo_t *cr = r->cr;
 
 	if (!feed->awaiting_confirm || feed->confirm_card_idx < 0 ||
 			feed->confirm_card_idx >= feed->count)
 		return;
 
-	LeavesIntent *intent = &feed->intents[feed->confirm_card_idx];
+	MarshalIntent *intent = &feed->intents[feed->confirm_card_idx];
 
 	/* Full-screen dimming layer: rgba(0,0,0,0.72) */
 	set_color(cr, OVERLAY_DIM);
@@ -2153,15 +2153,15 @@ static void draw_auth_overlay(struct leaves_renderer *r,
 
 /* ── Expanded card full-window overlay ── */
 
-static void draw_expanded_overlay(struct leaves_renderer *r,
-		struct leaves_feed *feed) {
+static void draw_expanded_overlay(struct marshal_renderer *r,
+		struct marshal_feed *feed) {
 	cairo_t *cr = r->cr;
 
 	int idx = feed->expanded_card;
 	if (idx < 0 || idx >= feed->count)
 		return;
 
-	LeavesIntent *intent = &feed->intents[idx];
+	MarshalIntent *intent = &feed->intents[idx];
 
 	/* Full-screen dimming */
 	set_color(cr, OVERLAY_DIM);
@@ -2324,8 +2324,8 @@ static void draw_expanded_overlay(struct leaves_renderer *r,
 
 /* ── Full frame render ── */
 
-unsigned char *renderer_draw_frame(struct leaves_renderer *r,
-		struct leaves_feed *feed, struct leaves_input *input, int *stride) {
+unsigned char *renderer_draw_frame(struct marshal_renderer *r,
+		struct marshal_feed *feed, struct marshal_input *input, int *stride) {
 	if (!r->surface || !r->cr) return NULL;
 	cairo_t *cr = r->cr;
 
@@ -2436,8 +2436,8 @@ unsigned char *renderer_draw_frame(struct leaves_renderer *r,
 	return cairo_image_surface_get_data(r->surface);
 }
 
-int renderer_input_hit_test(struct leaves_renderer *r,
-		struct leaves_input *input, double panel_x) {
+int renderer_input_hit_test(struct marshal_renderer *r,
+		struct marshal_input *input, double panel_x) {
 	if (input->len == 0) return 0;
 
 	int input_x     = TASKBAR_ICON_W + INPUT_PADDING_L;
@@ -2479,8 +2479,8 @@ int renderer_input_hit_test(struct leaves_renderer *r,
 	return index;
 }
 
-int renderer_card_hit_test(struct leaves_renderer *r,
-		struct leaves_feed *feed, double panel_y) {
+int renderer_card_hit_test(struct marshal_renderer *r,
+		struct marshal_feed *feed, double panel_y) {
 	if (!feed || feed->count == 0 || !r->cr) return -1;
 
 	int feed_bottom = r->height - INPUT_HEIGHT - SPACE_M;
@@ -2500,12 +2500,12 @@ int renderer_card_hit_test(struct leaves_renderer *r,
 	return -1;
 }
 
-int renderer_card_copy_text(struct leaves_feed *feed, int card_idx,
+int renderer_card_copy_text(struct marshal_feed *feed, int card_idx,
 		char *buf, int buf_size) {
 	if (!feed || card_idx < 0 || card_idx >= feed->count || buf_size <= 0)
 		return 0;
 
-	LeavesIntent *intent = &feed->intents[card_idx];
+	MarshalIntent *intent = &feed->intents[card_idx];
 	int off = 0;
 
 	/* Natural text */
@@ -2526,7 +2526,7 @@ int renderer_card_copy_text(struct leaves_feed *feed, int card_idx,
 	return off;
 }
 
-int renderer_card_text_at(struct leaves_renderer *r,
+int renderer_card_text_at(struct marshal_renderer *r,
 		double panel_x, double panel_y, int *byte_offset) {
 	if (!r || !r->cr) return -1;
 
@@ -2608,7 +2608,7 @@ int renderer_card_text_at(struct leaves_renderer *r,
 	return -1;
 }
 
-int renderer_card_sel_text(struct leaves_renderer *r,
+int renderer_card_sel_text(struct marshal_renderer *r,
 		char *buf, int buf_size) {
 	if (!r || r->card_sel.card_idx < 0 || buf_size <= 0)
 		return 0;

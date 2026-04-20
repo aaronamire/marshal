@@ -1,0 +1,22 @@
+[Unit]
+Description=Marshal compositor (Wayland)
+After=marshal-api.service
+Requires=marshal-api.service
+# Compositor needs a running graphical session
+ConditionEnvironment=XDG_SESSION_TYPE=wayland
+
+[Service]
+Type=simple
+ExecStart=%h/dev/marshal/compositor/builddir/marshal-compositor
+Restart=on-failure
+RestartSec=3
+Environment=HOME=%h
+Environment=XDG_CURRENT_DESKTOP=marshal
+Environment=XDG_SESSION_TYPE=wayland
+Environment=MARSHAL_API_URL=http://127.0.0.1:8765
+
+# Compositor needs full access
+ProtectSystem=no
+
+[Install]
+WantedBy=marshal-session.target

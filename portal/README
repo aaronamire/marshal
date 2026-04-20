@@ -1,4 +1,4 @@
-XDG Desktop Portal Integration for Leaves OS
+XDG Desktop Portal Integration for Marshal
 =============================================
 
 Setup:
@@ -6,8 +6,8 @@ Setup:
    sudo pacman -S xdg-desktop-portal xdg-desktop-portal-wlr
 
 2. Install portal config:
-   sudo cp leaves.portal /usr/share/xdg-desktop-portal/portals/
-   sudo cp leaves-portals.conf /usr/share/xdg-desktop-portal/
+   sudo cp marshal.portal /usr/share/xdg-desktop-portal/portals/
+   sudo cp marshal-portals.conf /usr/share/xdg-desktop-portal/
 
 3. Add screencopy protocol to compositor (see below).
 
@@ -23,5 +23,5 @@ sharing to work. The protocol XML is in compositor/protocols/ and the
 implementation belongs in compositor/compositor.c.
 
 Environment variables (set by session-start.sh):
-  XDG_CURRENT_DESKTOP=leaves
+  XDG_CURRENT_DESKTOP=marshal
   XDG_SESSION_TYPE=wayland

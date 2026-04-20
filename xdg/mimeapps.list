@@ -1,6 +1,6 @@
 [Default Applications]
-# Leaves OS default application associations.
-# Install to ~/.config/mimeapps.list or ~/.config/leaves-mimeapps.list
+# Marshal default application associations.
+# Install to ~/.config/mimeapps.list or ~/.config/marshal-mimeapps.list
 
 # Web browser
 x-scheme-handler/http=firefox.desktop
@@ -58,4 +58,4 @@ application/x-rar-compressed=org.gnome.FileRoller.desktop
 x-scheme-handler/mailto=thunderbird.desktop
 
 # Terminal
-leaves/terminal=leaves-terminal.desktop
+marshal/terminal=marshal-terminal.desktop

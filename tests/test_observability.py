@@ -156,11 +156,11 @@ class TestHistogram:
 class TestPrometheusText:
     def test_render_includes_all_named_metrics(self):
         text = render_prometheus_text()
-        assert "leaves_intents_total" in text
-        assert "leaves_inference_latency_ms_bucket" in text
-        assert "leaves_inference_latency_ms_sum" in text
-        assert "leaves_inference_latency_ms_count" in text
-        assert "leaves_enforcer_rejections_total" in text
+        assert "marshal_intents_total" in text
+        assert "marshal_inference_latency_ms_bucket" in text
+        assert "marshal_inference_latency_ms_sum" in text
+        assert "marshal_inference_latency_ms_count" in text
+        assert "marshal_enforcer_rejections_total" in text
         assert text.endswith("\n"), "exposition must end with a newline"
 
     def test_round_trip_after_observation(self):
@@ -170,10 +170,10 @@ class TestPrometheusText:
         text = render_prometheus_text()
         # One HELP + one TYPE per registered metric block.
         named_metrics = [
-            "leaves_intents_total",
-            "leaves_inference_latency_ms",
-            "leaves_enforcer_rejections_total",
-            "leaves_runner_path_total",
+            "marshal_intents_total",
+            "marshal_inference_latency_ms",
+            "marshal_enforcer_rejections_total",
+            "marshal_runner_path_total",
         ]
         assert text.count("# HELP ") == len(named_metrics)
         assert text.count("# TYPE ") == len(named_metrics)
@@ -201,5 +201,5 @@ class TestMetricsEndpoint:
         assert "text/plain" in ct
         assert "version=0.0.4" in ct
         body = resp.text
-        assert "leaves_intents_total" in body
-        assert "leaves_enforcer_rejections_total" in body
+        assert "marshal_intents_total" in body
+        assert "marshal_enforcer_rejections_total" in body

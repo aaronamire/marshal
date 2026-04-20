@@ -54,7 +54,7 @@ class BriefingGenerator:
                         "source_type": "file",
                         "count": 42,
                         "groups": [
-                            {"directory": "~/dev/leaves-os", "count": 15, "items": [...]},
+                            {"directory": "~/dev/marshal", "count": 15, "items": [...]},
                             ...
                         ]
                     }

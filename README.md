@@ -1,4 +1,4 @@
-# Leaves OS
+# Marshal
 
 **Local agents that can't escape their plan.**
 
@@ -23,7 +23,7 @@ system.
 - **Audit log with replay:** SQLite WAL. Every intent, every state transition,
   every action, every error. Replay refuses destructive actions by design.
 - **Wayland compositor** (optional) with a dedicated AI panel rendered via Cairo.
-- **BYOK remote escalation:** set `LEAVES_ANTHROPIC_KEY` to let the writing
+- **BYOK remote escalation:** set `MARSHAL_ANTHROPIC_KEY` to let the writing
   agent call Claude for long-form content. Core planning stays local.
 
 ## Quick start
@@ -33,9 +33,9 @@ python3 -m venv .os
 source .os/bin/activate
 pip install -r requirements.txt
 ./scripts/start-inference.sh &   # llama.cpp server on :8080
-python3 leaves.py                # REPL
+python3 main.py                # REPL
 # or
-python3 agentd.py                # background daemon (~/.leaves/agentd.sock)
+python3 agentd.py                # background daemon (~/.marshal/agentd.sock)
 uvicorn api.server:app --port 8765  # HTTP API
 ```
 
@@ -77,12 +77,12 @@ Implemented agents: `file`, `system` (incl. app launch/terminate), `web`,
 `writing`, `audio`, `network`, `power`.
 
 Not yet implemented: `email`, Layer 3 remote GoalSpec fallback, the
-always-on background daemon (`leavesd`), the agent-authority protocol.
+always-on background daemon (`marshald`), the agent-authority protocol.
 
 ## Remote inference (optional)
 
 ```bash
-export LEAVES_ANTHROPIC_KEY=sk-ant-...
+export MARSHAL_ANTHROPIC_KEY=sk-ant-...
 ```
 
 When set, `WritingAgent` escalates to Claude for prose generation and falls

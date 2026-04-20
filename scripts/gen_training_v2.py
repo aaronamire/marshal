@@ -58,7 +58,7 @@ _HOME_DIRS = [
     "~/Music", "~/Videos", "~/Projects", "~/dev", "~/notes",
     "~/work", "~/tmp", "~/.config", "~/.local/share", "~/.cache",
     "~/Documents/work", "~/Documents/personal", "~/Downloads/archive",
-    "~/Pictures/screenshots", "~/Music/playlists", "~/dev/leaves-os",
+    "~/Pictures/screenshots", "~/Music/playlists", "~/dev/marshal",
     "~/dev/scratch", "~/projects/website", "~/projects/api-server",
 ]
 

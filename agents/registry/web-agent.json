@@ -1,5 +1,5 @@
 {
-  "agent_id": "dev.leaves.web-agent",
+  "agent_id": "dev.marshal.web-agent",
   "version": "0.1.0",
   "handles": ["web_task"],
   "tools": ["web_search", "web_fetch"],

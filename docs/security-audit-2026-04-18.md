@@ -46,9 +46,9 @@ cgroup_path = _CGROUP_ROOT / f"intent-{intent_id}"
 The schema requires `intent_id` to match a UUID-v4 regex, but agentd
 performs no schema validation. A client that connects directly to the
 Unix socket can pass `intent_id = "/../foo"`. The first 8 chars are
-`/../foo`, producing `/sys/fs/cgroup/leaves/intent-/../foo`. The
+`/../foo`, producing `/sys/fs/cgroup/marshal/intent-/../foo`. The
 kernel resolves `..` during the `mkdir` parent lookup, so the
-subprocess actually creates `/sys/fs/cgroup/leaves/foo` and writes
+subprocess actually creates `/sys/fs/cgroup/marshal/foo` and writes
 its pid into `cgroup.procs` there.
 
 Reproduced via `python -c` (see audit notes); both `mkdir` and the
@@ -79,10 +79,10 @@ without an explicit chmod or umask. With the default user umask
 (actually mode `0666 & ~umask = 0644` on most systems, which still
 permits reads — and connect(2) on AF_UNIX requires only read+write
 on the socket inode). On a multi-tenant box, any other UID with
-filesystem access to `~/.leaves/agentd.sock` can connect and submit
+filesystem access to `~/.marshal/agentd.sock` can connect and submit
 GoalSpecs.
 
-In practice `~/.leaves/` is `0700` on most user accounts, but Leaves
+In practice `~/.marshal/` is `0700` on most user accounts, but Marshal
 does not enforce that. The socket is a sole-author resource and
 should be `0600` regardless of the parent dir.
 

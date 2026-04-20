@@ -1,4 +1,4 @@
-=== Leaves OS Canonical Intent Tests ===
+=== Marshal Canonical Intent Tests ===
 
   [✓] (file_task 97%) find all PDFs in my Downloads folder
   [✓] (file_task 80%) list Python files in ~/dev
@@ -23,7 +23,7 @@
   [✗] find all files modified today in ~
       → NOT_IMPLEMENTED: Category 'file_task' is not yet implemented in Phase 1. Only file_task is supported. Email, web, system, and writing agents are planned for Phase 2+.
   [✓] (file_task 95%) list all shell scripts in ~/dev
-  [✗] find all markdown files in ~/dev/leaves-os
+  [✗] find all markdown files in ~/dev/marshal
       → NOT_IMPLEMENTED: Category 'file_task' is not yet implemented in Phase 1. Only file_task is supported. Email, web, system, and writing agents are planned for Phase 2+.
   [✗] show me files in ~/Documents ending with .docx
       → JSON_PARSE_FAILED: JSON decode error: Expecting ',' delimiter: line 1 column 294 (char 293). Raw: '{ "intent_id": "PLACEHOLDER", "natural_text": "show me files in ~/Documents ending with .docx", "category": "file_task", "actions": [ { "action_id": "act-1", "type": "QUERY", "agent": "file", "params"'

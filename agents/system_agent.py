@@ -24,7 +24,7 @@ from typing import Optional
 import psutil
 
 from agents.base_agent import BaseAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 # Common program aliases — maps user-friendly names to real executables.
 # Checked in order; first one found in PATH wins.
@@ -36,8 +36,8 @@ _PROGRAM_ALIASES: dict[str, list[str]] = {
     "file manager": ["nautilus", "thunar", "dolphin", "pcmanfm", "nemo"],
     "text editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
     "editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
-    "terminal": ["leaves-terminal", "foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
-    "term": ["leaves-terminal", "foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
+    "terminal": ["marshal-terminal", "foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
+    "term": ["marshal-terminal", "foot", "alacritty", "kitty", "wezterm", "gnome-terminal", "xterm"],
     "calculator": ["gnome-calculator", "kcalc", "galculator", "qalculate-gtk"],
     "settings": ["gnome-control-center", "xfce4-settings-manager", "systemsettings"],
 }
@@ -61,13 +61,13 @@ _FIREFOX_EXECUTABLES = frozenset({
 # Base directory for per-compositor Chromium profiles.  The actual
 # directory includes the WAYLAND_DISPLAY name so that Chrome instances
 # on different compositors never share a SingletonLock file.
-_LEAVES_CHROME_BASE = pathlib.Path.home() / ".leaves"
+_MARSHAL_CHROME_BASE = pathlib.Path.home() / ".marshal"
 
 # Programs that must never be terminated via the agent.
 _PROTECTED_PROCESSES = frozenset({
     "systemd", "init", "sshd", "login", "dbus-daemon",
     "pipewire", "pulseaudio", "Xorg", "Xwayland",
-    "leaves-compositor", "agentd", "python3",
+    "marshal-compositor", "agentd", "python3",
 })
 
 # Max processes to kill in a single terminate action (safety cap).
@@ -94,8 +94,8 @@ class SystemAgent(BaseAgent):
         elif action_type == "DELETE":
             return self._handle_terminate(action_id, params)
         else:
-            raise LeavesError(
-                LeavesErrorCode.NOT_IMPLEMENTED,
+            raise MarshalError(
+                MarshalErrorCode.NOT_IMPLEMENTED,
                 detail=f"SystemAgent handles QUERY/WRITE/DELETE, got '{action_type}'",
             )
 
@@ -124,10 +124,10 @@ class SystemAgent(BaseAgent):
             result = handler()
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -138,8 +138,8 @@ class SystemAgent(BaseAgent):
     def _handle_launch(self, action_id: str, params: dict) -> dict:
         program = params.get("program", "").strip()
         if not program:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="No program specified for launch",
             )
 
@@ -152,8 +152,8 @@ class SystemAgent(BaseAgent):
                 if exe:
                     break
         if exe is None:
-            raise LeavesError(
-                LeavesErrorCode.FILE_NOT_FOUND,
+            raise MarshalError(
+                MarshalErrorCode.FILE_NOT_FOUND,
                 detail=f"Program '{program}' not found in PATH",
             )
 
@@ -172,7 +172,7 @@ class SystemAgent(BaseAgent):
             #
             # Priority order:
             #   1. Direct from goal_spec (injected into action by coordinator)
-            #   2. Marker file ~/.leaves/wayland-display (written by compositor)
+            #   2. Marker file ~/.marshal/wayland-display (written by compositor)
             #   3. os.environ — BUT only if sandboxed_runner set it from
             #      goal_spec metadata.  The *inherited* WAYLAND_DISPLAY in
             #      os.environ may point to Hyprland (the parent shell's
@@ -190,7 +190,7 @@ class SystemAgent(BaseAgent):
             marker_display: Optional[str] = None
             if not resolved_display:
                 try:
-                    marker = pathlib.Path.home() / ".leaves" / "wayland-display"
+                    marker = pathlib.Path.home() / ".marshal" / "wayland-display"
                     candidate = marker.read_text().strip()
                     if candidate and os.path.exists(os.path.join(xrd, candidate)):
                         marker_display = candidate
@@ -221,7 +221,7 @@ class SystemAgent(BaseAgent):
                 env["WAYLAND_DISPLAY"] = resolved_display
 
             # ---------- Diagnostic log ----------
-            _diag_path = pathlib.Path.home() / ".leaves" / "launch-debug.log"
+            _diag_path = pathlib.Path.home() / ".marshal" / "launch-debug.log"
             try:
                 import glob as _dg
                 sockets = sorted(_dg.glob(os.path.join(xrd, "wayland-*")))
@@ -246,7 +246,7 @@ class SystemAgent(BaseAgent):
                 # would let an old Chrome instance (running on Hyprland)
                 # hijack the launch via the singleton mechanism.
                 disp_tag = resolved_display or "default"
-                chrome_data_dir = _LEAVES_CHROME_BASE / f"chrome-{disp_tag}"
+                chrome_data_dir = _MARSHAL_CHROME_BASE / f"chrome-{disp_tag}"
                 chrome_data_dir.mkdir(parents=True, exist_ok=True)
                 cmd += [
                     f"--user-data-dir={chrome_data_dir}",
@@ -258,7 +258,7 @@ class SystemAgent(BaseAgent):
 
             # Append final command to diagnostic log
             try:
-                with open(pathlib.Path.home() / ".leaves" / "launch-debug.log", "a") as _df:
+                with open(pathlib.Path.home() / ".marshal" / "launch-debug.log", "a") as _df:
                     _df.write(f"cmd:                          {cmd}\n")
                     _df.write(f"chrome_data_dir:              {locals().get('chrome_data_dir', 'N/A')}\n")
             except Exception:
@@ -291,8 +291,8 @@ class SystemAgent(BaseAgent):
             self._audit_end(row_id, result)
             return result
         except OSError as e:
-            err = LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            err = MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail=f"Failed to launch '{program}': {e}",
                 cause=e,
             )
@@ -306,8 +306,8 @@ class SystemAgent(BaseAgent):
     def _handle_terminate(self, action_id: str, params: dict) -> dict:
         target = params.get("target", "").strip()
         if not target:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="No target specified for terminate",
             )
 
@@ -316,10 +316,10 @@ class SystemAgent(BaseAgent):
             result = self._terminate(target)
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -360,22 +360,22 @@ class SystemAgent(BaseAgent):
 
         matches = exact_matches or fuzzy_matches
         if not matches:
-            raise LeavesError(
-                LeavesErrorCode.PROCESS_NOT_FOUND,
+            raise MarshalError(
+                MarshalErrorCode.PROCESS_NOT_FOUND,
                 detail=f"No running process named '{target}' owned by current user",
             )
 
         # Safety: refuse to kill protected system processes
         if target.lower() in {n.lower() for n in _PROTECTED_PROCESSES}:
-            raise LeavesError(
-                LeavesErrorCode.PERMISSION_DENIED,
+            raise MarshalError(
+                MarshalErrorCode.PERMISSION_DENIED,
                 detail=f"'{target}' is a protected system process and cannot be terminated",
             )
 
         # Cap the number of processes we'll kill
         if len(matches) > _MAX_TERMINATE:
-            raise LeavesError(
-                LeavesErrorCode.PERMISSION_DENIED,
+            raise MarshalError(
+                MarshalErrorCode.PERMISSION_DENIED,
                 detail=(
                     f"Found {len(matches)} processes named '{target}' — "
                     f"refusing to kill more than {_MAX_TERMINATE} at once"
@@ -397,28 +397,28 @@ class SystemAgent(BaseAgent):
         try:
             p = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            raise LeavesError(
-                LeavesErrorCode.PROCESS_NOT_FOUND,
+            raise MarshalError(
+                MarshalErrorCode.PROCESS_NOT_FOUND,
                 detail=f"No process with PID {pid}",
             )
 
         # Only kill our own processes
         try:
             if p.uids().real != os.getuid():
-                raise LeavesError(
-                    LeavesErrorCode.PERMISSION_DENIED,
+                raise MarshalError(
+                    MarshalErrorCode.PERMISSION_DENIED,
                     detail=f"PID {pid} ({p.name()}) is not owned by current user",
                 )
         except psutil.AccessDenied:
-            raise LeavesError(
-                LeavesErrorCode.PERMISSION_DENIED,
+            raise MarshalError(
+                MarshalErrorCode.PERMISSION_DENIED,
                 detail=f"Cannot access PID {pid} — not owned by current user",
             )
 
         name = p.name()
         if name.lower() in {n.lower() for n in _PROTECTED_PROCESSES}:
-            raise LeavesError(
-                LeavesErrorCode.PERMISSION_DENIED,
+            raise MarshalError(
+                MarshalErrorCode.PERMISSION_DENIED,
                 detail=f"PID {pid} ({name}) is a protected system process",
             )
 

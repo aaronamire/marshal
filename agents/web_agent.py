@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 from agents.base_agent import BaseAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 class WebAgent(BaseAgent):
@@ -30,8 +30,8 @@ class WebAgent(BaseAgent):
         params = action.get("params", {})
 
         if action_type != "QUERY":
-            raise LeavesError(
-                LeavesErrorCode.AGENT_NOT_AVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.AGENT_NOT_AVAILABLE,
                 detail=f"WebAgent only supports QUERY, got {action_type}",
             )
 
@@ -40,8 +40,8 @@ class WebAgent(BaseAgent):
         if query_type == "search":
             query = params.get("query", params.get("path", ""))
             if not query:
-                raise LeavesError(
-                    LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                raise MarshalError(
+                    MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                     detail="No query provided for web search",
                 )
             row_id = self._audit_start(action_id, "QUERY", params)
@@ -49,18 +49,18 @@ class WebAgent(BaseAgent):
                 result = self._web_search(query)
                 self._audit_end(row_id, result)
                 return result
-            except LeavesError:
+            except MarshalError:
                 raise
             except Exception as e:
-                err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+                err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
                 self._audit_end(row_id, error=err)
                 raise err
 
         elif query_type == "fetch":
             url = params.get("url", params.get("path", ""))
             if not url:
-                raise LeavesError(
-                    LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+                raise MarshalError(
+                    MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                     detail="No URL provided for web fetch",
                 )
             row_id = self._audit_start(action_id, "QUERY", params)
@@ -68,10 +68,10 @@ class WebAgent(BaseAgent):
                 result = self._web_fetch(url)
                 self._audit_end(row_id, result)
                 return result
-            except LeavesError:
+            except MarshalError:
                 raise
             except Exception as e:
-                err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+                err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
                 self._audit_end(row_id, error=err)
                 raise err
 
@@ -83,10 +83,10 @@ class WebAgent(BaseAgent):
                     params.get("query", params.get("path", str(params))))
                 self._audit_end(row_id, result)
                 return result
-            except LeavesError:
+            except MarshalError:
                 raise
             except Exception as e:
-                err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+                err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
                 self._audit_end(row_id, error=err)
                 raise err
 

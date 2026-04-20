@@ -1,4 +1,4 @@
-# Leaves OS — Phase 0 Baseline
+# Marshal — Phase 0 Baseline
 *This document records the measured state of the system at Phase 0 completion.*
 *All numbers are from actual hardware runs, not estimates.*
 
@@ -178,7 +178,7 @@ Primary delta known from isolated tests:
 | L1 NOT_IMPLEMENTED fast-path (<2ms for non-file categories) | ✓ | `agents/intent_parser.py` |
 | SQLite audit log | ✓ | `db/audit.py` |
 | File agent | ✓ | `agents/file_agent.py` |
-| CLI entry point with Rich UI | ✓ | `leaves.py` |
+| CLI entry point with Rich UI | ✓ | `main.py` |
 | Eval harness: ordering-aware, multi-config, thermal-aware | ✓ | `tests/eval_suite.py` |
 | Unit test suite (61 tests) | ✓ | `tests/` |
 

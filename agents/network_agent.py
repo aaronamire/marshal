@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 
 from agents.base_agent import BaseAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 class NetworkAgent(BaseAgent):
@@ -31,8 +31,8 @@ class NetworkAgent(BaseAgent):
         elif action_type == "WRITE":
             return self._handle_write(action_id, params)
         else:
-            raise LeavesError(
-                LeavesErrorCode.AGENT_NOT_AVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.AGENT_NOT_AVAILABLE,
                 detail=f"NetworkAgent supports QUERY and WRITE, got {action_type}",
             )
 
@@ -76,10 +76,10 @@ class NetworkAgent(BaseAgent):
                 result = self._get_status()
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -275,24 +275,24 @@ class NetworkAgent(BaseAgent):
             elif network_action == "disconnect":
                 result = self._disconnect()
             else:
-                raise LeavesError(
-                    LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                raise MarshalError(
+                    MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail=f"Unknown network_action: {network_action}",
                 )
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
     def _connect(self, params: dict) -> dict:
         ssid = params.get("ssid", "")
         if not ssid:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="No SSID provided for WiFi connect",
             )
         passphrase = params.get("passphrase", "")
@@ -301,16 +301,16 @@ class NetworkAgent(BaseAgent):
             return self._iwd_connect(ssid, passphrase)
         elif self._has_nmcli():
             return self._nmcli_connect(ssid, passphrase)
-        raise LeavesError(
-            LeavesErrorCode.AGENT_NOT_AVAILABLE,
+        raise MarshalError(
+            MarshalErrorCode.AGENT_NOT_AVAILABLE,
             detail="Neither iwd nor NetworkManager available",
         )
 
     def _iwd_connect(self, ssid: str, passphrase: str) -> dict:
         device = self._iwd_get_device()
         if not device:
-            raise LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            raise MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail="No WiFi device found",
             )
         cmd = ["iwctl", "station", device, "connect", ssid]

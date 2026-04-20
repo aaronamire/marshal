@@ -34,7 +34,7 @@ MULTI_ACTION_COMBOS = [
 ]
 
 SYSTEM_PROMPT = """\
-You generate training data for an AI assistant called Leaves OS.
+You generate training data for an AI assistant called Marshal.
 For each request, output a JSON array of GoalSpec objects — no markdown, no explanation.
 
 GOALSPEC SCHEMA (do NOT include "intent_id"):

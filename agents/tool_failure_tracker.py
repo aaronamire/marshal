@@ -3,14 +3,14 @@ Tool failure tracker — prevents livelock when a tool repeatedly fails
 with the same arguments (PhD review Section 7).
 
 If the same (tool_name, args_key) pair fails TOOL_FAILURE_ESCALATION_THRESHOLD
-times, raise LeavesError(TOOL_FAILURE_ESCALATED) to abort the intent.
+times, raise MarshalError(TOOL_FAILURE_ESCALATED) to abort the intent.
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from config import TOOL_FAILURE_ESCALATION_THRESHOLD
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 def _make_args_key(args: dict[str, Any]) -> str:
@@ -37,7 +37,7 @@ class ToolFailureTracker:
     ) -> None:
         """
         Record a failure for tool_name with the given args.
-        Raises LeavesError(TOOL_FAILURE_ESCALATED) if threshold is exceeded.
+        Raises MarshalError(TOOL_FAILURE_ESCALATED) if threshold is exceeded.
         """
         key = (tool_name, _make_args_key(args))
         count, _ = self._failures.get(key, (0, None))
@@ -45,8 +45,8 @@ class ToolFailureTracker:
         self._failures[key] = (count, error)
 
         if count >= self._threshold:
-            raise LeavesError(
-                LeavesErrorCode.TOOL_FAILURE_ESCALATED,
+            raise MarshalError(
+                MarshalErrorCode.TOOL_FAILURE_ESCALATED,
                 detail=(
                     f"Tool '{tool_name}' failed {count} times with the same arguments. "
                     f"Last error: {error!r}"

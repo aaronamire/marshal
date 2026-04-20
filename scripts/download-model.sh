@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download and verify the Leaves OS GoalSpec model.
+# Download and verify the Marshal GoalSpec model.
 #
 # Pulls the fine-tuned Qwen-2.5-3B GoalSpec model from HuggingFace and
 # verifies its SHA-256 against the manifest in models/MANIFEST.sha256.
@@ -8,13 +8,13 @@
 # Usage: ./scripts/download-model.sh [--phase1] [--force]
 set -euo pipefail
 
-LEAVES_ROOT="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
-MODELS_DIR="$LEAVES_ROOT/models"
+MARSHAL_ROOT="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+MODELS_DIR="$MARSHAL_ROOT/models"
 MANIFEST="$MODELS_DIR/MANIFEST.sha256"
 
 # --- model registry ----------------------------------------------------------
 # name|hf_repo|hf_filename|local_filename
-readonly MODEL_PHASE2="goalspec|amirewontmiss/leaves-goalspec-qwen25-3b-gguf|goalspec_qwen25_3b_q4km.gguf|goalspec_qwen25_3b_q4km.gguf"
+readonly MODEL_PHASE2="goalspec|amirewontmiss/marshal-goalspec-qwen25-3b-gguf|goalspec_qwen25_3b_q4km.gguf|goalspec_qwen25_3b_q4km.gguf"
 readonly MODEL_PHASE1="qwen25_3b|Qwen/Qwen2.5-3B-Instruct-GGUF|qwen2.5-3b-instruct-q4_k_m.gguf|qwen2.5-3b-instruct-q4_k_m.gguf"
 
 usage() {

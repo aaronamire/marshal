@@ -1,0 +1,14 @@
+[Unit]
+Description=Marshal graphical session
+Documentation=https://github.com/amirewontmiss/marshal
+BindsTo=graphical-session.target
+Wants=marshal-inference.service
+Wants=marshal-agentd.service
+Wants=marshal-api.service
+Wants=marshal-compositor.service
+Wants=marshal-notifyd.service
+Wants=xdg-desktop-portal.service
+After=basic.target
+
+[Install]
+WantedBy=graphical-session.target

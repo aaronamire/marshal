@@ -1,5 +1,5 @@
 """
-Location-transparent inference client for Leaves OS.
+Location-transparent inference client for Marshal.
 
 Uses an InferenceBackend ABC so that callers never know which backend
 (local llama.cpp, remote API) is serving the request.
@@ -28,7 +28,7 @@ from config import (
     TIMEOUT_READ_SECONDS,
     TIMEOUT_HARD_SECONDS,
 )
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 from observability import inference_latency_ms
 
 
@@ -89,8 +89,8 @@ class LocalLlamaCppBackend(InferenceBackend):
 
     def complete(self, request: InferenceRequest) -> InferenceResponse:
         if not self.is_available():
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_UNAVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_UNAVAILABLE,
                 detail=f"llama.cpp server not reachable at {self._base_url}",
             )
 
@@ -117,13 +117,13 @@ class LocalLlamaCppBackend(InferenceBackend):
                 timeout=(TIMEOUT_CONNECT_SECONDS, TIMEOUT_READ_SECONDS),
             )
         except requests.exceptions.Timeout:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_TIMEOUT,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_TIMEOUT,
                 detail=f"llama.cpp server timed out after {TIMEOUT_READ_SECONDS}s",
             )
         except requests.exceptions.ConnectionError as e:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_UNAVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_UNAVAILABLE,
                 detail=str(e),
                 cause=e,
             )
@@ -131,16 +131,16 @@ class LocalLlamaCppBackend(InferenceBackend):
         inference_latency_ms.observe(latency_ms)
 
         if r.status_code != 200:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail=f"HTTP {r.status_code}: {r.text[:200]}",
             )
 
         try:
             data = r.json()
         except Exception as e:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail=f"Could not decode JSON from server: {e}",
                 cause=e,
             )
@@ -148,13 +148,13 @@ class LocalLlamaCppBackend(InferenceBackend):
         # Native response: {"content": "...", "tokens_cached": N, "timings": {...}}
         content = data.get("content")
         if content is None:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail=f"Unexpected response structure: {str(data)[:200]}",
             )
         if not content:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="Server returned empty content.",
             )
 
@@ -182,21 +182,21 @@ class RemoteAnthropicBackend(InferenceBackend):
     and email_agent for prose generation where the 3B local model
     produces garbage.
 
-    Requires LEAVES_ANTHROPIC_KEY env var. Refuses to start without it.
+    Requires MARSHAL_ANTHROPIC_KEY env var. Refuses to start without it.
     """
 
     def __init__(self, model: str = "claude-sonnet-4-6"):
         import os
-        self._api_key = os.environ.get("LEAVES_ANTHROPIC_KEY", "")
-        self._model = os.environ.get("LEAVES_ANTHROPIC_MODEL", model)
+        self._api_key = os.environ.get("MARSHAL_ANTHROPIC_KEY", "")
+        self._model = os.environ.get("MARSHAL_ANTHROPIC_MODEL", model)
         self._client = None
 
     def _get_client(self):
         if self._client is None:
             if not self._api_key:
-                raise LeavesError(
-                    LeavesErrorCode.INFERENCE_UNAVAILABLE,
-                    detail="LEAVES_ANTHROPIC_KEY not set. Export it to enable remote inference.",
+                raise MarshalError(
+                    MarshalErrorCode.INFERENCE_UNAVAILABLE,
+                    detail="MARSHAL_ANTHROPIC_KEY not set. Export it to enable remote inference.",
                 )
             import anthropic
             self._client = anthropic.Anthropic(api_key=self._api_key)
@@ -235,8 +235,8 @@ class RemoteAnthropicBackend(InferenceBackend):
                 messages=[{"role": "user", "content": user_msg}],
             )
         except Exception as e:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_UNAVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_UNAVAILABLE,
                 detail=f"Anthropic API error: {e}",
                 cause=e,
             )
@@ -244,8 +244,8 @@ class RemoteAnthropicBackend(InferenceBackend):
 
         content = msg.content[0].text if msg.content else ""
         if not content:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="Anthropic API returned empty content.",
             )
 

@@ -4,7 +4,7 @@ maintains a live SessionContext that the intent parser can inject into
 L2 prompts.
 
 The compositor writes newline-delimited JSON to:
-    $XDG_RUNTIME_DIR/leaves-compositor-events.sock
+    $XDG_RUNTIME_DIR/marshal-compositor-events.sock
 
 Events:
     window_opened   {app_id, title, workspace, pid?, ts_ms}
@@ -24,7 +24,7 @@ from typing import Any, Callable, Coroutine
 
 COMPOSITOR_EVENTS_SOCK = pathlib.Path(
     os.environ.get("XDG_RUNTIME_DIR", "/tmp")
-) / "leaves-compositor-events.sock"
+) / "marshal-compositor-events.sock"
 
 
 @dataclass
@@ -153,7 +153,7 @@ class CompositorEventWatcher:
             self.context.recent_exits = self.context.recent_exits[-10:]
 
             if exit_code != 0 and self._exit_callbacks:
-                scrollback = (pathlib.Path.home() / ".leaves" /
+                scrollback = (pathlib.Path.home() / ".marshal" /
                               "terminal-scrollback.txt")
                 for cb in self._exit_callbacks:
                     asyncio.create_task(cb(app_id, exit_code, scrollback))

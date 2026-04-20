@@ -1,7 +1,7 @@
 """Tests for the tool failure tracker / livelock prevention."""
 import pytest
 from agents.tool_failure_tracker import ToolFailureTracker
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 def test_escalates_at_threshold():
@@ -9,9 +9,9 @@ def test_escalates_at_threshold():
     args = {"path": "/home/user/file.txt"}
     tracker.record_failure("fs_delete", args)
     tracker.record_failure("fs_delete", args)
-    with pytest.raises(LeavesError) as exc_info:
+    with pytest.raises(MarshalError) as exc_info:
         tracker.record_failure("fs_delete", args)
-    assert exc_info.value.code == LeavesErrorCode.TOOL_FAILURE_ESCALATED
+    assert exc_info.value.code == MarshalErrorCode.TOOL_FAILURE_ESCALATED
 
 
 def test_different_args_tracked_separately():

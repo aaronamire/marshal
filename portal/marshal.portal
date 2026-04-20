@@ -1,4 +1,4 @@
 [portal]
-DBusName=org.freedesktop.impl.portal.desktop.leaves
+DBusName=org.freedesktop.impl.portal.desktop.marshal
 Interfaces=org.freedesktop.impl.portal.Screenshot;org.freedesktop.impl.portal.ScreenCast;
-UseIn=leaves-compositor
+UseIn=marshal-compositor

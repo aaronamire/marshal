@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the llama.cpp inference server for Leaves OS
+# Start the llama.cpp inference server for Marshal
 # CPU-only — no GPU flags. i5-7200U / Intel HD 620.
 
 LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
@@ -8,7 +8,7 @@ LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
 # Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — last resort
 MODEL="$(dirname "$0")/../models/goalspec_qwen25_3b_q4km.gguf"
 MODEL_FALLBACK_P1="$(dirname "$0")/../models/qwen2.5-3b-instruct-q4_k_m.gguf"
-MODEL_FALLBACK_P0="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+MODEL_FALLBACK_P0="$HOME/marshal-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 PORT=8080
 HOST="127.0.0.1"
 THREADS=2  # Physical cores only — DO NOT use 4 (logical) on Kaby Lake HT
@@ -47,10 +47,10 @@ fi
 
 # If invoked manually while the systemd service is already running, restart it.
 # Skip this check when we ARE the systemd service (INVOCATION_ID is set by systemd).
-if [ -z "$INVOCATION_ID" ] && systemctl --user is-active --quiet leaves-inference.service 2>/dev/null; then
+if [ -z "$INVOCATION_ID" ] && systemctl --user is-active --quiet marshal-inference.service 2>/dev/null; then
     echo "systemd service already active — restarting..."
-    systemctl --user restart leaves-inference.service
-    echo "Done. Use: journalctl --user -u leaves-inference -f"
+    systemctl --user restart marshal-inference.service
+    echo "Done. Use: journalctl --user -u marshal-inference -f"
     exit 0
 fi
 
@@ -67,7 +67,7 @@ echo "Model: $MODEL"
 echo ""
 
 # Ensure KV cache save directory exists (for --slot-save-path)
-KV_CACHE_DIR="$HOME/.leaves/kv-cache"
+KV_CACHE_DIR="$HOME/.marshal/kv-cache"
 mkdir -p "$KV_CACHE_DIR"
 
 exec "$LLAMA_SERVER" \

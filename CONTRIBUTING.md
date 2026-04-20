@@ -1,6 +1,6 @@
-# Contributing to Leaves OS
+# Contributing to Marshal
 
-Thanks for considering a contribution. Leaves runs untrusted user input
+Thanks for considering a contribution. Marshal runs untrusted user input
 through a model and dispatches actions on the host. Every change touches
 either correctness, safety, or both — please treat patches accordingly.
 
@@ -41,7 +41,7 @@ instead of a CLA to keep contribution friction low.
 ## Code Style
 
 - Python: standard library first, third-party next, local imports last.
-  Type hints on public functions. No bare `except:`. Use `LeavesError`
+  Type hints on public functions. No bare `except:`. Use `MarshalError`
   for typed failures.
 - C (compositor): match existing style — 8-column tabs, K&R braces,
   snake_case identifiers, headers in the order shown in `compositor.c`.

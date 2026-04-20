@@ -20,7 +20,7 @@ Reference grammar (used by agents/refs.py):
   - The first path segment is an action_id (or the literal "summary" / "results")
   - Subsequent segments walk dicts/lists; "[N]" indexes a list
 
-Persistence: ~/.leaves/session.jsonl. Rewritten on every record() so the file
+Persistence: ~/.marshal/session.jsonl. Rewritten on every record() so the file
 always reflects the in-memory ring (newline-delimited JSON, one Turn per line).
 On load, turns older than `session_window` seconds (default 1h) are dropped —
 this is what defines a "session" of conversation.
@@ -39,7 +39,7 @@ from typing import Any
 # Defaults — small constants, kept here so callers can read them.
 DEFAULT_CAPACITY: int = 16
 DEFAULT_SESSION_WINDOW_SECONDS: float = 3600.0  # 1 hour idle = new session
-DEFAULT_PATH: Path = Path.home() / ".leaves" / "session.jsonl"
+DEFAULT_PATH: Path = Path.home() / ".marshal" / "session.jsonl"
 
 # Caps to keep persistence bounded even if the user pastes huge inputs.
 _MAX_NATURAL_TEXT: int = 1000

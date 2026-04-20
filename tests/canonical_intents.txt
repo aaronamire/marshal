@@ -1,4 +1,4 @@
-# Canonical intent test suite for Leaves OS Phase 0
+# Canonical intent test suite for Marshal Phase 0
 # Format: one intent per line. Lines starting with # are comments.
 # Expected behavior: each intent parses successfully, category is correct,
 # confidence >= 0.60, and actions array is non-empty.
@@ -22,7 +22,7 @@ delete all .tmp files in my home directory
 show me the 10 largest files in my home directory
 find all files modified today in ~
 list all shell scripts in ~/dev
-find all markdown files in ~/dev/leaves-os
+find all markdown files in ~/dev/marshal
 show me files in ~/Documents ending with .docx
 
 # --- email_task (4 intents) ---

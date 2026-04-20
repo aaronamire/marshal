@@ -1,5 +1,5 @@
-#ifndef LEAVES_FEED_H
-#define LEAVES_FEED_H
+#ifndef MARSHAL_FEED_H
+#define MARSHAL_FEED_H
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -20,14 +20,14 @@ typedef enum {
 	CARD_STATE_CANCELLED,         /* user pressed N */
 	CARD_STATE_HISTORY,           /* loaded from /v1/history */
 	CARD_STATE_SEARCH_RESULT,     /* cortex search results */
-} LeavesCardState;
+} MarshalCardState;
 
 /* ── Search hit (embedded in intent card) ── */
 
 typedef struct {
 	char title[128];
 	char path[256];
-} LeavesSearchHit;
+} MarshalSearchHit;
 
 typedef struct {
 	char intent_id[64];
@@ -35,7 +35,7 @@ typedef struct {
 	char action_chain[256];
 	char capability_scope[512];
 	double duration_ms;
-	LeavesCardState state;
+	MarshalCardState state;
 
 	/* Authorization data — populated after /v1/intent/plan */
 	bool preview_required;
@@ -44,7 +44,7 @@ typedef struct {
 	char actions_summary[512];  /* "DELETE 4 files in ~/Downloads" */
 
 	/* Search results — only populated for CARD_STATE_SEARCH_RESULT */
-	LeavesSearchHit search_hits[MAX_SEARCH_HITS];
+	MarshalSearchHit search_hits[MAX_SEARCH_HITS];
 	int search_hit_count;
 
 	/* Result summary — human-readable text shown in the card.
@@ -70,28 +70,28 @@ typedef struct {
 	/* Spring animation */
 	struct spring anim_y;
 	struct spring anim_opacity;
-} LeavesIntent;
+} MarshalIntent;
 
 /* ── Briefing data ── */
 
 typedef struct {
 	char title[128];
 	char path[256];
-} LeavesBriefingItem;
+} MarshalBriefingItem;
 
 typedef struct {
 	char directory[256];
 	int count;
-	LeavesBriefingItem items[MAX_BRIEFING_ITEMS];
+	MarshalBriefingItem items[MAX_BRIEFING_ITEMS];
 	int item_count;
-} LeavesBriefingGroup;
+} MarshalBriefingGroup;
 
 typedef struct {
 	char source_type[32];
 	int count;
-	LeavesBriefingGroup groups[MAX_BRIEFING_GROUPS];
+	MarshalBriefingGroup groups[MAX_BRIEFING_GROUPS];
 	int group_count;
-} LeavesBriefingSection;
+} MarshalBriefingSection;
 
 #define MAX_BRIEFING_SECTIONS 4
 
@@ -101,10 +101,10 @@ typedef struct {
 	int period_hours;
 	bool empty;
 	bool loaded;            /* true after successful fetch */
-	LeavesBriefingSection sections[MAX_BRIEFING_SECTIONS];
+	MarshalBriefingSection sections[MAX_BRIEFING_SECTIONS];
 	int section_count;
 	struct spring anim_opacity;
-} LeavesBriefing;
+} MarshalBriefing;
 
 /* ── Watcher data (persistent filesystem intents) ── */
 
@@ -116,10 +116,10 @@ typedef struct {
 	int fire_count;
 	bool active;
 	struct spring anim_opacity;
-} LeavesWatcher;
+} MarshalWatcher;
 
-struct leaves_feed {
-	LeavesIntent intents[MAX_INTENTS];
+struct marshal_feed {
+	MarshalIntent intents[MAX_INTENTS];
 	int count;
 	float scroll_offset;
 	pthread_mutex_t mutex;
@@ -133,37 +133,37 @@ struct leaves_feed {
 	int expanded_content_h; /* measured content height of expanded card */
 	char api_base[256];
 	char wayland_display[64];  /* set directly by compositor, not getenv */
-	LeavesBriefing briefing;
-	LeavesWatcher watchers[MAX_WATCHERS];
+	MarshalBriefing briefing;
+	MarshalWatcher watchers[MAX_WATCHERS];
 	int watcher_count;
 };
 
-struct leaves_feed *feed_create(const char *api_base);
-void feed_destroy(struct leaves_feed *feed);
-void feed_load_history(struct leaves_feed *feed);
+struct marshal_feed *feed_create(const char *api_base);
+void feed_destroy(struct marshal_feed *feed);
+void feed_load_history(struct marshal_feed *feed);
 /* Insert a proactive intent card pushed from agentd. `intent_json` is a
  * full GoalSpec JSON string (one line, no trailing newline). Dedup by
  * intent_id: if a card with the same id already exists, this is a no-op.
  * Writes a byte to feed->wakeup_pipe to trigger a repaint. Safe to call
  * from any thread (locks feed->mutex). */
-void feed_insert_proactive(struct leaves_feed *feed, const char *intent_json);
-void feed_load_briefing(struct leaves_feed *feed);
-void feed_load_watchers(struct leaves_feed *feed);
-void feed_submit(struct leaves_feed *feed, const char *text);
-void feed_search(struct leaves_feed *feed, const char *query);
-void feed_create_watcher(struct leaves_feed *feed, const char *text);
+void feed_insert_proactive(struct marshal_feed *feed, const char *intent_json);
+void feed_load_briefing(struct marshal_feed *feed);
+void feed_load_watchers(struct marshal_feed *feed);
+void feed_submit(struct marshal_feed *feed, const char *text);
+void feed_search(struct marshal_feed *feed, const char *query);
+void feed_create_watcher(struct marshal_feed *feed, const char *text);
 /* Time-machine: lazy-load the full audit trace for a history card
  * (per-action type/agent/duration/status + state transitions + errors)
  * and format it into the card's result_summary for display. No-op if
  * the card isn't CARD_STATE_HISTORY or detail has already been fetched. */
-void feed_load_detail(struct leaves_feed *feed, int card_idx);
+void feed_load_detail(struct marshal_feed *feed, int card_idx);
 /* Time-machine: re-execute a stored GoalSpec under a new intent_id
  * and prepend a replay banner to result_summary. Destructive replays
  * are refused by the API; the banner shows the refusal. */
-void feed_replay(struct leaves_feed *feed, int card_idx);
-void feed_process_updates(struct leaves_feed *feed);
-bool feed_animate(struct leaves_feed *feed, float dt);
-void feed_confirm(struct leaves_feed *feed);
-void feed_cancel(struct leaves_feed *feed);
+void feed_replay(struct marshal_feed *feed, int card_idx);
+void feed_process_updates(struct marshal_feed *feed);
+bool feed_animate(struct marshal_feed *feed, float dt);
+void feed_confirm(struct marshal_feed *feed);
+void feed_cancel(struct marshal_feed *feed);
 
 #endif

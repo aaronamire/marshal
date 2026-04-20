@@ -2,19 +2,19 @@
 set -e
 
 LLAMA_CLI="$HOME/dev/llama.cpp/build/bin/llama-cli"
-MODEL="$HOME/leaves-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+MODEL="$HOME/marshal-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 
 if [ ! -f "$MODEL" ]; then
     echo "Model not found at $MODEL"
     echo "Download with:"
     echo "  huggingface-cli download bartowski/Llama-3.2-1B-Instruct-GGUF \\"
     echo "    --include 'Llama-3.2-1B-Instruct-Q4_K_M.gguf' \\"
-    echo "    --local-dir ~/leaves-models/"
+    echo "    --local-dir ~/marshal-models/"
     exit 1
 fi
 
 PROMPT='<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-You are an intent classifier for Leaves OS. 
+You are an intent classifier for Marshal. 
 Return ONLY a JSON object. No explanation. No markdown.
 Format: {"category": "file_task", "confidence": 0.95}
 Categories: file_task, web_task, system_task, writing_task, audio_task, network_task, power_task
@@ -22,7 +22,7 @@ Categories: file_task, web_task, system_task, writing_task, audio_task, network_
 find all my tax PDFs from last year
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>'
 
-echo "=== Leaves OS Inference Benchmark ==="
+echo "=== Marshal Inference Benchmark ==="
 echo "Model: Llama 3.2 1B Q4_K_M"
 echo "Hardware: $(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)"
 echo "RAM: $(free -h | awk '/^Mem:/ {print $2}')"

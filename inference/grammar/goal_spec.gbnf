@@ -1,4 +1,4 @@
-# Leaves OS — GoalSpec GBNF grammar
+# Marshal — GoalSpec GBNF grammar
 # llama.cpp GBNF: one rule per line. Multi-line bodies are not supported —
 # the parser terminates each rule at the first newline.
 

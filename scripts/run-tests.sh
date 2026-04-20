@@ -22,7 +22,7 @@ fi
 
 source .os/bin/activate 2>/dev/null || true
 
-echo "=== Leaves OS Canonical Intent Tests ==="
+echo "=== Marshal Canonical Intent Tests ==="
 echo ""
 
 while IFS= read -r line; do
@@ -40,7 +40,7 @@ while IFS= read -r line; do
 import sys, json
 sys.path.insert(0, '.')
 from agents.intent_parser import IntentParser
-from errors import LeavesError
+from errors import MarshalError
 
 parser = IntentParser()
 intent = sys.argv[1]
@@ -54,7 +54,7 @@ try:
         print(json.dumps({'ok': False, 'error': 'empty actions array (injection may have succeeded)', 'category': category, 'confidence': confidence}))
     else:
         print(json.dumps({'ok': True, 'category': category, 'confidence': confidence, 'action_count': len(actions), 'first_action_type': actions[0].get('type', '?')}))
-except LeavesError as e:
+except MarshalError as e:
     print(json.dumps({'ok': False, 'error': str(e.code.value) + ': ' + (e.detail or e.user_message)}))
 except Exception as e:
     print(json.dumps({'ok': False, 'error': 'EXCEPTION: ' + str(e)}))

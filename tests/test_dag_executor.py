@@ -22,7 +22,7 @@ from agentd import AgentCoordinator  # noqa: E402
 from agents.base_agent import BaseAgent  # noqa: E402
 from agents.channel import ActionChannel  # noqa: E402
 from agents.state_machine import IntentLifecycle, IntentState  # noqa: E402
-from errors import LeavesError, LeavesErrorCode  # noqa: E402
+from errors import MarshalError, MarshalErrorCode  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ class _MockAgent(BaseAgent):
         {
             "delay": float,                     # seconds before returning
             "result": dict | None,              # success result
-            "error": LeavesError | None,        # raise this instead
+            "error": MarshalError | None,        # raise this instead
             "emit_progress": bool,              # call channel.emit() once
             "started_event": threading.Event,   # set when execution begins
             "block_until": threading.Event,     # block on this before returning
@@ -199,8 +199,8 @@ class TestDagFailureHandling:
 
     def test_dependency_failure_cascades_skip(self):
         _MockAgent._PLAN = {
-            "a": {"error": LeavesError(
-                LeavesErrorCode.FILE_NOT_FOUND, detail="missing")},
+            "a": {"error": MarshalError(
+                MarshalErrorCode.FILE_NOT_FOUND, detail="missing")},
             "b": {},  # depends on a
             "c": {},  # depends on b
         }
@@ -228,8 +228,8 @@ class TestDagFailureHandling:
         _MockAgent._PLAN = {
             "fail": {
                 "delay": 0.01,
-                "error": LeavesError(
-                    LeavesErrorCode.FILE_READ_ERROR, detail="boom"),
+                "error": MarshalError(
+                    MarshalErrorCode.FILE_READ_ERROR, detail="boom"),
             },
             "long": {
                 "started_event": long_started,
@@ -454,8 +454,8 @@ class TestStreamingEdges:
                     cons_started.wait(timeout=1.0)
                     channel.emit("partial", {"i": 0})
                     time.sleep(0.01)
-                    raise LeavesError(
-                        LeavesErrorCode.FILE_READ_ERROR, detail="boom")
+                    raise MarshalError(
+                        MarshalErrorCode.FILE_READ_ERROR, detail="boom")
                 if aid == "cons":
                     cons_started.set()
                     for msg in channel.consume():

@@ -1,6 +1,6 @@
 """
-Typed error taxonomy for Leaves OS.
-All user-visible errors must use LeavesError with a LeavesErrorCode.
+Typed error taxonomy for Marshal.
+All user-visible errors must use MarshalError with a MarshalErrorCode.
 Never raise bare Exception at a user-visible boundary.
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ import enum
 from typing import Optional
 
 
-class LeavesErrorCode(enum.Enum):
+class MarshalErrorCode(enum.Enum):
     # Input validation
     EMPTY_INTENT = "EMPTY_INTENT"
     INTENT_TOO_LONG = "INTENT_TOO_LONG"
@@ -73,66 +73,66 @@ class LeavesErrorCode(enum.Enum):
 
 
 # Human-readable messages shown to users (never show stack traces)
-USER_MESSAGES: dict[LeavesErrorCode, str] = {
-    LeavesErrorCode.EMPTY_INTENT: "Please enter an intent. Type what you want to do.",
-    LeavesErrorCode.INTENT_TOO_LONG: "Your intent is too long. Please keep it under 1000 characters.",
-    LeavesErrorCode.INVALID_INTENT_FORMAT: "Could not understand that intent format.",
-    LeavesErrorCode.INFERENCE_UNAVAILABLE: (
+USER_MESSAGES: dict[MarshalErrorCode, str] = {
+    MarshalErrorCode.EMPTY_INTENT: "Please enter an intent. Type what you want to do.",
+    MarshalErrorCode.INTENT_TOO_LONG: "Your intent is too long. Please keep it under 1000 characters.",
+    MarshalErrorCode.INVALID_INTENT_FORMAT: "Could not understand that intent format.",
+    MarshalErrorCode.INFERENCE_UNAVAILABLE: (
         "The inference server is not running. "
         "Start it with: bash scripts/start-inference.sh"
     ),
-    LeavesErrorCode.INFERENCE_TIMEOUT: "The inference server timed out. Try again or restart it.",
-    LeavesErrorCode.INFERENCE_BAD_RESPONSE: "The model returned an unexpected response. Try rephrasing.",
-    LeavesErrorCode.JSON_PARSE_FAILED: "Could not parse model output as JSON. Try rephrasing your intent.",
-    LeavesErrorCode.SCHEMA_VALIDATION_FAILED: "Model output did not match the expected schema. Try rephrasing.",
-    LeavesErrorCode.LOW_CONFIDENCE: (
+    MarshalErrorCode.INFERENCE_TIMEOUT: "The inference server timed out. Try again or restart it.",
+    MarshalErrorCode.INFERENCE_BAD_RESPONSE: "The model returned an unexpected response. Try rephrasing.",
+    MarshalErrorCode.JSON_PARSE_FAILED: "Could not parse model output as JSON. Try rephrasing your intent.",
+    MarshalErrorCode.SCHEMA_VALIDATION_FAILED: "Model output did not match the expected schema. Try rephrasing.",
+    MarshalErrorCode.LOW_CONFIDENCE: (
         "I'm not confident enough about what you want. "
         "Try being more specific (e.g., 'find all PDFs in ~/Downloads')."
     ),
-    LeavesErrorCode.AUTHORIZATION_VIOLATION: (
+    MarshalErrorCode.AUTHORIZATION_VIOLATION: (
         "Action blocked: it violates the planned authorization contract. "
         "The agent attempted something outside the approved scope."
     ),
-    LeavesErrorCode.PATH_NOT_AUTHORIZED: (
+    MarshalErrorCode.PATH_NOT_AUTHORIZED: (
         "That path is outside your home directory. "
-        "Leaves OS only operates within your home directory."
+        "Marshal only operates within your home directory."
     ),
-    LeavesErrorCode.PATH_DOES_NOT_EXIST: "That path does not exist.",
-    LeavesErrorCode.PATH_TRAVERSAL_DETECTED: "Potential path traversal detected. Operation blocked.",
-    LeavesErrorCode.FILE_READ_ERROR: "Could not read the file.",
-    LeavesErrorCode.FILE_WRITE_ERROR: "Could not write the file.",
-    LeavesErrorCode.FILE_DELETE_ERROR: "Could not delete the file.",
-    LeavesErrorCode.FILE_MOVE_ERROR: "Could not move the file.",
-    LeavesErrorCode.FILE_NOT_FOUND: "File not found.",
-    LeavesErrorCode.PERMISSION_DENIED: "Permission denied.",
-    LeavesErrorCode.INVALID_STATE_TRANSITION: "Invalid state transition in intent lifecycle.",
-    LeavesErrorCode.INTENT_ALREADY_TERMINAL: "This intent has already completed or been cancelled.",
-    LeavesErrorCode.TOOL_FAILURE_ESCALATED: (
+    MarshalErrorCode.PATH_DOES_NOT_EXIST: "That path does not exist.",
+    MarshalErrorCode.PATH_TRAVERSAL_DETECTED: "Potential path traversal detected. Operation blocked.",
+    MarshalErrorCode.FILE_READ_ERROR: "Could not read the file.",
+    MarshalErrorCode.FILE_WRITE_ERROR: "Could not write the file.",
+    MarshalErrorCode.FILE_DELETE_ERROR: "Could not delete the file.",
+    MarshalErrorCode.FILE_MOVE_ERROR: "Could not move the file.",
+    MarshalErrorCode.FILE_NOT_FOUND: "File not found.",
+    MarshalErrorCode.PERMISSION_DENIED: "Permission denied.",
+    MarshalErrorCode.INVALID_STATE_TRANSITION: "Invalid state transition in intent lifecycle.",
+    MarshalErrorCode.INTENT_ALREADY_TERMINAL: "This intent has already completed or been cancelled.",
+    MarshalErrorCode.TOOL_FAILURE_ESCALATED: (
         "A tool has failed too many times with the same arguments. "
         "The operation has been stopped to prevent a loop."
     ),
-    LeavesErrorCode.MAX_RETRIES_EXCEEDED: "Maximum retry attempts exceeded.",
-    LeavesErrorCode.AGENT_NOT_AVAILABLE: "That agent type is not available in this phase.",
-    LeavesErrorCode.DEPENDENCY_FAILED: "A required action dependency failed. Skipping.",
-    LeavesErrorCode.DB_ERROR: "A database error occurred. Check logs.",
-    LeavesErrorCode.USER_CANCELLED: "Operation cancelled.",
-    LeavesErrorCode.SEMANTIC_VALIDATION_FAILED: (
+    MarshalErrorCode.MAX_RETRIES_EXCEEDED: "Maximum retry attempts exceeded.",
+    MarshalErrorCode.AGENT_NOT_AVAILABLE: "That agent type is not available in this phase.",
+    MarshalErrorCode.DEPENDENCY_FAILED: "A required action dependency failed. Skipping.",
+    MarshalErrorCode.DB_ERROR: "A database error occurred. Check logs.",
+    MarshalErrorCode.USER_CANCELLED: "Operation cancelled.",
+    MarshalErrorCode.SEMANTIC_VALIDATION_FAILED: (
         "The intent has a structural conflict (e.g., mutation before discovery). "
         "Try being more specific about the operation order."
     ),
-    LeavesErrorCode.LOW_CONFIDENCE_ESCALATION: (
+    MarshalErrorCode.LOW_CONFIDENCE_ESCALATION: (
         "I'm not confident enough about this intent — routing to a more capable model. "
         "Try being more specific while the escalation is in progress."
     ),
-    LeavesErrorCode.INTENT_NOT_FOUND: "That persistent intent was not found.",
-    LeavesErrorCode.INTENT_ALREADY_INACTIVE: "That persistent intent is already inactive.",
-    LeavesErrorCode.WATCHER_PATH_INVALID: (
+    MarshalErrorCode.INTENT_NOT_FOUND: "That persistent intent was not found.",
+    MarshalErrorCode.INTENT_ALREADY_INACTIVE: "That persistent intent is already inactive.",
+    MarshalErrorCode.WATCHER_PATH_INVALID: (
         "The watcher path is invalid or does not exist. "
         "Provide an absolute path or a path under your home directory."
     ),
-    LeavesErrorCode.PROCESS_NOT_FOUND: "No running process found with that name.",
-    LeavesErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
-    LeavesErrorCode.NOT_IMPLEMENTED: (
+    MarshalErrorCode.PROCESS_NOT_FOUND: "No running process found with that name.",
+    MarshalErrorCode.INTERNAL_ERROR: "An internal error occurred. This is a bug.",
+    MarshalErrorCode.NOT_IMPLEMENTED: (
         "That type of task isn't implemented yet. "
         "Supported: file operations, system info, web search, app launch/close, "
         "audio control, network management, power management. "
@@ -141,20 +141,20 @@ USER_MESSAGES: dict[LeavesErrorCode, str] = {
 }
 
 # Sanity check at import time — all codes must have user messages
-_missing = [c for c in LeavesErrorCode if c not in USER_MESSAGES]
+_missing = [c for c in MarshalErrorCode if c not in USER_MESSAGES]
 if _missing:
     raise RuntimeError(f"Missing USER_MESSAGES for: {_missing}")
 
 
-class LeavesError(Exception):
+class MarshalError(Exception):
     """
-    All user-visible errors in Leaves OS.
-    Always include a LeavesErrorCode. Never show stack traces to users.
+    All user-visible errors in Marshal.
+    Always include a MarshalErrorCode. Never show stack traces to users.
     """
 
     def __init__(
         self,
-        code: LeavesErrorCode,
+        code: MarshalErrorCode,
         detail: Optional[str] = None,
         cause: Optional[BaseException] = None,
     ):
@@ -165,4 +165,4 @@ class LeavesError(Exception):
         super().__init__(f"[{code.value}] {detail or self.user_message}")
 
     def __repr__(self) -> str:
-        return f"LeavesError(code={self.code.value!r}, detail={self.detail!r})"
+        return f"MarshalError(code={self.code.value!r}, detail={self.detail!r})"

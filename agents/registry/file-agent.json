@@ -1,5 +1,5 @@
 {
-  "agent_id": "dev.leaves.file-agent",
+  "agent_id": "dev.marshal.file-agent",
   "version": "0.1.0",
   "display_name": "File Agent",
   "description": "Handles file system queries, reads, writes, moves, copies, and deletes within the authorized path roots.",

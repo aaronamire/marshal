@@ -101,10 +101,10 @@ class TestNotImplementedFastPath:
 
     def test_email_fast_path_skips_llm(self, parser_with_mock_llm):
         parser, mock_client = parser_with_mock_llm
-        from errors import LeavesError, LeavesErrorCode
-        with pytest.raises(LeavesError) as exc_info:
+        from errors import MarshalError, MarshalErrorCode
+        with pytest.raises(MarshalError) as exc_info:
             parser.parse("send an email to Alice about the project")
-        assert exc_info.value.code == LeavesErrorCode.NOT_IMPLEMENTED
+        assert exc_info.value.code == MarshalErrorCode.NOT_IMPLEMENTED
         assert not mock_client.complete.called, "LLM must not be called for email_task"
 
     def test_system_fast_path_skips_llm(self, parser_with_mock_llm):
@@ -126,11 +126,11 @@ class TestNotImplementedFastPath:
 
     def test_fast_path_latency_under_10ms(self, parser_with_mock_llm):
         parser, mock_client = parser_with_mock_llm
-        from errors import LeavesError
+        from errors import MarshalError
         t0 = time.monotonic()
         try:
             parser.parse("send an email to my boss")
-        except LeavesError:
+        except MarshalError:
             pass
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert elapsed_ms < 10, f"Fast-path took {elapsed_ms:.1f}ms — should be <10ms"

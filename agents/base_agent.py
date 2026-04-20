@@ -1,5 +1,5 @@
 """
-Abstract base class for all Leaves OS agents.
+Abstract base class for all Marshal agents.
 
 The current set of implemented agents is declared in agents/registry.py
 (file, system, web, audio, network, power, writing). Do not maintain a
@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from db.audit import log_action_started, log_action_completed
-from errors import LeavesError
+from errors import MarshalError
 
 
 class BaseAgent(ABC):
@@ -20,7 +20,7 @@ class BaseAgent(ABC):
     - Accept an intent_id for audit logging
     - Implement execute_action(action: dict) -> dict
     - Log every operation via db/audit.py
-    - Raise LeavesError (never bare Exception) on failure
+    - Raise MarshalError (never bare Exception) on failure
     """
 
     AGENT_TYPE: str = "base"
@@ -33,7 +33,7 @@ class BaseAgent(ABC):
     def execute_action(self, action: dict) -> dict:
         """
         Execute a single GoalSpec action.
-        Returns result dict. Raises LeavesError on failure.
+        Returns result dict. Raises MarshalError on failure.
         """
         ...
 
@@ -58,7 +58,7 @@ class BaseAgent(ABC):
         self,
         row_id: Optional[int],
         result: Optional[dict] = None,
-        error: Optional[LeavesError] = None,
+        error: Optional[MarshalError] = None,
     ) -> None:
         if row_id is None:
             return

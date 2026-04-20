@@ -16,7 +16,7 @@ Dispatch by action type:
 from __future__ import annotations
 
 from agents.base_agent import BaseAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 class AudioAgent(BaseAgent):
@@ -32,8 +32,8 @@ class AudioAgent(BaseAgent):
         elif action_type == "WRITE":
             return self._handle_write(action_id, params)
         else:
-            raise LeavesError(
-                LeavesErrorCode.AGENT_NOT_AVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.AGENT_NOT_AVAILABLE,
                 detail=f"AudioAgent supports QUERY and WRITE, got {action_type}",
             )
 
@@ -55,10 +55,10 @@ class AudioAgent(BaseAgent):
             pulse.close()
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
@@ -130,25 +130,25 @@ class AudioAgent(BaseAgent):
             elif audio_action == "set_sink":
                 result = self._set_default_sink(pulse, params)
             else:
-                raise LeavesError(
-                    LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                raise MarshalError(
+                    MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail=f"Unknown audio_action: {audio_action}",
                 )
             pulse.close()
             self._audit_end(row_id, result)
             return result
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(LeavesErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
+            err = MarshalError(MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e)
             self._audit_end(row_id, error=err)
             raise err
 
     def _set_volume(self, pulse, params: dict) -> dict:
         level = params.get("level")
         if level is None:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="No volume level provided",
             )
         level = max(0, min(150, int(level)))  # clamp 0-150%
@@ -182,8 +182,8 @@ class AudioAgent(BaseAgent):
     def _set_default_sink(self, pulse, params: dict) -> dict:
         target = params.get("sink", "")
         if not target:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="No sink name provided",
             )
         # Match by name or description (case-insensitive substring)
@@ -196,8 +196,8 @@ class AudioAgent(BaseAgent):
                     "sink_name": s.name,
                     "sink_description": s.description,
                 }
-        raise LeavesError(
-            LeavesErrorCode.INTERNAL_ERROR,
+        raise MarshalError(
+            MarshalErrorCode.INTERNAL_ERROR,
             detail=f"No sink matching '{target}' found",
         )
 
@@ -209,18 +209,18 @@ class AudioAgent(BaseAgent):
         try:
             import pulsectl
         except ImportError:
-            raise LeavesError(
-                LeavesErrorCode.AGENT_NOT_AVAILABLE,
+            raise MarshalError(
+                MarshalErrorCode.AGENT_NOT_AVAILABLE,
                 detail="pulsectl not installed (pip install pulsectl)",
             )
-        return pulsectl.Pulse("leaves-os")
+        return pulsectl.Pulse("marshal")
 
     def _get_default_sink(self, pulse):
         sink_name = pulse.server_info().default_sink_name
         for s in pulse.sink_list():
             if s.name == sink_name:
                 return s
-        raise LeavesError(
-            LeavesErrorCode.INTERNAL_ERROR,
+        raise MarshalError(
+            MarshalErrorCode.INTERNAL_ERROR,
             detail="No default audio sink found",
         )

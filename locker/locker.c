@@ -1,10 +1,10 @@
 /*
- * leaves-locker — Wayland screen locker for Leaves OS.
+ * marshal-locker — Wayland screen locker for Marshal.
  *
  * Architecture:
  *   - ext-session-lock-v1 protocol (compositor-confirmed input isolation)
  *   - PAM authentication via pam_authenticate()
- *   - Cairo + Pango rendering with Leaves visual language
+ *   - Cairo + Pango rendering with Marshal visual language
  *   - Triggered by compositor (Super+L) or logind PrepareForSleep
  *
  * Build: meson (see meson.build in this directory)
@@ -114,7 +114,7 @@ static void mark_all_dirty(void) {
 /* ── SHM buffer creation ── */
 
 static int create_shm_file(size_t size) {
-	char name[] = "/leaves-lock-XXXXXX";
+	char name[] = "/marshal-lock-XXXXXX";
 	int fd = memfd_create(name, MFD_CLOEXEC);
 	if (fd < 0) return -1;
 	if (ftruncate(fd, size) < 0) { close(fd); return -1; }
@@ -544,7 +544,7 @@ static void session_lock_finished(void *data,
 		struct ext_session_lock_v1 *lock_obj) {
 	(void)data; (void)lock_obj;
 	/* Compositor denied the lock (e.g. another locker is running) */
-	fprintf(stderr, "leaves-locker: compositor denied lock request\n");
+	fprintf(stderr, "marshal-locker: compositor denied lock request\n");
 	lock.locked = false;
 }
 
@@ -575,7 +575,7 @@ static void registry_global(void *data, struct wl_registry *reg,
 				&wl_output_interface, 1);
 		} else {
 			fprintf(stderr,
-				"leaves-locker: too many outputs (>%d), ignoring\n",
+				"marshal-locker: too many outputs (>%d), ignoring\n",
 				MAX_LOCK_OUTPUTS);
 		}
 	} else if (strcmp(interface,
@@ -612,7 +612,7 @@ int main(int argc, char *argv[]) {
 	/* Wayland connect */
 	display = wl_display_connect(NULL);
 	if (!display) {
-		fprintf(stderr, "leaves-locker: cannot connect to Wayland\n");
+		fprintf(stderr, "marshal-locker: cannot connect to Wayland\n");
 		return 1;
 	}
 
@@ -623,11 +623,11 @@ int main(int argc, char *argv[]) {
 
 	if (!lock_manager) {
 		fprintf(stderr,
-			"leaves-locker: compositor lacks ext-session-lock-v1\n");
+			"marshal-locker: compositor lacks ext-session-lock-v1\n");
 		return 1;
 	}
 	if (output_count == 0) {
-		fprintf(stderr, "leaves-locker: no outputs available\n");
+		fprintf(stderr, "marshal-locker: no outputs available\n");
 		return 1;
 	}
 
@@ -658,7 +658,7 @@ int main(int argc, char *argv[]) {
 		if (all_configured) break;
 		if (wl_display_dispatch(display) < 0) {
 			fprintf(stderr,
-				"leaves-locker: display disconnected before configure\n");
+				"marshal-locker: display disconnected before configure\n");
 			return 1;
 		}
 	}
@@ -671,7 +671,7 @@ int main(int argc, char *argv[]) {
 		;
 
 	if (!lock.locked) {
-		fprintf(stderr, "leaves-locker: failed to acquire lock\n");
+		fprintf(stderr, "marshal-locker: failed to acquire lock\n");
 		return 1;
 	}
 

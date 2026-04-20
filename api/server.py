@@ -1,5 +1,5 @@
 """
-Leaves OS HTTP API — FastAPI server on 127.0.0.1:8765.
+Marshal HTTP API — FastAPI server on 127.0.0.1:8765.
 
 Wraps the agentd Unix socket and the IntentParser pipeline.
 All inference work is offloaded to a thread pool to avoid blocking the event loop.
@@ -46,11 +46,11 @@ from db.intent_store import (
     get_intent,
     store_persistent_intent,
 )
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 log = logging.getLogger(__name__)
 
-_SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
+_SOCK_PATH = pathlib.Path.home() / ".marshal" / "agentd.sock"
 _SOCKET_TIMEOUT = 180.0  # covers worst-case inference + execution
 _REGISTRY_DIR = pathlib.Path(__file__).parent.parent / "agents" / "registry"
 _START_INFERENCE_SCRIPT = (
@@ -121,7 +121,7 @@ async def _ensure_agentd() -> None:
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Leaves OS API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Marshal API", version="0.1.0", lifespan=lifespan)
 
 # CORS: no credentials, explicit method list, and only the dev-server
 # origins we actually support. allow_credentials=True with localhost
@@ -255,7 +255,7 @@ async def _send_goalspec(goal_spec: dict) -> tuple[dict, str, dict]:
     "authorized_resources": [str]}. On an old agentd that doesn't report
     sandbox, a safe default is substituted so the API response still
     carries honest telemetry rather than a hardcoded True.
-    Raises LeavesError on connection failure or agentd error response.
+    Raises MarshalError on connection failure or agentd error response.
     """
     _16MB = 16 * 1024 * 1024
     try:
@@ -263,8 +263,8 @@ async def _send_goalspec(goal_spec: dict) -> tuple[dict, str, dict]:
             asyncio.open_unix_connection(str(_SOCK_PATH), limit=_16MB), timeout=5.0
         )
     except (FileNotFoundError, ConnectionRefusedError, OSError, asyncio.TimeoutError) as e:
-        raise LeavesError(
-            LeavesErrorCode.AGENT_NOT_AVAILABLE,
+        raise MarshalError(
+            MarshalErrorCode.AGENT_NOT_AVAILABLE,
             detail=f"agentd not reachable: {e}",
         )
 
@@ -293,10 +293,10 @@ async def _send_goalspec(goal_spec: dict) -> tuple[dict, str, dict]:
 
     code_str = resp.get("code", "INTERNAL_ERROR")
     try:
-        code = LeavesErrorCode[code_str]
+        code = MarshalErrorCode[code_str]
     except KeyError:
-        code = LeavesErrorCode.INTERNAL_ERROR
-    raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
+        code = MarshalErrorCode.INTERNAL_ERROR
+    raise MarshalError(code, detail=resp.get("detail") or resp.get("error"))
 
 
 async def _fetch_session_context() -> str | None:
@@ -572,8 +572,8 @@ async def plan_intent(body: IntentRequest):
             None,
             lambda: parser.parse(body.text, session_context=session_context),
         )
-    except LeavesError as e:
-        if e.code == LeavesErrorCode.NOT_IMPLEMENTED:
+    except MarshalError as e:
+        if e.code == MarshalErrorCode.NOT_IMPLEMENTED:
             return {
                 "intent_id": None,
                 "status": "not_implemented",
@@ -650,7 +650,7 @@ async def execute_intent(body: ExecuteRequest):
         results, summary, sandbox = await _send_goalspec(goal_spec)
         status = "done"
         db_state = "DONE"
-    except LeavesError as e:
+    except MarshalError as e:
         results = {}
         summary = e.user_message
         status = "failed"
@@ -842,7 +842,7 @@ async def replay_history(intent_id: str):
         results, summary, sandbox = await _send_goalspec(new_spec)
         new_state = "DONE"
         new_status = "done"
-    except LeavesError as e:
+    except MarshalError as e:
         results, sandbox = {}, {
             "active": False, "reason": "not_executed", "authorized_resources": []
         }
@@ -997,8 +997,8 @@ async def persist_intent(body: PersistRequest):
             None,
             lambda: parser.parse(body.text, session_context=session_context),
         )
-    except LeavesError as e:
-        if e.code == LeavesErrorCode.NOT_IMPLEMENTED:
+    except MarshalError as e:
+        if e.code == MarshalErrorCode.NOT_IMPLEMENTED:
             raise HTTPException(status_code=400, detail=e.user_message)
         raise HTTPException(status_code=500, detail=e.user_message)
 
@@ -1060,8 +1060,8 @@ async def delete_persistent_intent(intent_id: str):
     db = _get_db()
     try:
         delete_intent(db, intent_id)
-    except LeavesError as e:
-        if e.code == LeavesErrorCode.INTENT_NOT_FOUND:
+    except MarshalError as e:
+        if e.code == MarshalErrorCode.INTENT_NOT_FOUND:
             raise HTTPException(status_code=404, detail=e.user_message)
         raise HTTPException(status_code=500, detail=e.user_message)
     return {"status": "deleted", "id": intent_id}
@@ -1086,7 +1086,7 @@ async def fire_persistent_intent(intent_id: str):
         results, summary, _sandbox = await _send_goalspec(goal_spec)
         status = "done"
         db_state = "DONE"
-    except LeavesError as e:
+    except MarshalError as e:
         results = {}
         summary = e.user_message
         status = "failed"
@@ -1111,10 +1111,10 @@ async def pause_persistent_intent(intent_id: str):
     db = _get_db()
     try:
         deactivate_intent(db, intent_id)
-    except LeavesError as e:
-        if e.code == LeavesErrorCode.INTENT_NOT_FOUND:
+    except MarshalError as e:
+        if e.code == MarshalErrorCode.INTENT_NOT_FOUND:
             raise HTTPException(status_code=404, detail=e.user_message)
-        if e.code == LeavesErrorCode.INTENT_ALREADY_INACTIVE:
+        if e.code == MarshalErrorCode.INTENT_ALREADY_INACTIVE:
             raise HTTPException(status_code=409, detail=e.user_message)
         raise HTTPException(status_code=500, detail=e.user_message)
     return {"status": "paused", "id": intent_id}
@@ -1125,8 +1125,8 @@ async def resume_persistent_intent(intent_id: str):
     db = _get_db()
     try:
         activate_intent(db, intent_id)
-    except LeavesError as e:
-        if e.code == LeavesErrorCode.INTENT_NOT_FOUND:
+    except MarshalError as e:
+        if e.code == MarshalErrorCode.INTENT_NOT_FOUND:
             raise HTTPException(status_code=404, detail=e.user_message)
         raise HTTPException(status_code=500, detail=e.user_message)
     return {"status": "resumed", "id": intent_id}

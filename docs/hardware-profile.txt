@@ -1,4 +1,4 @@
-# Leaves OS Hardware Profile
+# Marshal Hardware Profile
 # Generated: 2026-03-06
 
 CPU: Intel Core i5-7200U (2c/4t @ 2.50GHz, turbo 3.10GHz)

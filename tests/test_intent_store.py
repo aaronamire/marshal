@@ -19,7 +19,7 @@ from db.intent_store import (
     get_intent,
     store_persistent_intent,
 )
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 @pytest.fixture
@@ -86,11 +86,11 @@ class TestStoreAndRetrieve:
         assert result["trigger_config"]["events"] == ["created"]
 
     def test_store_invalid_trigger_type_raises(self, db):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             store_persistent_intent(
                 db, name="bad", goalspec=SAMPLE_GOALSPEC, trigger_type="invalid"
             )
-        assert exc_info.value.code == LeavesErrorCode.INVALID_INTENT_FORMAT
+        assert exc_info.value.code == MarshalErrorCode.INVALID_INTENT_FORMAT
 
 
 class TestFireIntent:
@@ -109,9 +109,9 @@ class TestFireIntent:
         assert result["fire_count"] == 2
 
     def test_fire_nonexistent_raises(self, db):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             fire_intent(db, "nonexistent")
-        assert exc_info.value.code == LeavesErrorCode.INTENT_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.INTENT_NOT_FOUND
 
 
 class TestActivateDeactivate:
@@ -128,9 +128,9 @@ class TestActivateDeactivate:
             db, name="test", goalspec=SAMPLE_GOALSPEC, trigger_type="manual"
         )
         deactivate_intent(db, intent_id)
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             deactivate_intent(db, intent_id)
-        assert exc_info.value.code == LeavesErrorCode.INTENT_ALREADY_INACTIVE
+        assert exc_info.value.code == MarshalErrorCode.INTENT_ALREADY_INACTIVE
 
     def test_reactivate(self, db):
         intent_id = store_persistent_intent(
@@ -142,9 +142,9 @@ class TestActivateDeactivate:
         assert result["active"] is True
 
     def test_deactivate_nonexistent_raises(self, db):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             deactivate_intent(db, "nonexistent")
-        assert exc_info.value.code == LeavesErrorCode.INTENT_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.INTENT_NOT_FOUND
 
 
 class TestGetActiveIntents:
@@ -208,9 +208,9 @@ class TestDeleteIntent:
         assert get_intent(db, intent_id) is None
 
     def test_delete_nonexistent_raises(self, db):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             delete_intent(db, "nonexistent")
-        assert exc_info.value.code == LeavesErrorCode.INTENT_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.INTENT_NOT_FOUND
 
     def test_delete_removes_from_active_list(self, db):
         intent_id = store_persistent_intent(

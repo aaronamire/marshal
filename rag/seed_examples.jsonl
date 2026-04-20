@@ -1,7 +1,7 @@
 {"intent": "show me the contents of ~/README.md", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/README.md"}, "destructive": false}]}
 {"intent": "read the file ~/Documents/report.pdf", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/Documents/report.pdf"}, "destructive": false}]}
 {"intent": "what is in ~/notes/meeting.txt", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/notes/meeting.txt"}, "destructive": false}]}
-{"intent": "open ~/dev/leaves-os/config.py", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/dev/leaves-os/config.py"}, "destructive": false}]}
+{"intent": "open ~/dev/marshal/config.py", "category": "file_task", "actions": [{"type": "READ", "params": {"path": "~/dev/marshal/config.py"}, "destructive": false}]}
 {"intent": "rename ~/notes.txt to ~/notes-backup.txt", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/notes.txt", "destination": "~/notes-backup.txt"}, "destructive": true}]}
 {"intent": "move ~/Desktop/screenshot.png to ~/Pictures", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/Desktop/screenshot.png", "destination": "~/Pictures"}, "destructive": true}]}
 {"intent": "move all PDFs from ~/Downloads to ~/archive/pdfs", "category": "file_task", "actions": [{"type": "MOVE", "params": {"source": "~/Downloads", "pattern": "*.pdf", "destination": "~/archive/pdfs"}, "destructive": true}]}

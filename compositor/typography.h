@@ -1,5 +1,5 @@
-#ifndef LEAVES_TYPOGRAPHY_H
-#define LEAVES_TYPOGRAPHY_H
+#ifndef MARSHAL_TYPOGRAPHY_H
+#define MARSHAL_TYPOGRAPHY_H
 
 /* Font size scale (px) */
 #define FONT_TITLE       17

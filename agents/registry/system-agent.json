@@ -1,5 +1,5 @@
 {
-  "agent_id": "dev.leaves.system-agent",
+  "agent_id": "dev.marshal.system-agent",
   "version": "0.2.0",
   "display_name": "System Agent",
   "description": "System information, app launch, and app terminate. CPU, memory, disk, processes, uptime, open/close programs.",

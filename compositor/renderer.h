@@ -1,14 +1,14 @@
-#ifndef LEAVES_RENDERER_H
-#define LEAVES_RENDERER_H
+#ifndef MARSHAL_RENDERER_H
+#define MARSHAL_RENDERER_H
 
 #include <cairo.h>
 #include <pango/pangocairo.h>
 #include <stdbool.h>
 
 struct wlr_renderer;
-struct leaves_feed;
-struct leaves_input;
-struct leaves_status;
+struct marshal_feed;
+struct marshal_input;
+struct marshal_status;
 
 /* ── Card text selection ── */
 
@@ -40,7 +40,7 @@ struct card_text_sel {
 	int focus;              /* byte offset of selection end */
 };
 
-struct leaves_renderer {
+struct marshal_renderer {
 	int width;
 	int height;
 	cairo_surface_t *surface;
@@ -67,7 +67,7 @@ struct leaves_renderer {
 	bool inference_online;
 
 	/* Status bar data (set by compositor before rendering) */
-	struct leaves_status *status;
+	struct marshal_status *status;
 
 	/* Wallpaper (JPEG decoded to Cairo surface) */
 	cairo_surface_t *wallpaper;
@@ -101,36 +101,36 @@ struct leaves_renderer {
 	struct card_text_sel card_sel;
 };
 
-struct leaves_renderer *renderer_create(void);
-void renderer_destroy(struct leaves_renderer *r);
-void renderer_resize(struct leaves_renderer *r, int width, int height);
+struct marshal_renderer *renderer_create(void);
+void renderer_destroy(struct marshal_renderer *r);
+void renderer_resize(struct marshal_renderer *r, int width, int height);
 
 /* Load a JPEG file as the desktop wallpaper (cover mode). */
-void renderer_load_wallpaper(struct leaves_renderer *r, const char *path);
+void renderer_load_wallpaper(struct marshal_renderer *r, const char *path);
 
 /* Render full frame to cairo surface. Returns pixel data + stride. */
-unsigned char *renderer_draw_frame(struct leaves_renderer *r,
-	struct leaves_feed *feed, struct leaves_input *input, int *stride);
+unsigned char *renderer_draw_frame(struct marshal_renderer *r,
+	struct marshal_feed *feed, struct marshal_input *input, int *stride);
 
 /* Map a panel-relative x coordinate to a byte offset in input->buf. */
-int renderer_input_hit_test(struct leaves_renderer *r,
-	struct leaves_input *input, double panel_x);
+int renderer_input_hit_test(struct marshal_renderer *r,
+	struct marshal_input *input, double panel_x);
 
 /* Return the card index at the given panel y-coordinate, or -1. */
-int renderer_card_hit_test(struct leaves_renderer *r,
-	struct leaves_feed *feed, double panel_y);
+int renderer_card_hit_test(struct marshal_renderer *r,
+	struct marshal_feed *feed, double panel_y);
 
 /* Build a copyable text string from a card.  Returns bytes written (excl NUL). */
-int renderer_card_copy_text(struct leaves_feed *feed, int card_idx,
+int renderer_card_copy_text(struct marshal_feed *feed, int card_idx,
 	char *buf, int buf_size);
 
 /* Hit-test card text at (panel_x, panel_y).
  * Returns card index and sets *byte_offset, or returns -1 if miss. */
-int renderer_card_text_at(struct leaves_renderer *r,
+int renderer_card_text_at(struct marshal_renderer *r,
 	double panel_x, double panel_y, int *byte_offset);
 
 /* Get the selected text range.  Returns length or 0. */
-int renderer_card_sel_text(struct leaves_renderer *r,
+int renderer_card_sel_text(struct marshal_renderer *r,
 	char *buf, int buf_size);
 
 #endif

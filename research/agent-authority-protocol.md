@@ -2,7 +2,7 @@
 
 Status: exploratory / future direction
 Written: 2026-04-15
-Author: design session, Leaves OS
+Author: design session, Marshal
 
 ## 0. Why this document exists
 
@@ -24,7 +24,7 @@ remote agent → third-party service." Every hop needs unforgeable,
 scoped, auditable authorization.
 
 This is a hole the shape of a new primitive. This document sketches
-what that primitive could look like and how Leaves OS is positioned
+what that primitive could look like and how Marshal is positioned
 to ship it.
 
 ## 1. What "Bitcoin-level novelty" means here
@@ -120,7 +120,7 @@ Receipt {
   result_hash:     blake3,    // hash of result bytes
   executor:        Ed25519PublicKey,
   timestamp:       u64,
-  runtime:         String,    // "leaves-0.5.0-abc123"
+  runtime:         String,    // "marshal-0.5.0-abc123"
   attestation:     Option<TEEQuote>,  // Intel TDX / AMD SEV-SNP / Nitro — optional, Phase 2
   parent_receipt:  Option<blake3>,    // if this invocation was itself a sub-delegation
   sig:             Ed25519Signature,
@@ -132,7 +132,7 @@ backward to reconstruct the full delegation DAG.
 
 ### 2.5 Revocation
 
-Issuers publish revocation hashes to a Leaves Revocation Registry
+Issuers publish revocation hashes to a Marshal Revocation Registry
 (LRR) implemented as an ICP canister. The canister stores an
 append-only list of (capability_hash, revoked_at) entries. Clients
 sync the registry every N minutes via certified queries.
@@ -161,14 +161,14 @@ Each device has a hardware-rooted Ed25519 keypair:
 - Android Keystore with StrongBox on Android
 - YubiHSM / Ledger as optional external root
 
-Private key never leaves silicon. Public key is the principal's
+Private key never marshal silicon. Public key is the principal's
 long-lived identity.
 
 ### 3.2 Identity registry
 
 Human-readable names map to pubkeys via an ICP canister:
-- `alice.leaves` → `ed25519:0xabcd...`
-- `bob.leaves/research` → `ed25519:0x1234...` (subpath = agent specialization)
+- `alice.marshal` → `ed25519:0xabcd...`
+- `bob.marshal/research` → `ed25519:0x1234...` (subpath = agent specialization)
 
 Registration is first-come-first-serve with a small ICP cycles fee
 to prevent squatting. Key rotation is supported: the canister stores
@@ -197,7 +197,7 @@ remote public key). This gives:
 Wire protocol inside the Noise session:
 
 ```
-LeavesWireMessage {
+MarshalWireMessage {
   kind: "invoke" | "receipt" | "error",
   capability: Option<Capability>,
   action: Option<Action>,
@@ -216,17 +216,17 @@ Peer discovery is out of scope for the core protocol. Options:
 ## 5. End-to-end example: two agents across the world
 
 Setup:
-- **Alice** in SF: Leaves OS, TPM-backed root key, registered `alice.leaves`.
-- **Bob** in Berlin: Leaves OS server, TPM-backed root key, registered
-  `bob.leaves/research`.
-- Both running `leaves-0.5.0-abc123` (published hash).
+- **Alice** in SF: Marshal, TPM-backed root key, registered `alice.marshal`.
+- **Bob** in Berlin: Marshal server, TPM-backed root key, registered
+  `bob.marshal/research`.
+- Both running `marshal-0.5.0-abc123` (published hash).
 
 ### 5.1 Alice issues an intent
 
 Alice types: *"Ask Bob's research agent for a Rust post-quantum
 crypto library."*
 
-Leaves parses → GoalSpec with a delegation step targeted at `bob.leaves/research`.
+Marshal parses → GoalSpec with a delegation step targeted at `bob.marshal/research`.
 
 ### 5.2 Alice's OS mints a capability
 
@@ -253,12 +253,12 @@ let cap = Capability::new(
 cap.sign(TPM.sign_fn(alice_tpm_handle));
 ```
 
-TPM signs. Alice's private key never leaves silicon.
+TPM signs. Alice's private key never marshal silicon.
 
 ### 5.3 Transport: Alice → Bob
 
 Alice's client:
-1. Resolves `bob.leaves/research` via identity registry (or cache).
+1. Resolves `bob.marshal/research` via identity registry (or cache).
 2. Establishes Noise_IK session to Bob's endpoint, pinning both keys.
 3. Sends:
    ```
@@ -290,7 +290,7 @@ Alice's client:
 5. If attestation quote present, verify against Intel root cert
    (proves Bob's runtime binary matches the claimed hash).
 6. Store receipt in audit log.
-7. Render result with provenance UI: "Verified: bob.leaves/research,
+7. Render result with provenance UI: "Verified: bob.marshal/research,
    cap abc123, 2026-04-15 18:01:23."
 
 ### 5.6 Third-party audit
@@ -386,13 +386,13 @@ mathematical evidence. No "he said, she said."
 ## 7. Phased implementation plan
 
 ### Phase 1 — Local enforcement (2 weeks)
-- Runtime enforcer on top of Leaves agents
+- Runtime enforcer on top of Marshal agents
 - Capability schema (CBOR serialization, signing, verification)
 - WASM policy VM (wasmi) integrated with agent dispatch
 - Red-team test suite: 30+ adversarial plans validating rejection
 - Audit log records capability_hash and policy result for every action
 
-Deliverable: "Leaves OS enforces action contracts at the syscall
+Deliverable: "Marshal enforces action contracts at the syscall
 boundary. Agents cannot execute actions outside their plan."
 
 ### Phase 2 — Cross-device delegation (2 weeks)
@@ -403,7 +403,7 @@ boundary. Agents cannot execute actions outside their plan."
 - Receipt chain reconstruction
 - Time-machine UI shows the delegation DAG
 
-Deliverable: "Two Leaves devices can delegate tasks to each other
+Deliverable: "Two Marshal devices can delegate tasks to each other
 with full cryptographic provenance."
 
 ### Phase 3 — Production hardening (1-2 months)
@@ -415,7 +415,7 @@ with full cryptographic provenance."
 - Reference implementation in Rust (not just the Python prototype)
 
 ### Phase 4 — Ecosystem (6+ months)
-- BIP-01-equivalent: Leaves Authority Protocol spec, versioned
+- BIP-01-equivalent: Marshal Authority Protocol spec, versioned
 - Reference WASM policy library (common patterns: time-bounded,
   rate-limited, data-class-restricted)
 - Integration with third-party agent frameworks (Ollama, LangChain,
@@ -433,7 +433,7 @@ adopt them without an ecosystem. Bitcoin survived its first year
 because 10 cypherpunks genuinely needed censorship-resistant money.
 Macaroons didn't because nobody specifically needed them over OAuth.
 
-The capability protocol's first user is a Leaves OS user invoking
+The capability protocol's first user is a Marshal user invoking
 a local agent. The protocol must be useful *before* network effects —
 Phase 1 must stand alone as product value ("AI OS with runtime-
 enforced action contracts"). Phase 2 onward trades on distribution
@@ -532,7 +532,7 @@ winner-take-most.
 - **Issuer**: principal who minted a capability
 - **Holder**: principal authorized to invoke a capability
 - **Delegation**: issuing a child capability derived from a parent
-- **LRR**: Leaves Revocation Registry (ICP canister)
+- **LRR**: Marshal Revocation Registry (ICP canister)
 - **Runtime**: the software that enforces capabilities on a device
 - **Attestation**: cryptographic proof that a runtime binary matches
   a claimed hash, produced by hardware (TEE)

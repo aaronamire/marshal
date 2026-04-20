@@ -1,5 +1,5 @@
 """
-RAG (Retrieval-Augmented Generation) pipeline for Leaves OS.
+RAG (Retrieval-Augmented Generation) pipeline for Marshal.
 
 Architecture:
   Dense:  all-MiniLM-L6-v2 embeddings → LanceDB ANN search

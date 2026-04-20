@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.file_agent import FileAgent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 # ---------------------------------------------------------------------------
@@ -105,10 +105,10 @@ class TestQuery:
     def test_list_nonexistent_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-q5", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("QUERY", path=str(tree / "nonexistent")))
-        assert exc.value.code == LeavesErrorCode.PATH_DOES_NOT_EXIST
+        assert exc.value.code == MarshalErrorCode.PATH_DOES_NOT_EXIST
 
 
 # ---------------------------------------------------------------------------
@@ -132,20 +132,20 @@ class TestRead:
     def test_read_nonexistent_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-r2", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("READ", path=str(tree / "no_such_file.txt")))
-        assert exc.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc.value.code == MarshalErrorCode.FILE_NOT_FOUND
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_read_directory_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-r3", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("READ", path=str(tree / "docs")))
-        assert exc.value.code == LeavesErrorCode.FILE_READ_ERROR
+        assert exc.value.code == MarshalErrorCode.FILE_READ_ERROR
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -181,11 +181,11 @@ class TestWrite:
     def test_write_existing_no_overwrite_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-w2", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("WRITE", path=str(tree / "docs" / "readme.txt"),
                         content="overwrite"))
-        assert exc.value.code == LeavesErrorCode.FILE_WRITE_ERROR
+        assert exc.value.code == MarshalErrorCode.FILE_WRITE_ERROR
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -239,19 +239,19 @@ class TestDelete:
     def test_delete_nonexistent_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-d2", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("DELETE", path=str(tree / "nonexistent.txt")))
-        assert exc.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc.value.code == MarshalErrorCode.FILE_NOT_FOUND
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_delete_directory_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-d3", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(_action("DELETE", path=str(tree / "docs")))
-        assert exc.value.code == LeavesErrorCode.FILE_DELETE_ERROR
+        assert exc.value.code == MarshalErrorCode.FILE_DELETE_ERROR
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
@@ -301,11 +301,11 @@ class TestMove:
     def test_move_nonexistent_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-m3", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("MOVE", source=str(tree / "nope.txt"),
                         destination=str(tree / "dst.txt")))
-        assert exc.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc.value.code == MarshalErrorCode.FILE_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -332,11 +332,11 @@ class TestCopy:
     def test_copy_nonexistent_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-c2", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("COPY", source=str(tree / "nope.txt"),
                         destination=str(tree / "dst.txt")))
-        assert exc.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc.value.code == MarshalErrorCode.FILE_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -350,28 +350,28 @@ class TestAuthorization:
     def test_path_outside_root_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-auth1", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(_action("READ", path="/etc/passwd"))
-        assert exc.value.code == LeavesErrorCode.PATH_NOT_AUTHORIZED
+        assert exc.value.code == MarshalErrorCode.PATH_NOT_AUTHORIZED
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_dotdot_traversal_blocked(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-auth2", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(
                 _action("READ", path=str(tree / "docs" / ".." / ".." / "etc" / "passwd")))
-        assert exc.value.code == LeavesErrorCode.PATH_NOT_AUTHORIZED
+        assert exc.value.code == MarshalErrorCode.PATH_NOT_AUTHORIZED
 
     @patch("agents.base_agent.log_action_completed")
     @patch("agents.base_agent.log_action_started", return_value=1)
     def test_unsupported_action_type_raises(self, _s, _e, db_conn, tree):
         with patch("agents.file_agent.AUTHORIZED_PATH_ROOTS", [str(tree)]):
             agent = FileAgent("test-auth3", db_conn)
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             agent.execute_action(_action("EXECUTE", path="/bin/bash"))
-        assert exc.value.code == LeavesErrorCode.NOT_IMPLEMENTED
+        assert exc.value.code == MarshalErrorCode.NOT_IMPLEMENTED
 
 
 # ---------------------------------------------------------------------------

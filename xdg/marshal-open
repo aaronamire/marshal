@@ -1,16 +1,16 @@
 #!/bin/sh
-# leaves-open — XDG-compliant file/URL opener for Leaves OS.
+# marshal-open — XDG-compliant file/URL opener for Marshal.
 # Drop-in replacement for xdg-open. Reads mimeapps.list to determine
 # the default application for a given MIME type, then launches it.
 #
-# Usage: leaves-open <file-or-url>
+# Usage: marshal-open <file-or-url>
 #
 # Falls back to xdg-open if installed and we can't resolve the type.
 
 set -e
 
 if [ $# -lt 1 ]; then
-    echo "Usage: leaves-open <file-or-url>" >&2
+    echo "Usage: marshal-open <file-or-url>" >&2
     exit 1
 fi
 
@@ -27,7 +27,7 @@ case "$TARGET" in
     *)
         # File — resolve MIME type
         if [ ! -e "$TARGET" ]; then
-            echo "leaves-open: '$TARGET' not found" >&2
+            echo "marshal-open: '$TARGET' not found" >&2
             exit 1
         fi
         MIME=$(file --brief --mime-type "$TARGET" 2>/dev/null || echo "")
@@ -41,12 +41,12 @@ case "$TARGET" in
 esac
 
 if [ -z "$MIME" ]; then
-    echo "leaves-open: cannot determine type of '$TARGET'" >&2
+    echo "marshal-open: cannot determine type of '$TARGET'" >&2
     exit 1
 fi
 
 # ── Find default application for this MIME type ──
-# Search order: user mimeapps.list → system mimeapps.list → Leaves defaults
+# Search order: user mimeapps.list → system mimeapps.list → Marshal defaults
 find_desktop_entry() {
     local mime="$1"
     local entry=""
@@ -59,7 +59,7 @@ find_desktop_entry() {
     fi
 
     # 2. Desktop-specific overrides
-    local desktop_mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/leaves-mimeapps.list"
+    local desktop_mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/marshal-mimeapps.list"
     if [ -f "$desktop_mimeapps" ]; then
         entry=$(grep "^${mime}=" "$desktop_mimeapps" 2>/dev/null | head -1 | cut -d= -f2 | cut -d';' -f1)
         [ -n "$entry" ] && echo "$entry" && return
@@ -82,7 +82,7 @@ if [ -z "$DESKTOP_ENTRY" ]; then
     if command -v xdg-open >/dev/null 2>&1; then
         exec xdg-open "$TARGET"
     fi
-    echo "leaves-open: no application found for '$MIME'" >&2
+    echo "marshal-open: no application found for '$MIME'" >&2
     exit 1
 fi
 
@@ -103,7 +103,7 @@ find_desktop_file() {
 DESKTOP_FILE=$(find_desktop_file "$DESKTOP_ENTRY")
 
 if [ -z "$DESKTOP_FILE" ]; then
-    echo "leaves-open: desktop entry '$DESKTOP_ENTRY' not found" >&2
+    echo "marshal-open: desktop entry '$DESKTOP_ENTRY' not found" >&2
     exit 1
 fi
 
@@ -111,7 +111,7 @@ fi
 EXEC_LINE=$(grep -m1 '^Exec=' "$DESKTOP_FILE" | cut -d= -f2-)
 
 if [ -z "$EXEC_LINE" ]; then
-    echo "leaves-open: no Exec line in '$DESKTOP_FILE'" >&2
+    echo "marshal-open: no Exec line in '$DESKTOP_FILE'" >&2
     exit 1
 fi
 

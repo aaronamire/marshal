@@ -1,5 +1,5 @@
-#ifndef LEAVES_GEOMETRY_H
-#define LEAVES_GEOMETRY_H
+#ifndef MARSHAL_GEOMETRY_H
+#define MARSHAL_GEOMETRY_H
 
 #define GRID              4
 

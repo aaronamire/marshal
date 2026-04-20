@@ -7,7 +7,7 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
-leaves-env/
+marshal-env/
 .os/
 
 # Build artifacts
@@ -21,8 +21,8 @@ builddir/
 *.db
 *.db-shm
 *.db-wal
-.leaves/
-leaves_audit.db
+.marshal/
+marshal_audit.db
 
 # LanceDB / vector stores — embeddings of user data, never commit
 *.lance/
@@ -43,5 +43,5 @@ Thumbs.db
 
 # Logs / scratch
 *.log
-/leaves-boot.log
+/marshal-boot.log
 agentd.log

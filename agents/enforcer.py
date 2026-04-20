@@ -26,7 +26,7 @@ Authorization model for paths:
     path) grants access to that exact path only. To write into a
     not-yet-created directory, authorize the parent directory.
 
-On any violation: raises LeavesError(AUTHORIZATION_VIOLATION). The
+On any violation: raises MarshalError(AUTHORIZATION_VIOLATION). The
 caller is expected to audit-log the failure and surface a typed error
 to the user / compositor.
 """
@@ -35,7 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 from observability import enforcer_rejections_total
 
 # Whitelisted param keys that are *always* treated as path-like, even
@@ -54,7 +54,7 @@ _NON_FS_SCHEMES = ("http://", "https://", "ftp://", "ftps://", "file://", "data:
 def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     """
     Validate a single action against the GoalSpec. Raises
-    LeavesError(AUTHORIZATION_VIOLATION) on any contract breach.
+    MarshalError(AUTHORIZATION_VIOLATION) on any contract breach.
 
     Must be called BEFORE the agent executes the action.
     """
@@ -63,8 +63,8 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     params = action.get("params") or {}
     if not isinstance(params, dict):
         enforcer_rejections_total.inc(reason="non_dict_params")
-        raise LeavesError(
-            LeavesErrorCode.AUTHORIZATION_VIOLATION,
+        raise MarshalError(
+            MarshalErrorCode.AUTHORIZATION_VIOLATION,
             detail=f"Action '{action_id}' has non-dict params: {type(params).__name__}",
         )
 
@@ -76,8 +76,8 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     planned_ids = {a.get("action_id") for a in planned_actions}
     if action_id not in planned_ids:
         enforcer_rejections_total.inc(reason="unplanned_action_id")
-        raise LeavesError(
-            LeavesErrorCode.AUTHORIZATION_VIOLATION,
+        raise MarshalError(
+            MarshalErrorCode.AUTHORIZATION_VIOLATION,
             detail=(
                 f"Action '{action_id}' is not in the planned GoalSpec. "
                 f"Planned: {sorted(i for i in planned_ids if i)}"
@@ -91,8 +91,8 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     planned_type = (planned_action or {}).get("type", "").upper()
     if planned_action is None or action_type != planned_type:
         enforcer_rejections_total.inc(reason="type_mismatch")
-        raise LeavesError(
-            LeavesErrorCode.AUTHORIZATION_VIOLATION,
+        raise MarshalError(
+            MarshalErrorCode.AUTHORIZATION_VIOLATION,
             detail=(
                 f"Action '{action_id}' type mismatch: "
                 f"planned '{planned_type}', got '{action_type}'"
@@ -104,8 +104,8 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
     if action_paths:
         if not resources:
             enforcer_rejections_total.inc(reason="paths_with_no_resources")
-            raise LeavesError(
-                LeavesErrorCode.AUTHORIZATION_VIOLATION,
+            raise MarshalError(
+                MarshalErrorCode.AUTHORIZATION_VIOLATION,
                 detail=(
                     f"Action '{action_id}' references paths "
                     f"{[raw for raw, _ in action_paths]} but the GoalSpec "
@@ -116,8 +116,8 @@ def enforce(action: dict[str, Any], goal_spec: dict[str, Any]) -> None:
         for raw_path, resolved in action_paths:
             if not _path_within_authorized(resolved, authorized):
                 enforcer_rejections_total.inc(reason="path_outside_resources")
-                raise LeavesError(
-                    LeavesErrorCode.AUTHORIZATION_VIOLATION,
+                raise MarshalError(
+                    MarshalErrorCode.AUTHORIZATION_VIOLATION,
                     detail=(
                         f"Action '{action_id}' references path '{raw_path}' "
                         f"which resolves to '{resolved}' — outside authorized "

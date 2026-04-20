@@ -38,8 +38,8 @@ _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-_AGENTD_SOCK = pathlib.Path.home() / ".leaves" / "agentd.sock"
-_POOL_SOCK = pathlib.Path.home() / ".leaves" / "runner-pool.sock"
+_AGENTD_SOCK = pathlib.Path.home() / ".marshal" / "agentd.sock"
+_POOL_SOCK = pathlib.Path.home() / ".marshal" / "runner-pool.sock"
 
 
 def _make_goalspec() -> dict:
@@ -78,7 +78,7 @@ async def _one_request() -> tuple[float, bool]:
 
     # Pre-create the intents row so the worker's audit-log inserts (which
     # FK back to intents.intent_id) don't blow up. Mirrors the path
-    # leaves.py / api.server take before submitting to agentd.
+    # main.py / api.server take before submitting to agentd.
     from db.audit import get_db, log_intent_created
     db = get_db()
     log_intent_created(db, spec["intent_id"], spec["natural_text"], spec)

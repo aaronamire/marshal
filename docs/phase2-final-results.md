@@ -1,8 +1,12 @@
 Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Leaves OS eval harness — GBNF + Layer1
+Marshal eval harness — GBNF + Layer1
 Timeout: 60s per intent | Cooldown: off (--fast)
 
-Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights:  40%|███▉      | 41/103 [00:00<00:00, 234.50it/s]Loading weights:  73%|███████▎  | 75/103 [00:00<00:00, 277.16it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 359.39it/s]
+
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]
+Loading weights:  40%|███▉      | 41/103 [00:00<00:00, 234.50it/s]
+Loading weights:  73%|███████▎  | 75/103 [00:00<00:00, 277.16it/s]
+Loading weights: 100%|██████████| 103/103 [00:00<00:00, 359.39it/s]
 [1mBertModel LOAD REPORT[0m from: sentence-transformers/all-MiniLM-L6-v2
 Key                     | Status     |  | 
 ------------------------+------------+--+-

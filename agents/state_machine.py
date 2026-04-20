@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Optional
 
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 class IntentState(enum.Enum):
@@ -58,21 +58,21 @@ class IntentLifecycle:
     def transition(self, to_state: IntentState) -> None:
         """
         Atomically transition to to_state.
-        Raises LeavesError if the transition is not valid.
+        Raises MarshalError if the transition is not valid.
         """
         with self._lock:
             from_state = self._state
 
             if from_state in _TERMINAL_STATES:
-                raise LeavesError(
-                    LeavesErrorCode.INTENT_ALREADY_TERMINAL,
+                raise MarshalError(
+                    MarshalErrorCode.INTENT_ALREADY_TERMINAL,
                     detail=f"Intent {self.intent_id!r} is already in terminal state {from_state.value}",
                 )
 
             allowed = _VALID_TRANSITIONS.get(from_state, set())
             if to_state not in allowed:
-                raise LeavesError(
-                    LeavesErrorCode.INVALID_STATE_TRANSITION,
+                raise MarshalError(
+                    MarshalErrorCode.INVALID_STATE_TRANSITION,
                     detail=(
                         f"Intent {self.intent_id!r}: "
                         f"cannot transition {from_state.value} -> {to_state.value}. "

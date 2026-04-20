@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "leaves-os"
+name = "marshal"
 version = "0.3.0"
 description = "Local AI agents that can't escape their plan. Runtime contract enforcer + Landlock sandbox + replayable audit log."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Leaves OS contributors" },
+    { name = "Marshal contributors" },
 ]
 keywords = [
     "ai", "agents", "llm", "local-first", "linux", "wayland",
@@ -73,17 +73,17 @@ dev = [
     "ruff>=0.3",
 ]
 all = [
-    "leaves-os[rag,remote,dev]",
+    "marshal[rag,remote,dev]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/amirewontmiss/leaves-os"
-Repository = "https://github.com/amirewontmiss/leaves-os"
-Issues = "https://github.com/amirewontmiss/leaves-os/issues"
-Changelog = "https://github.com/amirewontmiss/leaves-os/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/amirewontmiss/marshal"
+Repository = "https://github.com/amirewontmiss/marshal"
+Issues = "https://github.com/amirewontmiss/marshal/issues"
+Changelog = "https://github.com/amirewontmiss/marshal/blob/main/CHANGELOG.md"
 
 [project.scripts]
-leaves = "leaves:main"
+marshal = "main:main"
 # agentd.py still has no main() — invoke as `python -m agentd` or
 # `python /path/to/agentd.py`. Will be added in a follow-up.
 

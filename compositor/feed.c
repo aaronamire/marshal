@@ -42,7 +42,7 @@ static void json_escape(const char *src, char *dst, size_t dst_sz) {
 
 /* ── Parse history/result response into card ── */
 
-static void parse_intent_response(const cJSON *obj, LeavesIntent *intent) {
+static void parse_intent_response(const cJSON *obj, MarshalIntent *intent) {
 	const cJSON *id = cJSON_GetObjectItem(obj, "intent_id");
 	if (cJSON_IsString(id))
 		snprintf(intent->intent_id, sizeof(intent->intent_id),
@@ -150,7 +150,7 @@ static void parse_intent_response(const cJSON *obj, LeavesIntent *intent) {
 
 /* ── Parse plan response — populate authorization fields ── */
 
-static void parse_plan_response(const cJSON *obj, LeavesIntent *intent) {
+static void parse_plan_response(const cJSON *obj, MarshalIntent *intent) {
 	const cJSON *id = cJSON_GetObjectItem(obj, "intent_id");
 	if (cJSON_IsString(id))
 		snprintf(intent->intent_id, sizeof(intent->intent_id),
@@ -313,8 +313,8 @@ static cJSON *http_post(const char *url, const char *body, long timeout) {
 
 /* ── Feed lifecycle ── */
 
-struct leaves_feed *feed_create(const char *api_base) {
-	struct leaves_feed *feed = calloc(1, sizeof(*feed));
+struct marshal_feed *feed_create(const char *api_base) {
+	struct marshal_feed *feed = calloc(1, sizeof(*feed));
 	if (!feed) return NULL;
 
 	pthread_mutex_init(&feed->mutex, NULL);
@@ -336,7 +336,7 @@ struct leaves_feed *feed_create(const char *api_base) {
 	return feed;
 }
 
-void feed_destroy(struct leaves_feed *feed) {
+void feed_destroy(struct marshal_feed *feed) {
 	if (!feed) return;
 	close(feed->wakeup_pipe[0]);
 	close(feed->wakeup_pipe[1]);
@@ -346,7 +346,7 @@ void feed_destroy(struct leaves_feed *feed) {
 	free(feed);
 }
 
-void feed_load_history(struct leaves_feed *feed) {
+void feed_load_history(struct marshal_feed *feed) {
 	CURL *curl = curl_easy_init();
 	if (!curl) return;
 
@@ -380,7 +380,7 @@ void feed_load_history(struct leaves_feed *feed) {
 		const cJSON *item;
 		cJSON_ArrayForEach(item, intents_arr) {
 			if (feed->count >= MAX_INTENTS) break;
-			LeavesIntent *intent = &feed->intents[feed->count];
+			MarshalIntent *intent = &feed->intents[feed->count];
 			memset(intent, 0, sizeof(*intent));
 			parse_intent_response(item, intent);
 			intent->state = CARD_STATE_HISTORY;
@@ -399,7 +399,7 @@ void feed_load_history(struct leaves_feed *feed) {
 
 /* ── Proactive insertion (pushed from agentd) ── */
 
-void feed_insert_proactive(struct leaves_feed *feed, const char *intent_json) {
+void feed_insert_proactive(struct marshal_feed *feed, const char *intent_json) {
 	if (!feed || !intent_json) return;
 
 	cJSON *obj = cJSON_Parse(intent_json);
@@ -425,12 +425,12 @@ void feed_insert_proactive(struct leaves_feed *feed, const char *intent_json) {
 	/* Drop oldest if full (matches feed_submit behavior). */
 	if (feed->count >= MAX_INTENTS) {
 		memmove(&feed->intents[0], &feed->intents[1],
-			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+			(MAX_INTENTS - 1) * sizeof(MarshalIntent));
 		feed->count = MAX_INTENTS - 1;
 	}
 
 	int idx = feed->count;
-	LeavesIntent *intent = &feed->intents[idx];
+	MarshalIntent *intent = &feed->intents[idx];
 	memset(intent, 0, sizeof(*intent));
 	parse_intent_response(obj, intent);
 	/* Proactive cards arrive as passive notifications — no confirm flow,
@@ -455,7 +455,7 @@ void feed_insert_proactive(struct leaves_feed *feed, const char *intent_json) {
 
 /* ── Briefing fetch ── */
 
-void feed_load_briefing(struct leaves_feed *feed) {
+void feed_load_briefing(struct marshal_feed *feed) {
 	CURL *curl = curl_easy_init();
 	if (!curl) return;
 
@@ -483,7 +483,7 @@ void feed_load_briefing(struct leaves_feed *feed) {
 	if (!root) return;
 
 	pthread_mutex_lock(&feed->mutex);
-	LeavesBriefing *b = &feed->briefing;
+	MarshalBriefing *b = &feed->briefing;
 	memset(b, 0, sizeof(*b));
 
 	const cJSON *headline = cJSON_GetObjectItem(root, "headline");
@@ -508,7 +508,7 @@ void feed_load_briefing(struct leaves_feed *feed) {
 		const cJSON *sec;
 		cJSON_ArrayForEach(sec, sections) {
 			if (b->section_count >= MAX_BRIEFING_SECTIONS) break;
-			LeavesBriefingSection *s =
+			MarshalBriefingSection *s =
 				&b->sections[b->section_count];
 			memset(s, 0, sizeof(*s));
 
@@ -531,7 +531,7 @@ void feed_load_briefing(struct leaves_feed *feed) {
 					if (s->group_count >=
 							MAX_BRIEFING_GROUPS)
 						break;
-					LeavesBriefingGroup *g =
+					MarshalBriefingGroup *g =
 						&s->groups[s->group_count];
 					memset(g, 0, sizeof(*g));
 
@@ -560,7 +560,7 @@ void feed_load_briefing(struct leaves_feed *feed) {
 							if (g->item_count >=
 								MAX_BRIEFING_ITEMS)
 								break;
-							LeavesBriefingItem *bi =
+							MarshalBriefingItem *bi =
 								&g->items[
 								g->item_count];
 							const cJSON *title =
@@ -616,14 +616,14 @@ void feed_load_briefing(struct leaves_feed *feed) {
 /* ── Two-phase submit thread ── */
 
 struct submit_args {
-	struct leaves_feed *feed;
+	struct marshal_feed *feed;
 	int index;
 	char text[512];
 };
 
 static void *submit_thread(void *arg) {
 	struct submit_args *sa = arg;
-	struct leaves_feed *feed = sa->feed;
+	struct marshal_feed *feed = sa->feed;
 
 	/* Phase 1: POST /v1/intent/plan */
 	char plan_url[512];
@@ -648,7 +648,7 @@ static void *submit_thread(void *arg) {
 	cJSON *plan = http_post(plan_url, body, 180L);
 
 	pthread_mutex_lock(&feed->mutex);
-	LeavesIntent *intent = &feed->intents[sa->index];
+	MarshalIntent *intent = &feed->intents[sa->index];
 
 	if (!plan) {
 		intent->state = CARD_STATE_FAILED;
@@ -877,17 +877,17 @@ static void *submit_thread(void *arg) {
 	return NULL;
 }
 
-void feed_submit(struct leaves_feed *feed, const char *text) {
+void feed_submit(struct marshal_feed *feed, const char *text) {
 	pthread_mutex_lock(&feed->mutex);
 
 	if (feed->count >= MAX_INTENTS) {
 		memmove(&feed->intents[0], &feed->intents[1],
-			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+			(MAX_INTENTS - 1) * sizeof(MarshalIntent));
 		feed->count = MAX_INTENTS - 1;
 	}
 
 	int idx = feed->count;
-	LeavesIntent *intent = &feed->intents[idx];
+	MarshalIntent *intent = &feed->intents[idx];
 	memset(intent, 0, sizeof(*intent));
 	snprintf(intent->natural_text, sizeof(intent->natural_text),
 		"%s", text);
@@ -915,7 +915,7 @@ void feed_submit(struct leaves_feed *feed, const char *text) {
 
 /* ── Watcher loading ── */
 
-void feed_load_watchers(struct leaves_feed *feed) {
+void feed_load_watchers(struct marshal_feed *feed) {
 	char url[512];
 	snprintf(url, sizeof(url), "%s/v1/intent/persistent?active_only=true",
 		feed->api_base);
@@ -940,7 +940,7 @@ void feed_load_watchers(struct leaves_feed *feed) {
 				strcmp(trigger->valuestring, "filesystem") != 0)
 			continue;
 
-		LeavesWatcher *w = &feed->watchers[feed->watcher_count];
+		MarshalWatcher *w = &feed->watchers[feed->watcher_count];
 		memset(w, 0, sizeof(*w));
 
 		const cJSON *id = cJSON_GetObjectItem(item, "id");
@@ -1004,14 +1004,14 @@ void feed_load_watchers(struct leaves_feed *feed) {
 /* ── Search thread ── */
 
 struct search_args {
-	struct leaves_feed *feed;
+	struct marshal_feed *feed;
 	int index;
 	char query[512];
 };
 
 static void *search_thread(void *arg) {
 	struct search_args *sa = arg;
-	struct leaves_feed *feed = sa->feed;
+	struct marshal_feed *feed = sa->feed;
 
 	/* URL-encode the query (minimal: spaces → +) */
 	char encoded[512] = {0};
@@ -1035,7 +1035,7 @@ static void *search_thread(void *arg) {
 	cJSON *root = http_get(url, 15L);
 
 	pthread_mutex_lock(&feed->mutex);
-	LeavesIntent *intent = &feed->intents[sa->index];
+	MarshalIntent *intent = &feed->intents[sa->index];
 
 	if (!root) {
 		snprintf(intent->action_chain,
@@ -1057,7 +1057,7 @@ static void *search_thread(void *arg) {
 		const cJSON *hit;
 		cJSON_ArrayForEach(hit, results) {
 			if (n >= MAX_SEARCH_HITS) break;
-			LeavesSearchHit *h = &intent->search_hits[n];
+			MarshalSearchHit *h = &intent->search_hits[n];
 			memset(h, 0, sizeof(*h));
 
 			const cJSON *title = cJSON_GetObjectItem(hit, "title");
@@ -1090,17 +1090,17 @@ static void *search_thread(void *arg) {
 	return NULL;
 }
 
-void feed_search(struct leaves_feed *feed, const char *query) {
+void feed_search(struct marshal_feed *feed, const char *query) {
 	pthread_mutex_lock(&feed->mutex);
 
 	if (feed->count >= MAX_INTENTS) {
 		memmove(&feed->intents[0], &feed->intents[1],
-			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+			(MAX_INTENTS - 1) * sizeof(MarshalIntent));
 		feed->count = MAX_INTENTS - 1;
 	}
 
 	int idx = feed->count;
-	LeavesIntent *intent = &feed->intents[idx];
+	MarshalIntent *intent = &feed->intents[idx];
 	memset(intent, 0, sizeof(*intent));
 	snprintf(intent->natural_text, sizeof(intent->natural_text),
 		"search: %s", query);
@@ -1128,14 +1128,14 @@ void feed_search(struct leaves_feed *feed, const char *query) {
 /* ── Watch creation thread ── */
 
 struct watch_args {
-	struct leaves_feed *feed;
+	struct marshal_feed *feed;
 	int index;
 	char text[512];
 };
 
 static void *create_watcher_thread(void *arg) {
 	struct watch_args *wa = arg;
-	struct leaves_feed *feed = wa->feed;
+	struct marshal_feed *feed = wa->feed;
 
 	char url[512];
 	snprintf(url, sizeof(url), "%s/v1/intent/persist", feed->api_base);
@@ -1167,7 +1167,7 @@ static void *create_watcher_thread(void *arg) {
 	cJSON *result = http_post(url, body, 30L);
 
 	pthread_mutex_lock(&feed->mutex);
-	LeavesIntent *intent = &feed->intents[wa->index];
+	MarshalIntent *intent = &feed->intents[wa->index];
 
 	if (result) {
 		const cJSON *status = cJSON_GetObjectItem(result, "status");
@@ -1205,17 +1205,17 @@ static void *create_watcher_thread(void *arg) {
 	return NULL;
 }
 
-void feed_create_watcher(struct leaves_feed *feed, const char *text) {
+void feed_create_watcher(struct marshal_feed *feed, const char *text) {
 	pthread_mutex_lock(&feed->mutex);
 
 	if (feed->count >= MAX_INTENTS) {
 		memmove(&feed->intents[0], &feed->intents[1],
-			(MAX_INTENTS - 1) * sizeof(LeavesIntent));
+			(MAX_INTENTS - 1) * sizeof(MarshalIntent));
 		feed->count = MAX_INTENTS - 1;
 	}
 
 	int idx = feed->count;
-	LeavesIntent *intent = &feed->intents[idx];
+	MarshalIntent *intent = &feed->intents[idx];
 	memset(intent, 0, sizeof(*intent));
 	snprintf(intent->natural_text, sizeof(intent->natural_text),
 		"watch: %s", text);
@@ -1240,12 +1240,12 @@ void feed_create_watcher(struct leaves_feed *feed, const char *text) {
 	pthread_attr_destroy(&attr);
 }
 
-void feed_process_updates(struct leaves_feed *feed) {
+void feed_process_updates(struct marshal_feed *feed) {
 	/* Drain is handled by compositor.c which reads byte values */
 	(void)feed;
 }
 
-bool feed_animate(struct leaves_feed *feed, float dt) {
+bool feed_animate(struct marshal_feed *feed, float dt) {
 	bool any_active = false;
 	pthread_mutex_lock(&feed->mutex);
 
@@ -1265,7 +1265,7 @@ bool feed_animate(struct leaves_feed *feed, float dt) {
 	}
 
 	for (int i = 0; i < feed->count; i++) {
-		LeavesIntent *intent = &feed->intents[i];
+		MarshalIntent *intent = &feed->intents[i];
 		if (!spring_settled(&intent->anim_y)) {
 			spring_update(&intent->anim_y, dt);
 			any_active = true;
@@ -1288,13 +1288,13 @@ bool feed_animate(struct leaves_feed *feed, float dt) {
 	return any_active;
 }
 
-void feed_confirm(struct leaves_feed *feed) {
+void feed_confirm(struct marshal_feed *feed) {
 	feed->awaiting_confirm = false;
 	char byte = 'y';
 	(void)write(feed->confirm_pipe[1], &byte, 1);
 }
 
-void feed_cancel(struct leaves_feed *feed) {
+void feed_cancel(struct marshal_feed *feed) {
 	feed->awaiting_confirm = false;
 	char byte = 'n';
 	(void)write(feed->confirm_pipe[1], &byte, 1);
@@ -1313,7 +1313,7 @@ void feed_cancel(struct leaves_feed *feed) {
 #include <pthread.h>
 
 struct detail_args {
-	struct leaves_feed *feed;
+	struct marshal_feed *feed;
 	int index;
 	char intent_id[64];
 };
@@ -1416,7 +1416,7 @@ static void *detail_thread(void *arg) {
 
 	pthread_mutex_lock(&da->feed->mutex);
 	if (da->index < da->feed->count) {
-		LeavesIntent *intent = &da->feed->intents[da->index];
+		MarshalIntent *intent = &da->feed->intents[da->index];
 		if (strcmp(intent->intent_id, da->intent_id) == 0) {
 			snprintf(intent->result_summary,
 				sizeof(intent->result_summary), "%s", buf);
@@ -1431,7 +1431,7 @@ static void *detail_thread(void *arg) {
 	return NULL;
 }
 
-void feed_load_detail(struct leaves_feed *feed, int card_idx) {
+void feed_load_detail(struct marshal_feed *feed, int card_idx) {
 	if (!feed || card_idx < 0) return;
 
 	struct detail_args *da = calloc(1, sizeof(*da));
@@ -1460,7 +1460,7 @@ void feed_load_detail(struct leaves_feed *feed, int card_idx) {
 }
 
 struct replay_args {
-	struct leaves_feed *feed;
+	struct marshal_feed *feed;
 	int index;
 	char intent_id[64];
 };
@@ -1505,7 +1505,7 @@ static void *replay_thread(void *arg) {
 
 	pthread_mutex_lock(&ra->feed->mutex);
 	if (ra->index < ra->feed->count) {
-		LeavesIntent *intent = &ra->feed->intents[ra->index];
+		MarshalIntent *intent = &ra->feed->intents[ra->index];
 		if (strcmp(intent->intent_id, ra->intent_id) == 0) {
 			/* In-place prepend of the banner: shift existing summary
 			 * right by banner length, truncating the tail if needed,
@@ -1531,7 +1531,7 @@ static void *replay_thread(void *arg) {
 	return NULL;
 }
 
-void feed_replay(struct leaves_feed *feed, int card_idx) {
+void feed_replay(struct marshal_feed *feed, int card_idx) {
 	if (!feed || card_idx < 0) return;
 
 	struct replay_args *ra = calloc(1, sizeof(*ra));

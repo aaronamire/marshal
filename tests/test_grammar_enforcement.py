@@ -1,5 +1,5 @@
 """
-Grammar enforcement tests for Leaves OS.
+Grammar enforcement tests for Marshal.
 
 These tests verify that GBNF grammar constraints are ACTUALLY constraining
 the sampler — not just that the output happens to look valid.

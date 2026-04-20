@@ -1,4 +1,4 @@
-project('leaves-locker', 'c',
+project('marshal-locker', 'c',
   version : '0.2.0',
   default_options : [
     'c_std=c11',
@@ -32,7 +32,7 @@ ext_lock_code = custom_target('ext-session-lock-client-code',
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
-executable('leaves-locker',
+executable('marshal-locker',
   'locker.c',
   ext_lock_header,
   ext_lock_code,

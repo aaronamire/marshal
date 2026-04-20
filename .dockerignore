@@ -15,7 +15,7 @@ build/
 dist/
 .venv/
 .os/
-leaves-env/
+marshal-env/
 
 # Tests + dev-only files
 tests/
@@ -36,8 +36,8 @@ compositor/.cache/
 *.db
 *.db-shm
 *.db-wal
-.leaves/
-leaves_audit.db
+.marshal/
+marshal_audit.db
 *.log
 
 # Editor + OS cruft

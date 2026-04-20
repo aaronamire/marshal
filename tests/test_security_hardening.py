@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from agents.enforcer import enforce, _looks_like_path  # noqa: E402
 from agentd import _UUID_V4_RE, _validate_intent_id  # noqa: E402
-from errors import LeavesError, LeavesErrorCode  # noqa: E402
+from errors import MarshalError, MarshalErrorCode  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +50,9 @@ class TestIntentIdValidation:
         ["00000000-0000-4000-8000-000000000000"],
     ])
     def test_validate_intent_id_rejects_non_uuid(self, evil):
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             _validate_intent_id(evil)
-        assert exc.value.code == LeavesErrorCode.INVALID_INTENT_FORMAT
+        assert exc.value.code == MarshalErrorCode.INVALID_INTENT_FORMAT
 
     def test_validate_intent_id_passes_real_uuid(self):
         valid = str(uuid.uuid4())
@@ -186,9 +186,9 @@ class TestEnforcerStep4Removal:
         }
         evil = {"action_id": "act-1", "type": "DELETE", "agent": "file",
                 "params": {"path": str(safe_dir / "x")}}
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             enforce(evil, spec)
-        assert exc.value.code == LeavesErrorCode.AUTHORIZATION_VIOLATION
+        assert exc.value.code == MarshalErrorCode.AUTHORIZATION_VIOLATION
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +235,6 @@ class TestBareRelativePathScan:
         action = {"action_id": "act-1", "type": "READ", "agent": "file",
                   "params": {"path": str(safe_dir),
                              "log_target": "etc/shadow"}}
-        with pytest.raises(LeavesError) as exc:
+        with pytest.raises(MarshalError) as exc:
             enforce(action, spec)
-        assert exc.value.code == LeavesErrorCode.AUTHORIZATION_VIOLATION
+        assert exc.value.code == MarshalErrorCode.AUTHORIZATION_VIOLATION

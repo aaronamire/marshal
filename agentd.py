@@ -1,9 +1,9 @@
 """
-Leaves OS Agent Daemon.
+Marshal Agent Daemon.
 
-Phase 1: AgentCoordinator as a library module (imported by leaves.py).
+Phase 1: AgentCoordinator as a library module (imported by main.py).
 Phase 2: Unix socket daemon + parallel DAG execution.
-         leaves.py connects via ~/.leaves/agentd.sock (newline-delimited JSON).
+         main.py connects via ~/.marshal/agentd.sock (newline-delimited JSON).
          Multi-action intents run concurrently via depends_on DAG scheduling.
 Phase 3: cgroup integration and per-intent subprocess isolation.
 
@@ -35,7 +35,7 @@ from agents.registry import agent_classes
 from agents.state_machine import IntentLifecycle, IntentState
 from agents.tool_failure_tracker import ToolFailureTracker
 from db.audit import get_db, log_error, log_intent_created, log_state_transition, complete_intent
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 from observability import configure_logging, intents_total, runner_path_total
 
 log = logging.getLogger("agentd")
@@ -108,7 +108,7 @@ class AgentCoordinator:
 
         Returns (results_by_action_id, summary_string).
         Transitions lifecycle to EXECUTING internally.
-        Raises LeavesError only on unrecoverable failure (tracker escalation).
+        Raises MarshalError only on unrecoverable failure (tracker escalation).
         Per-action errors are captured in results and execution continues.
         """
         intent_id = goal_spec["intent_id"]
@@ -178,8 +178,8 @@ class AgentCoordinator:
             agent_type = action.get("agent", "")
 
             if agent_type not in _AGENT_MAP:
-                err = LeavesError(
-                    LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                err = MarshalError(
+                    MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail=(
                         f"Available agents: {list(_AGENT_MAP.keys())}. "
                         f"Got: '{agent_type}'"
@@ -198,14 +198,14 @@ class AgentCoordinator:
                 result = agent.execute_action(action)
                 tracker.reset(action.get("type", ""), action.get("params", {}))
                 results[action_id] = result
-            except LeavesError as e:
+            except MarshalError as e:
                 try:
                     tracker.record_failure(
                         action.get("type", ""),
                         action.get("params", {}),
                         error=e,
                     )
-                except LeavesError as escalated:
+                except MarshalError as escalated:
                     log_error(self._db, escalated.code.value,
                               escalated.detail, intent_id)
                     results[action_id] = {"error": escalated.user_message}
@@ -309,8 +309,8 @@ class AgentCoordinator:
                 if goal_spec:
                     enforce_action(action, goal_spec)
                 if agent_type not in _AGENT_MAP:
-                    raise LeavesError(
-                        LeavesErrorCode.AGENT_NOT_AVAILABLE,
+                    raise MarshalError(
+                        MarshalErrorCode.AGENT_NOT_AVAILABLE,
                         detail=(
                             f"Available agents: {list(_AGENT_MAP.keys())}. "
                             f"Got: '{agent_type}'"
@@ -323,14 +323,14 @@ class AgentCoordinator:
                     result = agent.execute_action(action, channel=channel)
                 else:
                     result = agent.execute_action(action)
-            except LeavesError as e:
+            except MarshalError as e:
                 outbox.put(ChannelMessage(aid, "error", e))
                 return
             except Exception as e:  # noqa: BLE001 — boundary
                 outbox.put(ChannelMessage(
                     aid, "error",
-                    LeavesError(
-                        LeavesErrorCode.INTERNAL_ERROR,
+                    MarshalError(
+                        MarshalErrorCode.INTERNAL_ERROR,
                         detail=f"worker crashed: {e}",
                     ),
                 ))
@@ -346,8 +346,8 @@ class AgentCoordinator:
                     dep_failed = all_deps & failed_ids
                     if not dep_failed:
                         continue
-                    err = LeavesError(
-                        LeavesErrorCode.DEPENDENCY_FAILED,
+                    err = MarshalError(
+                        MarshalErrorCode.DEPENDENCY_FAILED,
                         detail=(
                             f"Action {aid} skipped: dependency "
                             f"{sorted(dep_failed)} failed"
@@ -482,14 +482,14 @@ class AgentCoordinator:
                         continue
                     channels.pop(aid, None)
                     action = action_map[aid]
-                    e: LeavesError = msg.data
+                    e: MarshalError = msg.data
                     try:
                         tracker.record_failure(
                             action.get("type", ""),
                             action.get("params", {}),
                             error=e,
                         )
-                    except LeavesError as escalated:
+                    except MarshalError as escalated:
                         log_error(
                             self._db, escalated.code.value,
                             escalated.detail, intent_id,
@@ -534,10 +534,10 @@ class AgentCoordinator:
 # Unix socket daemon  (only active when run as __main__)
 # ---------------------------------------------------------------------------
 
-_SOCK_PATH = pathlib.Path.home() / ".leaves" / "agentd.sock"
+_SOCK_PATH = pathlib.Path.home() / ".marshal" / "agentd.sock"
 
 # cgroup v2 resource limits — initialized in _run_server()
-_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/leaves")
+_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup/marshal")
 _CGROUP_AVAILABLE = False
 
 # UUID v4 — same regex as agents/schema/goal_spec.json. Validating at the
@@ -550,8 +550,8 @@ _UUID_V4_RE = re.compile(
 
 def _validate_intent_id(intent_id: Any) -> str:
     if not isinstance(intent_id, str) or not _UUID_V4_RE.match(intent_id):
-        raise LeavesError(
-            LeavesErrorCode.INVALID_INTENT_FORMAT,
+        raise MarshalError(
+            MarshalErrorCode.INVALID_INTENT_FORMAT,
             detail=f"intent_id must be UUID v4, got: {intent_id!r}",
         )
     return intent_id
@@ -562,7 +562,7 @@ def _check_peer_uid_allowed(writer: asyncio.StreamWriter) -> bool:
     Returns True iff the connecting peer runs as the same uid as agentd.
 
     Defense-in-depth on top of the 0o600 socket perms (F-2). Without this,
-    a misconfigured ~/.leaves/ permission would silently widen the trust
+    a misconfigured ~/.marshal/ permission would silently widen the trust
     boundary. See docs/security-audit-2026-04-18.md F-3.
     """
     sock = writer.get_extra_info("socket")
@@ -585,7 +585,7 @@ _INFLIGHT_PROCS: dict[str, int] = {}
 
 # Path to the runner-pool master's socket. Master is spawned at agentd
 # startup; if it's down, _run_sandboxed falls back to the cold path.
-_POOL_SOCK_PATH = pathlib.Path.home() / ".leaves" / "runner-pool.sock"
+_POOL_SOCK_PATH = pathlib.Path.home() / ".marshal" / "runner-pool.sock"
 _pool_proc: "asyncio.subprocess.Process | None" = None
 _ACK_TIMEOUT_S = 5.0
 _POOL_CONNECT_TIMEOUT_S = 1.0
@@ -663,7 +663,7 @@ async def _run_sandboxed(
                 extra={"intent_id": str(goal_spec.get("intent_id"))[:8],
                        "error": str(e)},
             )
-        except LeavesError:
+        except MarshalError:
             # Domain error from inside the worker (DB_ERROR, ENFORCER_REJECT,
             # etc.) — re-raise. Falling back to cold would just re-trigger
             # the same error and double-charge latency.
@@ -682,7 +682,7 @@ async def _run_via_pool(
     Execute an intent via the runner-pool master (warm path).
 
     Protocol:
-      1. Open a fresh connection to ~/.leaves/runner-pool.sock.
+      1. Open a fresh connection to ~/.marshal/runner-pool.sock.
       2. Send {"goal_spec": ..., "from_state": ...}.
       3. Read {"_kind": "worker_pid", "pid": N}.
       4. Set up per-intent cgroup, write the worker pid into cgroup.procs.
@@ -717,14 +717,14 @@ async def _run_via_pool(
         # 2. Read worker_pid frame.
         line = await asyncio.wait_for(reader.readline(), timeout=_ACK_TIMEOUT_S)
         if not line:
-            raise LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            raise MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail="runner pool closed before sending worker_pid",
             )
         first = json.loads(line)
         if first.get("_kind") != "worker_pid":
-            raise LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            raise MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail=f"unexpected first frame from pool: {first}",
             )
         worker_pid = int(first["pid"])
@@ -775,8 +775,8 @@ async def _run_via_pool(
                 break
 
         if result_frame is None:
-            raise LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            raise MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail="runner pool closed without sending result",
             )
 
@@ -812,10 +812,10 @@ async def _run_via_pool(
 
     code_str = result_frame.get("code", "INTERNAL_ERROR")
     try:
-        code = LeavesErrorCode[code_str]
+        code = MarshalErrorCode[code_str]
     except KeyError:
-        code = LeavesErrorCode.INTERNAL_ERROR
-    raise LeavesError(
+        code = MarshalErrorCode.INTERNAL_ERROR
+    raise MarshalError(
         code, detail=result_frame.get("detail") or result_frame.get("error")
     )
 
@@ -833,7 +833,7 @@ async def _run_sandboxed_cold(
     Communication is JSON over stdin/stdout.
 
     If `on_event` is provided, a sidecar pipe is opened and its write end is
-    passed to the subprocess via `LEAVES_EVENT_FD`. The subprocess writes
+    passed to the subprocess via `MARSHAL_EVENT_FD`. The subprocess writes
     JSON channel-message frames to that fd as it executes; this function
     reads them concurrently and forwards each to `on_event`. Pre-opened
     pipes are not subject to Landlock (which restricts paths, not fds), so
@@ -874,7 +874,7 @@ async def _run_sandboxed_cold(
         event_r, event_w = os.pipe()
         os.set_inheritable(event_w, True)
         pass_fds = (event_w,)
-        sub_env["LEAVES_EVENT_FD"] = str(event_w)
+        sub_env["MARSHAL_EVENT_FD"] = str(event_w)
 
     proc = await asyncio.create_subprocess_exec(
         sys.executable, str(runner),
@@ -920,7 +920,7 @@ async def _run_sandboxed_cold(
         await proc.wait()
         if event_task is not None:
             event_task.cancel()
-        raise LeavesError(LeavesErrorCode.INFERENCE_TIMEOUT,
+        raise MarshalError(MarshalErrorCode.INFERENCE_TIMEOUT,
                           detail="sandboxed runner timed out")
     finally:
         # Always deregister so a stale entry can't accumulate.
@@ -954,15 +954,15 @@ async def _run_sandboxed_cold(
 
     if proc.returncode != 0:
         err_text = _stderr.decode(errors="replace").strip()
-        raise LeavesError(
-            LeavesErrorCode.INTERNAL_ERROR,
+        raise MarshalError(
+            MarshalErrorCode.INTERNAL_ERROR,
             detail=f"runner exited {proc.returncode}: {err_text[:300]}",
         )
 
     try:
         resp = json.loads(stdout.split(b"\n")[0])
     except Exception as exc:
-        raise LeavesError(LeavesErrorCode.INTERNAL_ERROR,
+        raise MarshalError(MarshalErrorCode.INTERNAL_ERROR,
                           detail=f"runner output not JSON: {exc}")
 
     if resp.get("ok"):
@@ -973,10 +973,10 @@ async def _run_sandboxed_cold(
 
     code_str = resp.get("code", "INTERNAL_ERROR")
     try:
-        code = LeavesErrorCode[code_str]
+        code = MarshalErrorCode[code_str]
     except KeyError:
-        code = LeavesErrorCode.INTERNAL_ERROR
-    raise LeavesError(code, detail=resp.get("detail") or resp.get("error"))
+        code = MarshalErrorCode.INTERNAL_ERROR
+    raise MarshalError(code, detail=resp.get("detail") or resp.get("error"))
 
 
 async def _handle_client(
@@ -1074,7 +1074,7 @@ async def _handle_client(
         # cgroup paths or audit-db writes. See security audit F-1.
         try:
             _validate_intent_id(goal_spec.get("intent_id"))
-        except LeavesError as e:
+        except MarshalError as e:
             writer.write(json.dumps({
                 "final": True, "ok": False,
                 "code": e.code.value,
@@ -1110,7 +1110,7 @@ async def _handle_client(
                 "sandbox": sandbox,
             }
             intents_total.inc(status="done", category=category)
-        except LeavesError as e:
+        except MarshalError as e:
             response = {
                 "final":  True,
                 "ok":     False,
@@ -1266,7 +1266,7 @@ def _fire_goalspec_sync(goal_spec: dict) -> None:
             },
         )
 
-    except LeavesError as e:
+    except MarshalError as e:
         duration_ms = (_time.monotonic() - t_start) * 1000
         complete_intent(db, intent_id, "FAILED", e.detail, duration_ms=duration_ms)
         intents_total.inc(status="failed", category=category)
@@ -1346,7 +1346,7 @@ async def _spawn_runner_pool() -> "asyncio.subprocess.Process | None":
 
 _PROACTIVE_SOCK_PATH = pathlib.Path(
     os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-) / "leaves-proactive.sock"
+) / "marshal-proactive.sock"
 
 _proactive_writer: "asyncio.StreamWriter | None" = None
 _proactive_lock = asyncio.Lock()

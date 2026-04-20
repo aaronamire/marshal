@@ -1,4 +1,4 @@
-project('leaves-compositor', 'c',
+project('marshal-compositor', 'c',
   version : '0.1.0',
   default_options : [
     'c_std=c11',
@@ -44,7 +44,7 @@ layer_shell_header = custom_target('wlr-layer-shell-protocol-header',
   command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
-executable('leaves-compositor',
+executable('marshal-compositor',
   'compositor.c',
   'renderer.c',
   'feed.c',

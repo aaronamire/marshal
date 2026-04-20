@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Leaves OS sandboxed agent runner.
+Marshal sandboxed agent runner.
 
 Reads {"goal_spec": ..., "from_state": ...} from stdin (one JSON line),
 applies Landlock filesystem restrictions to THIS process, then executes
@@ -126,7 +126,7 @@ def apply_landlock(goal_spec: dict) -> dict:
 
     Grants:
       - Per-intent resources: READ_WRITE for destructive actions, READ_ONLY otherwise
-      - ~/.leaves/: READ_WRITE (SQLite audit log writes)
+      - ~/.marshal/: READ_WRITE (SQLite audit log writes)
       - /home, ~/: READ_DIR only — allows traversal to reach ~/... paths
       - project root, /usr, /lib, /lib64, /proc: READ_ONLY (Python runtime)
 
@@ -163,7 +163,7 @@ def _do_apply(goal_spec: dict) -> None:
     resource_paths = [pathlib.Path(r).expanduser() for r in resources if r]
 
     project_root = pathlib.Path(__file__).parent.parent.resolve()
-    leaves_dir   = pathlib.Path.home() / ".leaves"
+    marshal_dir   = pathlib.Path.home() / ".marshal"
 
     ruleset_fd = _ll_create_ruleset(_HANDLED_ACCESS)
     if ruleset_fd < 0:
@@ -183,7 +183,7 @@ def _do_apply(goal_spec: dict) -> None:
                 _ll_add_path_rule(ruleset_fd, path, resource_access)
 
         # Always read-write: audit db
-        _ll_add_path_rule(ruleset_fd, leaves_dir, _FS_READ_WRITE)
+        _ll_add_path_rule(ruleset_fd, marshal_dir, _FS_READ_WRITE)
 
         # Allow traversal through /home and ~/
         # Landlock requires every directory in the path to have at least READ_DIR
@@ -272,7 +272,7 @@ def _main() -> None:
     from agents.cancel import cancel_event, install_handler as install_cancel_handler
     from agentd import AgentCoordinator
     from db.audit import get_db
-    from errors import LeavesError
+    from errors import MarshalError
 
     # Install SIGUSR1 → cancel_event handler. This must happen on the
     # main thread before AgentCoordinator's worker threads spin up so
@@ -291,7 +291,7 @@ def _main() -> None:
     # pipe fd is inherited from the parent and is therefore not subject to
     # Landlock (which gates path access, not pre-opened fds).
     event_writer = None
-    event_fd_str = os.environ.get("LEAVES_EVENT_FD")
+    event_fd_str = os.environ.get("MARSHAL_EVENT_FD")
     if event_fd_str:
         try:
             event_fd = int(event_fd_str)
@@ -335,7 +335,7 @@ def _main() -> None:
             "summary": summary,
             "sandbox": sandbox_status,
         }
-    except LeavesError as e:
+    except MarshalError as e:
         out = {
             "ok":     False,
             "code":   e.code.value,

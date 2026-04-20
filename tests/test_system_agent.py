@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.system_agent import SystemAgent, _PROTECTED_PROCESSES, _MAX_TERMINATE
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 # ------------------------------------------------------------------
@@ -331,25 +331,25 @@ class TestLaunch:
     def test_launch_program_not_in_path(self, mock_shutil, agent):
         mock_shutil.which.return_value = None
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("WRITE", {"program": "nonexistent_app"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.FILE_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.FILE_NOT_FOUND
         assert "nonexistent_app" in exc_info.value.detail
 
     def test_launch_empty_program(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("WRITE", {"program": ""}))
 
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
     def test_launch_missing_program_param(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("WRITE", {}))
 
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
     @patch("agents.system_agent.subprocess")
     @patch("agents.system_agent.shutil")
@@ -358,12 +358,12 @@ class TestLaunch:
         mock_subprocess.Popen.side_effect = OSError("Permission denied")
         mock_subprocess.DEVNULL = -1
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("WRITE", {"program": "broken"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.INTERNAL_ERROR
+        assert exc_info.value.code == MarshalErrorCode.INTERNAL_ERROR
         assert "Failed to launch" in exc_info.value.detail
 
     @patch("agents.system_agent.subprocess")
@@ -453,12 +453,12 @@ class TestTerminateByName:
         proc = self._make_proc(1, "systemd", 1000, mock_psutil)
         mock_psutil.process_iter.return_value = [proc]
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "systemd"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PERMISSION_DENIED
+        assert exc_info.value.code == MarshalErrorCode.PERMISSION_DENIED
         assert "protected" in exc_info.value.detail
 
     @patch("agents.system_agent.os")
@@ -472,12 +472,12 @@ class TestTerminateByName:
         proc = self._make_proc(99, "sshd", 1000, mock_psutil)
         mock_psutil.process_iter.return_value = [proc]
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "sshd"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PERMISSION_DENIED
+        assert exc_info.value.code == MarshalErrorCode.PERMISSION_DENIED
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -489,12 +489,12 @@ class TestTerminateByName:
         mock_os.getuid.return_value = 1000
         mock_psutil.process_iter.return_value = []
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "ghost_process"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PROCESS_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.PROCESS_NOT_FOUND
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -508,12 +508,12 @@ class TestTerminateByName:
         proc = self._make_proc(42, "myapp", 0, mock_psutil)
         mock_psutil.process_iter.return_value = [proc]
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "myapp"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PROCESS_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.PROCESS_NOT_FOUND
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -529,12 +529,12 @@ class TestTerminateByName:
         ]
         mock_psutil.process_iter.return_value = procs
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "spammer"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PERMISSION_DENIED
+        assert exc_info.value.code == MarshalErrorCode.PERMISSION_DENIED
         assert str(_MAX_TERMINATE) in exc_info.value.detail
 
     @patch("agents.system_agent.os")
@@ -622,12 +622,12 @@ class TestTerminateByPID:
         mock_psutil.NoSuchProcess = real_psutil.NoSuchProcess
         mock_psutil.Process.side_effect = real_psutil.NoSuchProcess(99999)
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "99999"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PROCESS_NOT_FOUND
+        assert exc_info.value.code == MarshalErrorCode.PROCESS_NOT_FOUND
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -646,12 +646,12 @@ class TestTerminateByPID:
 
         mock_psutil.Process.return_value = proc
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "1"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PERMISSION_DENIED
+        assert exc_info.value.code == MarshalErrorCode.PERMISSION_DENIED
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -668,12 +668,12 @@ class TestTerminateByPID:
 
         mock_psutil.Process.return_value = proc
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "2"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PERMISSION_DENIED
+        assert exc_info.value.code == MarshalErrorCode.PERMISSION_DENIED
 
     @patch("agents.system_agent.os")
     @patch("agents.system_agent.psutil")
@@ -692,12 +692,12 @@ class TestTerminateByPID:
 
         mock_psutil.Process.return_value = proc
 
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(
                 _action("DELETE", {"target": "50"})
             )
 
-        assert exc_info.value.code == LeavesErrorCode.PERMISSION_DENIED
+        assert exc_info.value.code == MarshalErrorCode.PERMISSION_DENIED
         assert "protected" in exc_info.value.detail
 
 
@@ -708,16 +708,16 @@ class TestTerminateByPID:
 class TestTerminateEdgeCases:
 
     def test_terminate_empty_target(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("DELETE", {"target": ""}))
 
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
     def test_terminate_missing_target_param(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("DELETE", {}))
 
-        assert exc_info.value.code == LeavesErrorCode.INFERENCE_BAD_RESPONSE
+        assert exc_info.value.code == MarshalErrorCode.INFERENCE_BAD_RESPONSE
 
 
 # ------------------------------------------------------------------
@@ -727,22 +727,22 @@ class TestTerminateEdgeCases:
 class TestInvalidAction:
 
     def test_invalid_action_type(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action(_action("PATCH", {}))
 
-        assert exc_info.value.code == LeavesErrorCode.NOT_IMPLEMENTED
+        assert exc_info.value.code == MarshalErrorCode.NOT_IMPLEMENTED
 
     def test_empty_action_type(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action({"type": "", "action_id": "a1", "params": {}})
 
-        assert exc_info.value.code == LeavesErrorCode.NOT_IMPLEMENTED
+        assert exc_info.value.code == MarshalErrorCode.NOT_IMPLEMENTED
 
     def test_missing_action_type(self, agent):
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent.execute_action({"action_id": "a1", "params": {}})
 
-        assert exc_info.value.code == LeavesErrorCode.NOT_IMPLEMENTED
+        assert exc_info.value.code == MarshalErrorCode.NOT_IMPLEMENTED
 
 
 # ------------------------------------------------------------------
@@ -768,7 +768,7 @@ class TestAuditCalls:
         """Even on failure, audit_start is called before the error."""
         mock_shutil.which.return_value = None
 
-        with pytest.raises(LeavesError):
+        with pytest.raises(MarshalError):
             agent.execute_action(_action("WRITE", {"program": "nope"}))
         # Audit start is called before shutil.which check? No — the error
         # is raised before audit_start for this case. That's fine.

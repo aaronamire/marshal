@@ -1,5 +1,5 @@
 """
-API endpoint tests for Leaves OS HTTP API (api/server.py).
+API endpoint tests for Marshal HTTP API (api/server.py).
 Uses httpx AsyncClient with ASGI transport — no real server needed.
 Mocks: parser, agentd socket, DB, cortex indexer.
 """
@@ -143,10 +143,10 @@ class TestPlan:
 
     @pytest.mark.asyncio
     async def test_plan_not_implemented(self, client):
-        from errors import LeavesError, LeavesErrorCode
+        from errors import MarshalError, MarshalErrorCode
         mock_parser = MagicMock()
-        mock_parser.parse.side_effect = LeavesError(
-            LeavesErrorCode.NOT_IMPLEMENTED, detail="email not supported")
+        mock_parser.parse.side_effect = MarshalError(
+            MarshalErrorCode.NOT_IMPLEMENTED, detail="email not supported")
         with patch("api.server._get_parser", return_value=mock_parser):
             resp = await client.post("/v1/intent/plan",
                                      json={"text": "send email to john"})

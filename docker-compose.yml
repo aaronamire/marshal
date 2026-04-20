@@ -1,4 +1,4 @@
-# Leaves OS — full stack via docker-compose.
+# Marshal — full stack via docker-compose.
 #
 # Prereqs:
 #   1. Build the image:    docker compose build
@@ -11,7 +11,7 @@
 
 services:
   inference:
-    image: leaves/runtime:0.3.0
+    image: marshal/runtime:0.3.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -24,7 +24,7 @@ services:
         --slot-save-path /data/kv-cache
     volumes:
       - ./models:/models:ro
-      - leaves-data:/data
+      - marshal-data:/data
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
@@ -36,17 +36,17 @@ services:
     restart: unless-stopped
 
   agentd:
-    image: leaves/runtime:0.3.0
+    image: marshal/runtime:0.3.0
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["python", "/opt/leaves/agentd.py"]
+    command: ["python", "/opt/marshal/agentd.py"]
     environment:
       - INFERENCE_SERVER_URL=http://inference:8080
-      - LEAVES_ANTHROPIC_KEY=${LEAVES_ANTHROPIC_KEY:-}
-      - LEAVES_ANTHROPIC_MODEL=${LEAVES_ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      - MARSHAL_ANTHROPIC_KEY=${MARSHAL_ANTHROPIC_KEY:-}
+      - MARSHAL_ANTHROPIC_MODEL=${MARSHAL_ANTHROPIC_MODEL:-claude-sonnet-4-6}
     volumes:
-      - leaves-data:/data
+      - marshal-data:/data
       - ./models:/models:ro
     depends_on:
       inference:
@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
 
   api:
-    image: leaves/runtime:0.3.0
+    image: marshal/runtime:0.3.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -65,7 +65,7 @@ services:
     environment:
       - INFERENCE_SERVER_URL=http://inference:8080
     volumes:
-      - leaves-data:/data
+      - marshal-data:/data
     ports:
       - "127.0.0.1:8765:8765"
     depends_on:
@@ -73,4 +73,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  leaves-data:
+  marshal-data:

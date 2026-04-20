@@ -356,7 +356,7 @@ class TestLayer0FileReadAlternates:
     def test_open_path_routes_to_file_read(self):
         # "open ~/file.py" → READ. App-launch's _APP_NAME doesn't permit
         # the leading ~, so this can only hit the file rule.
-        r = match("open ~/dev/leaves-os/config.py")
+        r = match("open ~/dev/marshal/config.py")
         assert r.matched
         assert r.action_type == "READ"
         assert r.agent == "file"

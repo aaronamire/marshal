@@ -1,7 +1,7 @@
 /*
- * Leaves OS compositor — wlr_scene-based Wayland compositor.
+ * Marshal compositor — wlr_scene-based Wayland compositor.
  *
- * Layout: Leaves AI panel (left, Cairo-rendered) + app windows (right, xdg_shell).
+ * Layout: Marshal AI panel (left, Cairo-rendered) + app windows (right, xdg_shell).
  * The panel is a wlr_scene_buffer; app windows are wlr_scene_xdg_surface nodes.
  * wlr_scene handles compositing, damage tracking, and z-ordering.
  */
@@ -82,20 +82,20 @@
 
 /* ── Focus mode ── */
 
-enum leaves_focus_mode {
+enum marshal_focus_mode {
 	FOCUS_NONE,   /* keyboard input is idle (no target) */
-	FOCUS_PANEL,  /* keyboard goes to the Leaves input bar */
+	FOCUS_PANEL,  /* keyboard goes to the Marshal input bar */
 	FOCUS_APP,    /* keyboard goes to the focused toplevel */
 };
 
-enum leaves_cursor_mode {
+enum marshal_cursor_mode {
 	CURSOR_PASSTHROUGH,
 	CURSOR_MOVE,        /* dragging a window by its title bar */
 };
 
 /* ── Panel buffer (custom wlr_buffer wrapping Cairo pixel data) ── */
 
-struct leaves_panel_buffer {
+struct marshal_panel_buffer {
 	struct wlr_buffer base;
 	void *data;
 	size_t stride;
@@ -103,14 +103,14 @@ struct leaves_panel_buffer {
 };
 
 static void panel_buffer_destroy(struct wlr_buffer *wlr_buf) {
-	struct leaves_panel_buffer *buf = wl_container_of(wlr_buf, buf, base);
+	struct marshal_panel_buffer *buf = wl_container_of(wlr_buf, buf, base);
 	/* data is owned by Cairo — do not free */
 	free(buf);
 }
 
 static bool panel_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buf,
 		uint32_t flags, void **data, uint32_t *format, size_t *stride) {
-	struct leaves_panel_buffer *buf = wl_container_of(wlr_buf, buf, base);
+	struct marshal_panel_buffer *buf = wl_container_of(wlr_buf, buf, base);
 	if (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) return false;
 	*data = buf->data;
 	*format = DRM_FORMAT_ARGB8888;
@@ -128,9 +128,9 @@ static const struct wlr_buffer_impl panel_buffer_impl = {
 	.end_data_ptr_access = panel_buffer_end_data_ptr_access,
 };
 
-static struct leaves_panel_buffer *panel_buffer_create(void *data,
+static struct marshal_panel_buffer *panel_buffer_create(void *data,
 		int width, int height, size_t stride) {
-	struct leaves_panel_buffer *buf = calloc(1, sizeof(*buf));
+	struct marshal_panel_buffer *buf = calloc(1, sizeof(*buf));
 	if (!buf) return NULL;
 	wlr_buffer_init(&buf->base, &panel_buffer_impl, width, height);
 	buf->data = data;
@@ -142,9 +142,9 @@ static struct leaves_panel_buffer *panel_buffer_create(void *data,
 
 /* ── Toplevel (managed app window) ── */
 
-struct leaves_toplevel {
-	struct wl_list link;  /* leaves_server.toplevels */
-	struct leaves_server *server;
+struct marshal_toplevel {
+	struct wl_list link;  /* marshal_server.toplevels */
+	struct marshal_server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
 
 	/* Scene hierarchy:
@@ -181,8 +181,8 @@ struct leaves_toplevel {
 
 /* ── Layer surface (layer shell) ── */
 
-struct leaves_layer_surface {
-	struct leaves_server *server;
+struct marshal_layer_surface {
+	struct marshal_server *server;
 	struct wlr_layer_surface_v1 *layer_surface;
 	struct wlr_scene_layer_surface_v1 *scene;
 
@@ -194,12 +194,12 @@ struct leaves_layer_surface {
 
 /* ── XWayland surface ── */
 
-struct leaves_xwayland_surface {
-	struct wl_list link;  /* leaves_server.toplevels — shares list with xdg */
-	struct leaves_server *server;
+struct marshal_xwayland_surface {
+	struct wl_list link;  /* marshal_server.toplevels — shares list with xdg */
+	struct marshal_server *server;
 	struct wlr_xwayland_surface *xsurface;
 
-	/* SSD frame tree (same pattern as leaves_toplevel) */
+	/* SSD frame tree (same pattern as marshal_toplevel) */
 	struct wlr_scene_tree *frame_tree;
 	struct wlr_scene_tree *scene_tree;
 	struct wlr_scene_rect *titlebar_bg;
@@ -226,9 +226,9 @@ struct leaves_xwayland_surface {
 
 /* ── Output ── */
 
-struct leaves_output {
+struct marshal_output {
 	struct wl_list link;
-	struct leaves_server *server;
+	struct marshal_server *server;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
 	struct wl_listener frame;
@@ -238,8 +238,8 @@ struct leaves_output {
 
 /* ── Keyboard ── */
 
-struct leaves_keyboard {
-	struct leaves_server *server;
+struct marshal_keyboard {
+	struct marshal_server *server;
 	struct wlr_keyboard *wlr_keyboard;
 	struct wl_listener key;
 	struct wl_listener modifiers;
@@ -248,7 +248,7 @@ struct leaves_keyboard {
 
 /* ── Server ── */
 
-struct leaves_server {
+struct marshal_server {
 	struct wl_display *display;
 	struct wl_event_loop *event_loop;
 	struct wlr_backend *backend;
@@ -266,7 +266,7 @@ struct leaves_server {
 	struct wlr_scene_buffer *panel_scene_buf;
 	struct wlr_scene_rect *panel_bg;    /* background behind panel */
 
-	struct wl_list outputs;  /* leaves_output */
+	struct wl_list outputs;  /* marshal_output */
 	struct wlr_seat *seat;
 
 	/* Wayland protocols */
@@ -309,15 +309,15 @@ struct leaves_server {
 	struct wlr_xcursor_manager *cursor_mgr;
 
 	/* App windows */
-	struct wl_list toplevels;  /* leaves_toplevel */
+	struct wl_list toplevels;  /* marshal_toplevel */
 
-	/* Leaves subsystems */
-	struct leaves_feed *feed;
-	struct leaves_input input;
-	struct leaves_renderer *lrenderer;
+	/* Marshal subsystems */
+	struct marshal_feed *feed;
+	struct marshal_input input;
+	struct marshal_renderer *lrenderer;
 
 	/* Focus */
-	enum leaves_focus_mode focus_mode;
+	enum marshal_focus_mode focus_mode;
 
 	/* Modifier state */
 	uint32_t modifiers;
@@ -329,7 +329,7 @@ struct leaves_server {
 	struct wl_event_source *status_timer;
 
 	/* System status bar */
-	struct leaves_status *status;
+	struct marshal_status *status;
 
 	/* Session lock (ext-session-lock-v1) */
 	struct wlr_session_lock_manager_v1 *session_lock_mgr;
@@ -376,8 +376,8 @@ struct leaves_server {
 	int active_workspace;  /* 0..NUM_WORKSPACES-1 */
 
 	/* Floating window management */
-	enum leaves_cursor_mode cursor_mode;
-	struct leaves_toplevel *grabbed_toplevel;
+	enum marshal_cursor_mode cursor_mode;
+	struct marshal_toplevel *grabbed_toplevel;
 	int grab_x, grab_y;    /* cursor offset from frame origin at grab start */
 
 	/* Panel dirty flag */
@@ -406,26 +406,26 @@ struct leaves_server {
 
 /* ── Forward declarations ── */
 
-static void schedule_panel_redraw(struct leaves_server *server);
-static void update_panel_buffer(struct leaves_server *server);
-static void focus_toplevel(struct leaves_server *server,
-	struct leaves_toplevel *toplevel);
-static void relayout_toplevels(struct leaves_server *server);
-static int output_width(struct leaves_server *server);
-static int output_height(struct leaves_server *server);
-static void update_titlebar_decorations(struct leaves_toplevel *toplevel);
-static void toggle_maximize(struct leaves_toplevel *toplevel);
-static void emit_window_event(struct leaves_server *server,
+static void schedule_panel_redraw(struct marshal_server *server);
+static void update_panel_buffer(struct marshal_server *server);
+static void focus_toplevel(struct marshal_server *server,
+	struct marshal_toplevel *toplevel);
+static void relayout_toplevels(struct marshal_server *server);
+static int output_width(struct marshal_server *server);
+static int output_height(struct marshal_server *server);
+static void update_titlebar_decorations(struct marshal_toplevel *toplevel);
+static void toggle_maximize(struct marshal_toplevel *toplevel);
+static void emit_window_event(struct marshal_server *server,
 	const char *type, const char *app_id, const char *title,
 	pid_t pid, int workspace);
-static pid_t launch_subprocess_tracked(struct leaves_server *server,
+static pid_t launch_subprocess_tracked(struct marshal_server *server,
 	const char *app_id, const char *path, char *const argv[]);
 
 /* ── Workspace helpers ── */
 
 /* Show/hide toplevels based on workspace. */
-static void workspace_update_visibility(struct leaves_server *server) {
-	struct leaves_toplevel *toplevel;
+static void workspace_update_visibility(struct marshal_server *server) {
+	struct marshal_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
 		bool visible = (toplevel->workspace == server->active_workspace)
 			&& !toplevel->minimized;
@@ -433,7 +433,7 @@ static void workspace_update_visibility(struct leaves_server *server) {
 	}
 }
 
-static void switch_workspace(struct leaves_server *server, int ws) {
+static void switch_workspace(struct marshal_server *server, int ws) {
 	if (ws < 0 || ws >= NUM_WORKSPACES) return;
 	if (ws == server->active_workspace) return;
 
@@ -441,7 +441,7 @@ static void switch_workspace(struct leaves_server *server, int ws) {
 	workspace_update_visibility(server);
 
 	/* Focus the top window on the new workspace, or clear focus */
-	struct leaves_toplevel *toplevel;
+	struct marshal_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
 		if (toplevel->workspace == ws && !toplevel->minimized) {
 			server->focus_mode = FOCUS_APP;
@@ -455,12 +455,12 @@ static void switch_workspace(struct leaves_server *server, int ws) {
 	schedule_panel_redraw(server);
 }
 
-static void move_focused_to_workspace(struct leaves_server *server, int ws) {
+static void move_focused_to_workspace(struct marshal_server *server, int ws) {
 	if (ws < 0 || ws >= NUM_WORKSPACES) return;
 	if (wl_list_empty(&server->toplevels)) return;
 
 	/* Find the focused toplevel on the current workspace */
-	struct leaves_toplevel *toplevel;
+	struct marshal_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
 		if (toplevel->workspace == server->active_workspace &&
 				!toplevel->minimized)
@@ -474,7 +474,7 @@ static void move_focused_to_workspace(struct leaves_server *server, int ws) {
 	wlr_scene_node_set_enabled(&toplevel->frame_tree->node, false);
 
 	/* Focus next window on current workspace */
-	struct leaves_toplevel *next;
+	struct marshal_toplevel *next;
 	wl_list_for_each(next, &server->toplevels, link) {
 		if (next->workspace == server->active_workspace &&
 				!next->minimized) {
@@ -490,8 +490,8 @@ static void move_focused_to_workspace(struct leaves_server *server, int ws) {
 
 /* ── Window snap/fullscreen helpers ── */
 
-static void snap_left(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void snap_left(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 	int ow = output_width(server);
 	int oh = output_height(server);
 	int usable_h = oh - INPUT_HEIGHT;
@@ -523,8 +523,8 @@ static void snap_left(struct leaves_toplevel *toplevel) {
 	schedule_panel_redraw(server);
 }
 
-static void snap_right(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void snap_right(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 	int ow = output_width(server);
 	int oh = output_height(server);
 	int usable_h = oh - INPUT_HEIGHT;
@@ -556,8 +556,8 @@ static void snap_right(struct leaves_toplevel *toplevel) {
 	schedule_panel_redraw(server);
 }
 
-static void enter_fullscreen(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void enter_fullscreen(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 	int ow = output_width(server);
 	int oh = output_height(server);
 
@@ -594,8 +594,8 @@ static void enter_fullscreen(struct leaves_toplevel *toplevel) {
 	schedule_panel_redraw(server);
 }
 
-static void leave_fullscreen(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void leave_fullscreen(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 
 	toplevel->fullscreen = false;
 	toplevel->x = toplevel->saved_x;
@@ -619,7 +619,7 @@ static void leave_fullscreen(struct leaves_toplevel *toplevel) {
 	schedule_panel_redraw(server);
 }
 
-static void restore_window(struct leaves_toplevel *toplevel) {
+static void restore_window(struct marshal_toplevel *toplevel) {
 	if (toplevel->fullscreen) {
 		leave_fullscreen(toplevel);
 	} else if (toplevel->maximized) {
@@ -628,14 +628,14 @@ static void restore_window(struct leaves_toplevel *toplevel) {
 	/* else already in floating state */
 }
 
-static void minimize_window(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void minimize_window(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 
 	toplevel->minimized = true;
 	wlr_scene_node_set_enabled(&toplevel->frame_tree->node, false);
 
 	/* Focus next visible window on this workspace */
-	struct leaves_toplevel *next;
+	struct marshal_toplevel *next;
 	wl_list_for_each(next, &server->toplevels, link) {
 		if (next != toplevel &&
 				next->workspace == server->active_workspace &&
@@ -650,8 +650,8 @@ static void minimize_window(struct leaves_toplevel *toplevel) {
 	schedule_panel_redraw(server);
 }
 
-static void unminimize_window(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void unminimize_window(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 
 	toplevel->minimized = false;
 	wlr_scene_node_set_enabled(&toplevel->frame_tree->node, true);
@@ -661,12 +661,12 @@ static void unminimize_window(struct leaves_toplevel *toplevel) {
 }
 
 /* Cycle focus to the next visible window on the current workspace. */
-static void cycle_window(struct leaves_server *server) {
+static void cycle_window(struct marshal_server *server) {
 	if (wl_list_empty(&server->toplevels)) return;
 
 	/* Find the first non-head toplevel on the current workspace */
-	struct leaves_toplevel *toplevel;
-	struct leaves_toplevel *target = NULL;
+	struct marshal_toplevel *toplevel;
+	struct marshal_toplevel *target = NULL;
 	wl_list_for_each_reverse(toplevel, &server->toplevels, link) {
 		if (toplevel->workspace == server->active_workspace &&
 				!toplevel->minimized) {
@@ -729,8 +729,8 @@ static void take_screenshot(bool region) {
 
 /* ── Panel dimensions ── */
 
-static int output_height(struct leaves_server *server) {
-	struct leaves_output *out;
+static int output_height(struct marshal_server *server) {
+	struct marshal_output *out;
 	wl_list_for_each(out, &server->outputs, link) {
 		int w, h;
 		wlr_output_effective_resolution(out->wlr_output, &w, &h);
@@ -739,8 +739,8 @@ static int output_height(struct leaves_server *server) {
 	return 1080;
 }
 
-static int output_width(struct leaves_server *server) {
-	struct leaves_output *out;
+static int output_width(struct marshal_server *server) {
+	struct marshal_output *out;
 	wl_list_for_each(out, &server->outputs, link) {
 		int w, h;
 		wlr_output_effective_resolution(out->wlr_output, &w, &h);
@@ -749,7 +749,7 @@ static int output_width(struct leaves_server *server) {
 	return 1920;
 }
 
-static int effective_panel_width(struct leaves_server *server) {
+static int effective_panel_width(struct marshal_server *server) {
 	/* Panel is always full-screen — it's the desktop background.
 	 * App windows float on top. */
 	return output_width(server);
@@ -757,7 +757,7 @@ static int effective_panel_width(struct leaves_server *server) {
 
 /* ── Panel clipboard source ── */
 
-struct leaves_clipboard_source {
+struct marshal_clipboard_source {
 	struct wlr_data_source base;
 	char text[1024];
 	int len;
@@ -765,7 +765,7 @@ struct leaves_clipboard_source {
 
 static void clipboard_source_send(struct wlr_data_source *wlr_source,
 		const char *mime_type, int32_t fd) {
-	struct leaves_clipboard_source *src =
+	struct marshal_clipboard_source *src =
 		wl_container_of(wlr_source, src, base);
 	(void)mime_type;
 	write(fd, src->text, src->len);
@@ -773,7 +773,7 @@ static void clipboard_source_send(struct wlr_data_source *wlr_source,
 }
 
 static void clipboard_source_destroy(struct wlr_data_source *wlr_source) {
-	struct leaves_clipboard_source *src =
+	struct marshal_clipboard_source *src =
 		wl_container_of(wlr_source, src, base);
 	free(src);
 }
@@ -784,13 +784,13 @@ static const struct wlr_data_source_impl clipboard_source_impl = {
 };
 
 /* Copy an arbitrary text range to the Wayland selection. */
-static void panel_copy_range_to_clipboard(struct leaves_server *server,
+static void panel_copy_range_to_clipboard(struct marshal_server *server,
 		const char *text, int len) {
 	if (len <= 0) return;
-	if (len > (int)sizeof(((struct leaves_clipboard_source *)0)->text) - 1)
-		len = (int)sizeof(((struct leaves_clipboard_source *)0)->text) - 1;
+	if (len > (int)sizeof(((struct marshal_clipboard_source *)0)->text) - 1)
+		len = (int)sizeof(((struct marshal_clipboard_source *)0)->text) - 1;
 
-	struct leaves_clipboard_source *src = calloc(1, sizeof(*src));
+	struct marshal_clipboard_source *src = calloc(1, sizeof(*src));
 	if (!src) return;
 
 	src->len = len;
@@ -812,7 +812,7 @@ static void panel_copy_range_to_clipboard(struct leaves_server *server,
 }
 
 /* Copy the full panel input buffer to the Wayland selection. */
-static void panel_copy_to_clipboard(struct leaves_server *server) {
+static void panel_copy_to_clipboard(struct marshal_server *server) {
 	panel_copy_range_to_clipboard(server,
 		server->input.buf, server->input.len);
 }
@@ -820,7 +820,7 @@ static void panel_copy_to_clipboard(struct leaves_server *server) {
 /* Paste the Wayland selection into the panel input bar (Ctrl+V).
  * Uses a pipe + 100 ms select() timeout.  For remote Wayland clients the
  * display must be flushed first so they receive the send request. */
-static void panel_paste_from_clipboard(struct leaves_server *server) {
+static void panel_paste_from_clipboard(struct marshal_server *server) {
 	struct wlr_data_source *sel = server->seat->selection_source;
 	if (!sel) return;
 
@@ -865,7 +865,7 @@ static void panel_paste_from_clipboard(struct leaves_server *server) {
 /* ── Cursor blink timer ── */
 
 static int cursor_timer_cb(void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	if (server->focus_mode == FOCUS_PANEL) {
 		if (input_tick_cursor(&server->input, 530)) {
 			schedule_panel_redraw(server);
@@ -884,7 +884,7 @@ static int cursor_timer_cb(void *data) {
 /* ── Animation timer ── */
 
 static int anim_timer_cb(void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	float dt = 1.0f / 60.0f;
 	if (feed_animate(server->feed, dt)) {
 		schedule_panel_redraw(server);
@@ -896,7 +896,7 @@ static int anim_timer_cb(void *data) {
 /* ── Briefing retry timer ── */
 
 static int briefing_retry_cb(void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	pthread_mutex_lock(&server->feed->mutex);
 	bool empty = !server->feed->briefing.loaded;
 	pthread_mutex_unlock(&server->feed->mutex);
@@ -911,7 +911,7 @@ static int briefing_retry_cb(void *data) {
 /* ── Status bar timer — fires every 1 s ── */
 
 static int status_timer_cb(void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	static int tick = 0;
 
 	status_update_clock(server->status);
@@ -928,15 +928,15 @@ static int status_timer_cb(void *data) {
 static int prepare_for_sleep_cb(sd_bus_message *msg, void *userdata,
 		sd_bus_error *ret_error) {
 	(void)ret_error;
-	struct leaves_server *server = userdata;
+	struct marshal_server *server = userdata;
 	int going_to_sleep = 0;
 	if (sd_bus_message_read(msg, "b", &going_to_sleep) < 0)
 		return 0;
 	if (going_to_sleep) {
 		/* Launch locker before the system actually suspends */
 		pid_t pid = launch_subprocess_tracked(server,
-			"leaves-locker", "leaves-locker",
-			(char *const[]){"leaves-locker", NULL});
+			"marshal-locker", "marshal-locker",
+			(char *const[]){"marshal-locker", NULL});
 		/* Brief delay to let the locker grab input before sleep completes */
 		if (pid > 0)
 			usleep(200000); /* 200 ms */
@@ -947,13 +947,13 @@ static int prepare_for_sleep_cb(sd_bus_message *msg, void *userdata,
 static int logind_bus_dispatch(int fd, uint32_t mask, void *data) {
 	(void)fd;
 	(void)mask;
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	while (sd_bus_process(server->logind_bus, NULL) > 0)
 		;
 	return 0;
 }
 
-static void setup_logind_sleep_monitor(struct leaves_server *server) {
+static void setup_logind_sleep_monitor(struct marshal_server *server) {
 	if (sd_bus_default_system(&server->logind_bus) < 0) {
 		fprintf(stderr, "logind: cannot connect to system bus\n");
 		return;
@@ -986,7 +986,7 @@ static void setup_logind_sleep_monitor(struct leaves_server *server) {
 
 static int wakeup_handler(int fd, uint32_t mask __attribute__((unused)),
 		void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	char byte;
 	while (read(fd, &byte, 1) == 1) {}
 	schedule_panel_redraw(server);
@@ -996,16 +996,16 @@ static int wakeup_handler(int fd, uint32_t mask __attribute__((unused)),
 
 /* ── Panel rendering ── */
 
-static void schedule_panel_redraw(struct leaves_server *server) {
+static void schedule_panel_redraw(struct marshal_server *server) {
 	server->panel_dirty = true;
 	/* Schedule frame on all outputs so the scene gets re-committed */
-	struct leaves_output *output;
+	struct marshal_output *output;
 	wl_list_for_each(output, &server->outputs, link) {
 		wlr_output_schedule_frame(output->wlr_output);
 	}
 }
 
-static void update_panel_buffer(struct leaves_server *server) {
+static void update_panel_buffer(struct marshal_server *server) {
 	if (!server->panel_dirty) return;
 	server->panel_dirty = false;
 
@@ -1024,7 +1024,7 @@ static void update_panel_buffer(struct leaves_server *server) {
 	if (!pixels) return;
 
 	/* Create new wlr_buffer wrapping the Cairo pixel data */
-	struct leaves_panel_buffer *pbuf = panel_buffer_create(pixels,
+	struct marshal_panel_buffer *pbuf = panel_buffer_create(pixels,
 		pw, ph, (size_t)stride);
 	if (!pbuf) return;
 
@@ -1037,7 +1037,7 @@ static void update_panel_buffer(struct leaves_server *server) {
 	if (server->taskbar_scene_buf && ph > INPUT_HEIGHT) {
 		int tb_y = ph - INPUT_HEIGHT;
 		unsigned char *tb_pixels = pixels + tb_y * stride;
-		struct leaves_panel_buffer *tb_buf = panel_buffer_create(
+		struct marshal_panel_buffer *tb_buf = panel_buffer_create(
 			tb_pixels, pw, INPUT_HEIGHT, (size_t)stride);
 		if (tb_buf) {
 			wlr_scene_buffer_set_buffer(server->taskbar_scene_buf,
@@ -1050,8 +1050,8 @@ static void update_panel_buffer(struct leaves_server *server) {
 /* ── Output frame handler ── */
 
 static void output_frame(struct wl_listener *listener, void *data) {
-	struct leaves_output *output = wl_container_of(listener, output, frame);
-	struct leaves_server *server = output->server;
+	struct marshal_output *output = wl_container_of(listener, output, frame);
+	struct marshal_server *server = output->server;
 
 	/* Re-render panel if dirty */
 	update_panel_buffer(server);
@@ -1065,7 +1065,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
 }
 
 static void output_request_state(struct wl_listener *listener, void *data) {
-	struct leaves_output *output =
+	struct marshal_output *output =
 		wl_container_of(listener, output, request_state);
 	const struct wlr_output_event_request_state *event = data;
 	wlr_output_commit_state(output->wlr_output, event->state);
@@ -1074,7 +1074,7 @@ static void output_request_state(struct wl_listener *listener, void *data) {
 }
 
 static void output_destroy(struct wl_listener *listener, void *data) {
-	struct leaves_output *output = wl_container_of(listener, output, destroy);
+	struct marshal_output *output = wl_container_of(listener, output, destroy);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
@@ -1085,7 +1085,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
 /* ── Toplevel management ── */
 
 /* Update title bar decoration rects to match window width. */
-static void update_titlebar_decorations(struct leaves_toplevel *toplevel) {
+static void update_titlebar_decorations(struct marshal_toplevel *toplevel) {
 	wlr_scene_rect_set_size(toplevel->titlebar_bg,
 		toplevel->width, TITLEBAR_H);
 	int btn_y = (TITLEBAR_H - 12) / 2;
@@ -1098,9 +1098,9 @@ static void update_titlebar_decorations(struct leaves_toplevel *toplevel) {
 }
 
 static void toplevel_map(struct wl_listener *listener, void *data) {
-	struct leaves_toplevel *toplevel =
+	struct marshal_toplevel *toplevel =
 		wl_container_of(listener, toplevel, map);
-	struct leaves_server *server = toplevel->server;
+	struct marshal_server *server = toplevel->server;
 
 	toplevel->workspace = server->active_workspace;
 	wl_list_insert(&server->toplevels, &toplevel->link);
@@ -1122,9 +1122,9 @@ static void toplevel_map(struct wl_listener *listener, void *data) {
 }
 
 static void toplevel_unmap(struct wl_listener *listener, void *data) {
-	struct leaves_toplevel *toplevel =
+	struct marshal_toplevel *toplevel =
 		wl_container_of(listener, toplevel, unmap);
-	struct leaves_server *server = toplevel->server;
+	struct marshal_server *server = toplevel->server;
 
 	emit_window_event(server, "window_closed",
 		toplevel->xdg_toplevel->app_id, "",
@@ -1134,7 +1134,7 @@ static void toplevel_unmap(struct wl_listener *listener, void *data) {
 
 	/* If this was the focused window, switch focus */
 	if (!wl_list_empty(&server->toplevels)) {
-		struct leaves_toplevel *next = wl_container_of(
+		struct marshal_toplevel *next = wl_container_of(
 			server->toplevels.next, next, link);
 		focus_toplevel(server, next);
 	} else {
@@ -1145,11 +1145,11 @@ static void toplevel_unmap(struct wl_listener *listener, void *data) {
 }
 
 static void toplevel_commit(struct wl_listener *listener, void *data) {
-	struct leaves_toplevel *toplevel =
+	struct marshal_toplevel *toplevel =
 		wl_container_of(listener, toplevel, commit);
 
 	if (toplevel->xdg_toplevel->base->initial_commit) {
-		struct leaves_server *server = toplevel->server;
+		struct marshal_server *server = toplevel->server;
 		int ow = output_width(server);
 		int oh = output_height(server);
 
@@ -1167,7 +1167,7 @@ static void toplevel_commit(struct wl_listener *listener, void *data) {
 }
 
 static void toplevel_destroy(struct wl_listener *listener, void *data) {
-	struct leaves_toplevel *toplevel =
+	struct marshal_toplevel *toplevel =
 		wl_container_of(listener, toplevel, destroy);
 
 	wl_list_remove(&toplevel->map.link);
@@ -1197,8 +1197,8 @@ static void toplevel_destroy(struct wl_listener *listener, void *data) {
 	free(toplevel);
 }
 
-static void toggle_maximize(struct leaves_toplevel *toplevel) {
-	struct leaves_server *server = toplevel->server;
+static void toggle_maximize(struct marshal_toplevel *toplevel) {
+	struct marshal_server *server = toplevel->server;
 	int ow = output_width(server);
 	int oh = output_height(server);
 
@@ -1232,14 +1232,14 @@ static void toggle_maximize(struct leaves_toplevel *toplevel) {
 
 static void toplevel_request_maximize(struct wl_listener *listener,
 		void *data) {
-	struct leaves_toplevel *toplevel =
+	struct marshal_toplevel *toplevel =
 		wl_container_of(listener, toplevel, request_maximize);
 	toggle_maximize(toplevel);
 }
 
 static void toplevel_request_fullscreen(struct wl_listener *listener,
 		void *data) {
-	struct leaves_toplevel *toplevel =
+	struct marshal_toplevel *toplevel =
 		wl_container_of(listener, toplevel, request_fullscreen);
 	if (toplevel->fullscreen)
 		leave_fullscreen(toplevel);
@@ -1247,8 +1247,8 @@ static void toplevel_request_fullscreen(struct wl_listener *listener,
 		enter_fullscreen(toplevel);
 }
 
-static void focus_toplevel(struct leaves_server *server,
-		struct leaves_toplevel *toplevel) {
+static void focus_toplevel(struct marshal_server *server,
+		struct marshal_toplevel *toplevel) {
 	if (!toplevel) return;
 
 	/* Deactivate previously focused toplevel */
@@ -1289,7 +1289,7 @@ static void focus_toplevel(struct leaves_server *server,
 	}
 }
 
-static void relayout_toplevels(struct leaves_server *server) {
+static void relayout_toplevels(struct marshal_server *server) {
 	int ow = output_width(server);
 	int oh = output_height(server);
 
@@ -1309,7 +1309,7 @@ static void relayout_toplevels(struct leaves_server *server) {
 	}
 
 	/* Update maximized windows to fill available area */
-	struct leaves_toplevel *toplevel;
+	struct marshal_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
 		if (toplevel->maximized) {
 			toplevel->x = 0;
@@ -1330,11 +1330,11 @@ static void relayout_toplevels(struct leaves_server *server) {
 /* ── xdg_shell handlers ── */
 
 static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_xdg_toplevel);
 	struct wlr_xdg_toplevel *xdg_toplevel = data;
 
-	struct leaves_toplevel *toplevel = calloc(1, sizeof(*toplevel));
+	struct marshal_toplevel *toplevel = calloc(1, sizeof(*toplevel));
 	toplevel->server = server;
 	toplevel->xdg_toplevel = xdg_toplevel;
 
@@ -1390,7 +1390,7 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 }
 
 static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_xdg_popup);
 	struct wlr_xdg_popup *popup = data;
 	struct wlr_xdg_surface *parent =
@@ -1410,9 +1410,9 @@ static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
 /* ── Keyboard handling ── */
 
 static void keyboard_handle_key(struct wl_listener *listener, void *data) {
-	struct leaves_keyboard *keyboard =
+	struct marshal_keyboard *keyboard =
 		wl_container_of(listener, keyboard, key);
-	struct leaves_server *server = keyboard->server;
+	struct marshal_server *server = keyboard->server;
 	struct wlr_keyboard_key_event *event = data;
 
 	uint32_t keycode = event->keycode + 8;
@@ -1472,18 +1472,18 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		/* ── Super+Return: launch terminal ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_Return || raw_sym == XKB_KEY_Return)) {
-			launch_subprocess_tracked(server, "leaves-terminal",
-				"leaves-terminal",
-				(char *const[]){"leaves-terminal", NULL});
+			launch_subprocess_tracked(server, "marshal-terminal",
+				"marshal-terminal",
+				(char *const[]){"marshal-terminal", NULL});
 			handled = true;
 		}
 
 		/* ── Super+L: lock screen ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_l || raw_sym == XKB_KEY_l)) {
-			launch_subprocess_tracked(server, "leaves-locker",
-				"leaves-locker",
-				(char *const[]){"leaves-locker", NULL});
+			launch_subprocess_tracked(server, "marshal-locker",
+				"marshal-locker",
+				(char *const[]){"marshal-locker", NULL});
 			handled = true;
 		}
 
@@ -1491,7 +1491,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_q || raw_sym == XKB_KEY_q)) {
 			if (!wl_list_empty(&server->toplevels)) {
-				struct leaves_toplevel *top = wl_container_of(
+				struct marshal_toplevel *top = wl_container_of(
 					server->toplevels.next, top, link);
 				wlr_xdg_toplevel_send_close(top->xdg_toplevel);
 			}
@@ -1526,7 +1526,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		/* ── Super+Left/Right/Up/Down: window snapping ── */
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				!wl_list_empty(&server->toplevels)) {
-			struct leaves_toplevel *top = wl_container_of(
+			struct marshal_toplevel *top = wl_container_of(
 				server->toplevels.next, top, link);
 			if (top->workspace == server->active_workspace &&
 					!top->minimized) {
@@ -1550,7 +1550,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_f || raw_sym == XKB_KEY_f)) {
 			if (!wl_list_empty(&server->toplevels)) {
-				struct leaves_toplevel *top = wl_container_of(
+				struct marshal_toplevel *top = wl_container_of(
 					server->toplevels.next, top, link);
 				if (top->workspace == server->active_workspace) {
 					if (top->fullscreen)
@@ -1566,7 +1566,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		if (!handled && (server->modifiers & MOD_SUPER) &&
 				(base_sym == XKB_KEY_m || raw_sym == XKB_KEY_m)) {
 			if (!wl_list_empty(&server->toplevels)) {
-				struct leaves_toplevel *top = wl_container_of(
+				struct marshal_toplevel *top = wl_container_of(
 					server->toplevels.next, top, link);
 				if (top->workspace == server->active_workspace &&
 						!top->minimized)
@@ -1609,8 +1609,8 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				wlr_seat_keyboard_clear_focus(server->seat);
 			} else if (server->focus_mode == FOCUS_PANEL) {
 				/* Find top visible window on current workspace */
-				struct leaves_toplevel *top = NULL;
-				struct leaves_toplevel *t;
+				struct marshal_toplevel *top = NULL;
+				struct marshal_toplevel *t;
 				wl_list_for_each(t, &server->toplevels, link) {
 					if (t->workspace == server->active_workspace &&
 							!t->minimized) {
@@ -1668,12 +1668,12 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		/* No focus target — drop keypresses */
 		return;
 	} else if (server->focus_mode == FOCUS_PANEL) {
-		/* Route to Leaves input handler */
+		/* Route to Marshal input handler */
 		if (event->state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
 
 		/* ── Clipboard / selection shortcuts ── */
 		if (server->modifiers & MOD_CTRL) {
-			struct leaves_input *inp = &server->input;
+			struct marshal_input *inp = &server->input;
 
 			if (event->keycode == KEY_C) {
 				/* Ctrl+C — copy card text selection, input
@@ -1789,9 +1789,9 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 static void keyboard_handle_modifiers(struct wl_listener *listener,
 		void *data) {
-	struct leaves_keyboard *keyboard =
+	struct marshal_keyboard *keyboard =
 		wl_container_of(listener, keyboard, modifiers);
-	struct leaves_server *server = keyboard->server;
+	struct marshal_server *server = keyboard->server;
 
 	xkb_mod_mask_t mod_mask = xkb_state_serialize_mods(
 		keyboard->wlr_keyboard->xkb_state,
@@ -1850,7 +1850,7 @@ static void keyboard_handle_modifiers(struct wl_listener *listener,
 }
 
 static void keyboard_destroy(struct wl_listener *listener, void *data) {
-	struct leaves_keyboard *keyboard =
+	struct marshal_keyboard *keyboard =
 		wl_container_of(listener, keyboard, destroy);
 	wl_list_remove(&keyboard->key.link);
 	wl_list_remove(&keyboard->modifiers.link);
@@ -1860,7 +1860,7 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
 
 /* ── Cursor handlers ── */
 
-static struct leaves_toplevel *toplevel_at(struct leaves_server *server,
+static struct marshal_toplevel *toplevel_at(struct marshal_server *server,
 		double lx, double ly, struct wlr_surface **surface,
 		double *sx, double *sy) {
 	struct wlr_scene_node *node = wlr_scene_node_at(
@@ -1889,11 +1889,11 @@ static struct leaves_toplevel *toplevel_at(struct leaves_server *server,
 	return tree->node.data;
 }
 
-static void process_cursor_motion(struct leaves_server *server,
+static void process_cursor_motion(struct marshal_server *server,
 		uint32_t time) {
 	/* Window drag mode — move the grabbed window */
 	if (server->cursor_mode == CURSOR_MOVE && server->grabbed_toplevel) {
-		struct leaves_toplevel *tl = server->grabbed_toplevel;
+		struct marshal_toplevel *tl = server->grabbed_toplevel;
 		tl->x = (int)server->cursor->x - server->grab_x;
 		tl->y = (int)server->cursor->y - server->grab_y;
 		wlr_scene_node_set_position(&tl->frame_tree->node, tl->x, tl->y);
@@ -1902,7 +1902,7 @@ static void process_cursor_motion(struct leaves_server *server,
 
 	double sx, sy;
 	struct wlr_surface *surface = NULL;
-	struct leaves_toplevel *toplevel = toplevel_at(server,
+	struct marshal_toplevel *toplevel = toplevel_at(server,
 		server->cursor->x, server->cursor->y, &surface, &sx, &sy);
 
 	if (toplevel && surface) {
@@ -1962,7 +1962,7 @@ static void process_cursor_motion(struct leaves_server *server,
 }
 
 static void cursor_motion_handler(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
 	wlr_cursor_move(server->cursor, &event->pointer->base,
@@ -1972,7 +1972,7 @@ static void cursor_motion_handler(struct wl_listener *listener, void *data) {
 
 static void cursor_motion_absolute_handler(struct wl_listener *listener,
 		void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base,
@@ -1981,7 +1981,7 @@ static void cursor_motion_absolute_handler(struct wl_listener *listener,
 }
 
 static void cursor_button_handler(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
 
@@ -2028,7 +2028,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 
 		/* ── Expanded card overlay: close button or click outside ── */
 		if (server->lrenderer->expanded_overlay_valid) {
-			struct leaves_renderer *lr = server->lrenderer;
+			struct marshal_renderer *lr = server->lrenderer;
 			/* Close button hit */
 			if (mx >= lr->expanded_close_x &&
 					mx < lr->expanded_close_x + lr->expanded_close_w &&
@@ -2060,7 +2060,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 
 		double sx, sy;
 		struct wlr_surface *surface = NULL;
-		struct leaves_toplevel *toplevel = toplevel_at(server,
+		struct marshal_toplevel *toplevel = toplevel_at(server,
 			mx, my, &surface, &sx, &sy);
 
 		if (toplevel && !surface) {
@@ -2117,7 +2117,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 
 			/* Click inside an open dropdown? */
 			if (server->status && server->status->dropdown_open) {
-				struct leaves_renderer *lr = server->lrenderer;
+				struct marshal_renderer *lr = server->lrenderer;
 				if (mx >= lr->dropdown_x &&
 						mx < lr->dropdown_x + lr->dropdown_w &&
 						my >= lr->dropdown_y &&
@@ -2130,7 +2130,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 
 			if (my >= bar_y) {
 				/* Click in the taskbar region */
-				struct leaves_renderer *lr = server->lrenderer;
+				struct marshal_renderer *lr = server->lrenderer;
 
 				/* History icon? */
 				if (mx >= lr->history_icon_x &&
@@ -2253,7 +2253,7 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 }
 
 static void cursor_axis_handler(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
 
@@ -2272,7 +2272,7 @@ static void cursor_axis_handler(struct wl_listener *listener, void *data) {
 	/* Scroll the panel feed when the cursor is over the desktop (not a window) */
 	double scroll_sx, scroll_sy;
 	struct wlr_surface *scroll_surface = NULL;
-	struct leaves_toplevel *scroll_tl = toplevel_at(server,
+	struct marshal_toplevel *scroll_tl = toplevel_at(server,
 		server->cursor->x, server->cursor->y,
 		&scroll_surface, &scroll_sx, &scroll_sy);
 	if (!scroll_tl &&
@@ -2295,14 +2295,14 @@ static void cursor_axis_handler(struct wl_listener *listener, void *data) {
 }
 
 static void cursor_frame_handler(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, cursor_frame);
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
 static void request_set_cursor_handler(struct wl_listener *listener,
 		void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, request_set_cursor);
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
 	struct wlr_seat_client *focused_client =
@@ -2316,12 +2316,12 @@ static void request_set_cursor_handler(struct wl_listener *listener,
 /* ── New input device ── */
 
 static void server_new_input(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_input);
 	struct wlr_input_device *device = data;
 
 	if (device->type == WLR_INPUT_DEVICE_KEYBOARD) {
-		struct leaves_keyboard *keyboard = calloc(1, sizeof(*keyboard));
+		struct marshal_keyboard *keyboard = calloc(1, sizeof(*keyboard));
 		keyboard->server = server;
 		keyboard->wlr_keyboard = wlr_keyboard_from_input_device(device);
 
@@ -2360,7 +2360,7 @@ static void server_new_input(struct wl_listener *listener, void *data) {
 /* ── New output ── */
 
 static void server_new_output(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_output);
 	struct wlr_output *wlr_output = data;
 
@@ -2378,7 +2378,7 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	wlr_output_commit_state(wlr_output, &state);
 	wlr_output_state_finish(&state);
 
-	struct leaves_output *output = calloc(1, sizeof(*output));
+	struct marshal_output *output = calloc(1, sizeof(*output));
 	output->server = server;
 	output->wlr_output = wlr_output;
 
@@ -2410,7 +2410,7 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 /* ── Backend destroy ── */
 
 static void backend_destroy_handler(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, backend_destroy);
 	wl_display_terminate(server->display);
 }
@@ -2419,7 +2419,7 @@ static void backend_destroy_handler(struct wl_listener *listener, void *data) {
 
 static void handle_request_set_selection(struct wl_listener *listener,
 		void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, request_set_selection);
 	struct wlr_seat_request_set_selection_event *event = data;
 	wlr_seat_set_selection(server->seat, event->source, event->serial);
@@ -2434,14 +2434,14 @@ static void decoration_handle_request_mode(struct wl_listener *listener,
 		WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 }
 
-struct leaves_decoration {
+struct marshal_decoration {
 	struct wl_listener request_mode;
 	struct wl_listener destroy;
 };
 
 static void decoration_handle_destroy(struct wl_listener *listener,
 		void *data) {
-	struct leaves_decoration *deco =
+	struct marshal_decoration *deco =
 		wl_container_of(listener, deco, destroy);
 	wl_list_remove(&deco->request_mode.link);
 	wl_list_remove(&deco->destroy.link);
@@ -2455,7 +2455,7 @@ static void server_new_decoration(struct wl_listener *listener, void *data) {
 	wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
 		WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 
-	struct leaves_decoration *deco = calloc(1, sizeof(*deco));
+	struct marshal_decoration *deco = calloc(1, sizeof(*deco));
 	deco->request_mode.notify = decoration_handle_request_mode;
 	wl_signal_add(&decoration->events.request_mode, &deco->request_mode);
 	deco->destroy.notify = decoration_handle_destroy;
@@ -2465,23 +2465,23 @@ static void server_new_decoration(struct wl_listener *listener, void *data) {
 /* ── Layer shell handlers ── */
 
 static void layer_surface_map(struct wl_listener *listener, void *data) {
-	struct leaves_layer_surface *ls =
+	struct marshal_layer_surface *ls =
 		wl_container_of(listener, ls, map);
 	wlr_scene_node_set_enabled(&ls->scene->tree->node, true);
 }
 
 static void layer_surface_unmap(struct wl_listener *listener, void *data) {
-	struct leaves_layer_surface *ls =
+	struct marshal_layer_surface *ls =
 		wl_container_of(listener, ls, unmap);
 	wlr_scene_node_set_enabled(&ls->scene->tree->node, false);
 }
 
 static void layer_surface_commit(struct wl_listener *listener, void *data) {
-	struct leaves_layer_surface *ls =
+	struct marshal_layer_surface *ls =
 		wl_container_of(listener, ls, commit);
 	if (ls->layer_surface->initial_commit) {
 		/* Let wlroots arrange the layer surface on its output */
-		struct leaves_output *out;
+		struct marshal_output *out;
 		wl_list_for_each(out, &ls->server->outputs, link) {
 			struct wlr_output *wo = out->wlr_output;
 			int ow, oh;
@@ -2495,7 +2495,7 @@ static void layer_surface_commit(struct wl_listener *listener, void *data) {
 }
 
 static void layer_surface_destroy(struct wl_listener *listener, void *data) {
-	struct leaves_layer_surface *ls =
+	struct marshal_layer_surface *ls =
 		wl_container_of(listener, ls, destroy);
 	wl_list_remove(&ls->map.link);
 	wl_list_remove(&ls->unmap.link);
@@ -2505,13 +2505,13 @@ static void layer_surface_destroy(struct wl_listener *listener, void *data) {
 }
 
 static void server_new_layer_surface(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_layer_surface);
 	struct wlr_layer_surface_v1 *layer_surface = data;
 
 	/* Assign to first output if client didn't specify */
 	if (!layer_surface->output) {
-		struct leaves_output *out;
+		struct marshal_output *out;
 		wl_list_for_each(out, &server->outputs, link) {
 			layer_surface->output = out->wlr_output;
 			break;
@@ -2528,7 +2528,7 @@ static void server_new_layer_surface(struct wl_listener *listener, void *data) {
 
 	struct wlr_scene_tree *parent = server->layer_trees[layer];
 
-	struct leaves_layer_surface *ls = calloc(1, sizeof(*ls));
+	struct marshal_layer_surface *ls = calloc(1, sizeof(*ls));
 	ls->server = server;
 	ls->layer_surface = layer_surface;
 	ls->scene = wlr_scene_layer_surface_v1_create(parent, layer_surface);
@@ -2549,7 +2549,7 @@ static void server_new_layer_surface(struct wl_listener *listener, void *data) {
 static void handle_text_input_enable(struct wl_listener *listener, void *data) {
 	/* Forward enable to input method */
 	struct wlr_text_input_v3 *text_input = data;
-	struct leaves_server *server = text_input->seat->data;
+	struct marshal_server *server = text_input->seat->data;
 	if (!server || !server->input_method) return;
 	server->active_text_input = text_input;
 	wlr_input_method_v2_send_activate(server->input_method);
@@ -2569,7 +2569,7 @@ static void handle_text_input_enable(struct wl_listener *listener, void *data) {
 
 static void handle_text_input_commit(struct wl_listener *listener, void *data) {
 	struct wlr_text_input_v3 *text_input = data;
-	struct leaves_server *server = text_input->seat->data;
+	struct marshal_server *server = text_input->seat->data;
 	if (!server || !server->input_method) return;
 	if (server->active_text_input != text_input) return;
 
@@ -2589,7 +2589,7 @@ static void handle_text_input_commit(struct wl_listener *listener, void *data) {
 static void handle_text_input_disable(struct wl_listener *listener,
 		void *data) {
 	struct wlr_text_input_v3 *text_input = data;
-	struct leaves_server *server = text_input->seat->data;
+	struct marshal_server *server = text_input->seat->data;
 	if (!server || !server->input_method) return;
 	if (server->active_text_input == text_input) {
 		wlr_input_method_v2_send_deactivate(server->input_method);
@@ -2601,13 +2601,13 @@ static void handle_text_input_disable(struct wl_listener *listener,
 static void handle_text_input_destroy(struct wl_listener *listener,
 		void *data) {
 	struct wlr_text_input_v3 *text_input = data;
-	struct leaves_server *server = text_input->seat->data;
+	struct marshal_server *server = text_input->seat->data;
 	if (!server) return;
 	if (server->active_text_input == text_input)
 		server->active_text_input = NULL;
 }
 
-struct leaves_text_input {
+struct marshal_text_input {
 	struct wl_listener enable;
 	struct wl_listener commit;
 	struct wl_listener disable;
@@ -2615,11 +2615,11 @@ struct leaves_text_input {
 };
 
 static void server_new_text_input(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_text_input);
 	struct wlr_text_input_v3 *text_input = data;
 
-	struct leaves_text_input *ti = calloc(1, sizeof(*ti));
+	struct marshal_text_input *ti = calloc(1, sizeof(*ti));
 	if (!ti) return;
 
 	/* Store server pointer in seat->data for the per-input-event callbacks */
@@ -2639,7 +2639,7 @@ static void server_new_text_input(struct wl_listener *listener, void *data) {
 static void handle_input_method_commit(struct wl_listener *listener,
 		void *data) {
 	struct wlr_input_method_v2 *im = data;
-	struct leaves_server *server = im->seat->data;
+	struct marshal_server *server = im->seat->data;
 	if (!server || !server->active_text_input) return;
 
 	struct wlr_text_input_v3 *ti = server->active_text_input;
@@ -2664,17 +2664,17 @@ static void handle_input_method_commit(struct wl_listener *listener,
 static void handle_input_method_destroy(struct wl_listener *listener,
 		void *data) {
 	struct wlr_input_method_v2 *im = data;
-	struct leaves_server *server = im->seat->data;
+	struct marshal_server *server = im->seat->data;
 	if (server) server->input_method = NULL;
 }
 
-struct leaves_input_method {
+struct marshal_input_method {
 	struct wl_listener commit;
 	struct wl_listener destroy;
 };
 
 static void server_new_input_method(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_input_method);
 	struct wlr_input_method_v2 *im = data;
 
@@ -2686,7 +2686,7 @@ static void server_new_input_method(struct wl_listener *listener, void *data) {
 	server->input_method = im;
 	server->seat->data = server;
 
-	struct leaves_input_method *lim = calloc(1, sizeof(*lim));
+	struct marshal_input_method *lim = calloc(1, sizeof(*lim));
 	if (!lim) return;
 
 	lim->commit.notify = handle_input_method_commit;
@@ -2697,12 +2697,12 @@ static void server_new_input_method(struct wl_listener *listener, void *data) {
 
 /* ── XWayland handlers ── */
 
-static void update_xwayland_decorations(struct leaves_xwayland_surface *xs);
+static void update_xwayland_decorations(struct marshal_xwayland_surface *xs);
 
 static void xwayland_surface_map(struct wl_listener *listener, void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, map);
-	struct leaves_server *server = xs->server;
+	struct marshal_server *server = xs->server;
 
 	wl_list_insert(&server->toplevels, &xs->link);
 	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
@@ -2727,9 +2727,9 @@ static void xwayland_surface_map(struct wl_listener *listener, void *data) {
 }
 
 static void xwayland_surface_unmap(struct wl_listener *listener, void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, unmap);
-	struct leaves_server *server = xs->server;
+	struct marshal_server *server = xs->server;
 
 	emit_window_event(server, "window_closed",
 		xs->xsurface->class, "", xs->xsurface->pid,
@@ -2739,7 +2739,7 @@ static void xwayland_surface_unmap(struct wl_listener *listener, void *data) {
 
 	if (!wl_list_empty(&server->toplevels)) {
 		/* Focus next toplevel (could be xdg or xwayland) */
-		struct leaves_toplevel *next = wl_container_of(
+		struct marshal_toplevel *next = wl_container_of(
 			server->toplevels.next, next, link);
 		focus_toplevel(server, next);
 	} else {
@@ -2750,7 +2750,7 @@ static void xwayland_surface_unmap(struct wl_listener *listener, void *data) {
 }
 
 static void xwayland_surface_destroy(struct wl_listener *listener, void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, destroy);
 
 	wl_list_remove(&xs->map.link);
@@ -2762,7 +2762,7 @@ static void xwayland_surface_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&xs->set_geometry.link);
 
 	if (xs->server->grabbed_toplevel ==
-			(struct leaves_toplevel *)xs) {
+			(struct marshal_toplevel *)xs) {
 		xs->server->cursor_mode = CURSOR_PASSTHROUGH;
 		xs->server->grabbed_toplevel = NULL;
 	}
@@ -2780,7 +2780,7 @@ static void xwayland_surface_destroy(struct wl_listener *listener, void *data) {
 
 static void xwayland_surface_request_configure(struct wl_listener *listener,
 		void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, request_configure);
 	struct wlr_xwayland_surface_configure_event *ev = data;
 	wlr_xwayland_surface_configure(xs->xsurface,
@@ -2795,9 +2795,9 @@ static void xwayland_surface_request_configure(struct wl_listener *listener,
 
 static void xwayland_surface_request_maximize(struct wl_listener *listener,
 		void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, request_maximize);
-	struct leaves_server *server = xs->server;
+	struct marshal_server *server = xs->server;
 	int ow = output_width(server);
 	int oh = output_height(server);
 
@@ -2822,7 +2822,7 @@ static void xwayland_surface_request_maximize(struct wl_listener *listener,
 
 static void xwayland_surface_request_fullscreen(struct wl_listener *listener,
 		void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, request_fullscreen);
 	if (!xs->maximized)
 		xwayland_surface_request_maximize(listener, data);
@@ -2830,12 +2830,12 @@ static void xwayland_surface_request_fullscreen(struct wl_listener *listener,
 
 static void xwayland_surface_set_geometry(struct wl_listener *listener,
 		void *data) {
-	struct leaves_xwayland_surface *xs =
+	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, set_geometry);
 	update_xwayland_decorations(xs);
 }
 
-static void update_xwayland_decorations(struct leaves_xwayland_surface *xs) {
+static void update_xwayland_decorations(struct marshal_xwayland_surface *xs) {
 	int w = xs->width > 0 ? xs->width : 800;
 	wlr_scene_rect_set_size(xs->titlebar_bg, w, TITLEBAR_H);
 	wlr_scene_node_set_position(&xs->btn_close->node, w - 20, 10);
@@ -2845,11 +2845,11 @@ static void update_xwayland_decorations(struct leaves_xwayland_surface *xs) {
 
 static void server_xwayland_new_surface(struct wl_listener *listener,
 		void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, xwayland_new_surface);
 	struct wlr_xwayland_surface *xsurface = data;
 
-	struct leaves_xwayland_surface *xs = calloc(1, sizeof(*xs));
+	struct marshal_xwayland_surface *xs = calloc(1, sizeof(*xs));
 	xs->server = server;
 	xs->xsurface = xsurface;
 
@@ -2908,7 +2908,7 @@ static void server_xwayland_new_surface(struct wl_listener *listener,
 }
 
 static void server_xwayland_ready(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, xwayland_ready);
 	/* Set DISPLAY so child processes can find the XWayland socket */
 	if (server->xwayland) {
@@ -2920,8 +2920,8 @@ static void server_xwayland_ready(struct wl_listener *listener, void *data) {
 
 /* ── Session lock (ext-session-lock-v1) ── */
 
-struct leaves_lock_surface {
-	struct leaves_server *server;
+struct marshal_lock_surface {
+	struct marshal_server *server;
 	struct wlr_session_lock_surface_v1 *lock_surface;
 	struct wlr_scene_tree *scene_tree;
 	struct wl_listener map;
@@ -2929,7 +2929,7 @@ struct leaves_lock_surface {
 	struct wl_listener surface_commit;
 };
 
-static void lock_surface_configure(struct leaves_lock_surface *ls) {
+static void lock_surface_configure(struct marshal_lock_surface *ls) {
 	struct wlr_output *output = ls->lock_surface->output;
 	wlr_session_lock_surface_v1_configure(ls->lock_surface,
 		output->width, output->height);
@@ -2937,9 +2937,9 @@ static void lock_surface_configure(struct leaves_lock_surface *ls) {
 
 static void lock_surface_handle_map(struct wl_listener *listener, void *data) {
 	(void)data;
-	struct leaves_lock_surface *ls = wl_container_of(listener, ls, map);
+	struct marshal_lock_surface *ls = wl_container_of(listener, ls, map);
 	/* Check if all outputs have a mapped lock surface — if so, send locked */
-	struct leaves_server *server = ls->server;
+	struct marshal_server *server = ls->server;
 	if (server->active_session_lock && !server->locked) {
 		wlr_session_lock_v1_send_locked(server->active_session_lock);
 		server->locked = true;
@@ -2949,7 +2949,7 @@ static void lock_surface_handle_map(struct wl_listener *listener, void *data) {
 static void lock_surface_handle_destroy(struct wl_listener *listener,
 		void *data) {
 	(void)data;
-	struct leaves_lock_surface *ls = wl_container_of(listener, ls, destroy);
+	struct marshal_lock_surface *ls = wl_container_of(listener, ls, destroy);
 	wl_list_remove(&ls->map.link);
 	wl_list_remove(&ls->destroy.link);
 	wl_list_remove(&ls->surface_commit.link);
@@ -2959,7 +2959,7 @@ static void lock_surface_handle_destroy(struct wl_listener *listener,
 static void lock_surface_handle_commit(struct wl_listener *listener,
 		void *data) {
 	(void)data;
-	struct leaves_lock_surface *ls =
+	struct marshal_lock_surface *ls =
 		wl_container_of(listener, ls, surface_commit);
 	if (!ls->lock_surface->configured)
 		return;
@@ -2967,11 +2967,11 @@ static void lock_surface_handle_commit(struct wl_listener *listener,
 
 static void handle_session_lock_new_surface(struct wl_listener *listener,
 		void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, session_lock_new_surface);
 	struct wlr_session_lock_surface_v1 *lock_surface = data;
 
-	struct leaves_lock_surface *ls = calloc(1, sizeof(*ls));
+	struct marshal_lock_surface *ls = calloc(1, sizeof(*ls));
 	if (!ls) return;
 
 	ls->server = server;
@@ -2993,7 +2993,7 @@ static void handle_session_lock_new_surface(struct wl_listener *listener,
 static void handle_session_lock_unlock(struct wl_listener *listener,
 		void *data) {
 	(void)data;
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, session_lock_unlock);
 	wl_list_remove(&server->session_lock_new_surface.link);
 	wl_list_remove(&server->session_lock_unlock.link);
@@ -3006,7 +3006,7 @@ static void handle_session_lock_unlock(struct wl_listener *listener,
 static void handle_session_lock_destroy(struct wl_listener *listener,
 		void *data) {
 	(void)data;
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, session_lock_destroy);
 	wl_list_remove(&server->session_lock_new_surface.link);
 	wl_list_remove(&server->session_lock_unlock.link);
@@ -3020,7 +3020,7 @@ static void handle_session_lock_destroy(struct wl_listener *listener,
 }
 
 static void handle_new_session_lock(struct wl_listener *listener, void *data) {
-	struct leaves_server *server =
+	struct marshal_server *server =
 		wl_container_of(listener, server, new_session_lock);
 	struct wlr_session_lock_v1 *lock = data;
 
@@ -3049,7 +3049,7 @@ static void handle_new_session_lock(struct wl_listener *listener, void *data) {
 
 static int event_accept_cb(int fd, uint32_t mask, void *data) {
 	(void)mask;
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	int client = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
 	if (client < 0) return 0;
 	if (server->event_client_count < 8)
@@ -3061,7 +3061,7 @@ static int event_accept_cb(int fd, uint32_t mask, void *data) {
 
 /* ── agentd → compositor proactive push ── */
 
-static void proactive_client_drop(struct leaves_server *server, int slot) {
+static void proactive_client_drop(struct marshal_server *server, int slot) {
 	if (slot < 0 || slot >= server->proactive_client_count) return;
 	if (server->proactive_clients[slot].src)
 		wl_event_source_remove(server->proactive_clients[slot].src);
@@ -3076,7 +3076,7 @@ static void proactive_client_drop(struct leaves_server *server, int slot) {
 }
 
 static int proactive_read_cb(int fd, uint32_t mask, void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	int slot = -1;
 	for (int i = 0; i < server->proactive_client_count; i++) {
 		if (server->proactive_clients[i].fd == fd) { slot = i; break; }
@@ -3124,7 +3124,7 @@ static int proactive_read_cb(int fd, uint32_t mask, void *data) {
 
 static int proactive_accept_cb(int fd, uint32_t mask __attribute__((unused)),
 		void *data) {
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	int client = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
 	if (client < 0) return 0;
 
@@ -3148,7 +3148,7 @@ static int proactive_accept_cb(int fd, uint32_t mask __attribute__((unused)),
 	return 0;
 }
 
-static void emit_event(struct leaves_server *server, const char *json) {
+static void emit_event(struct marshal_server *server, const char *json) {
 	size_t len = strlen(json);
 	for (int i = 0; i < server->event_client_count; ) {
 		ssize_t n = write(server->event_clients[i], json, len);
@@ -3164,7 +3164,7 @@ static void emit_event(struct leaves_server *server, const char *json) {
 	}
 }
 
-static void emit_window_event(struct leaves_server *server,
+static void emit_window_event(struct marshal_server *server,
 		const char *type, const char *app_id, const char *title,
 		pid_t pid, int workspace) {
 	cJSON *obj = cJSON_CreateObject();
@@ -3197,7 +3197,7 @@ static void emit_window_event(struct leaves_server *server,
 
 /* ── Child process tracking ── */
 
-static pid_t launch_subprocess_tracked(struct leaves_server *server,
+static pid_t launch_subprocess_tracked(struct marshal_server *server,
 		const char *app_id, const char *path, char *const argv[]) {
 	pid_t pid = fork();
 	if (pid == 0) {
@@ -3221,7 +3221,7 @@ static pid_t launch_subprocess_tracked(struct leaves_server *server,
 
 static int sigchld_handler(int signal_number, void *data) {
 	(void)signal_number;
-	struct leaves_server *server = data;
+	struct marshal_server *server = data;
 	int status;
 	pid_t pid;
 	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
@@ -3277,7 +3277,7 @@ static int sigchld_handler(int signal_number, void *data) {
 int main(int argc, char *argv[]) {
 	wlr_log_init(WLR_DEBUG, NULL);
 
-	struct leaves_server server = {0};
+	struct marshal_server server = {0};
 	wl_list_init(&server.outputs);
 	wl_list_init(&server.toplevels);
 	server.focus_mode = FOCUS_NONE;
@@ -3371,7 +3371,7 @@ int main(int argc, char *argv[]) {
 	server.lock_tree = wlr_scene_tree_create(&server.scene->tree);
 	wlr_scene_node_set_enabled(&server.lock_tree->node, false);
 
-	/* ext-session-lock-v1: allows leaves-locker to inhibit input */
+	/* ext-session-lock-v1: allows marshal-locker to inhibit input */
 	server.session_lock_mgr =
 		wlr_session_lock_manager_v1_create(server.display);
 	server.new_session_lock.notify = handle_new_session_lock;
@@ -3494,7 +3494,7 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.backend->events.destroy, &server.backend_destroy);
 
 	/* Feed + Input + Renderer + Status */
-	const char *api_url = getenv("LEAVES_API_URL");
+	const char *api_url = getenv("MARSHAL_API_URL");
 	if (!api_url) api_url = "http://127.0.0.1:8765";
 	server.feed = feed_create(api_url);
 	input_init(&server.input, server.feed);
@@ -3503,7 +3503,7 @@ int main(int argc, char *argv[]) {
 	server.lrenderer->status = server.status;
 
 	/* Load desktop wallpaper */
-	const char *wp = getenv("LEAVES_WALLPAPER");
+	const char *wp = getenv("MARSHAL_WALLPAPER");
 	if (!wp) wp = "chromatic1.jpeg";
 	renderer_load_wallpaper(server.lrenderer, wp);
 
@@ -3561,7 +3561,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 	setenv("WAYLAND_DISPLAY", wl_socket, 1);
-	fprintf(stderr, "Leaves compositor running on %s\n", wl_socket);
+	fprintf(stderr, "Marshal compositor running on %s\n", wl_socket);
 
 	/* Store the socket name directly in the feed struct so feed threads
 	 * read the compositor's OWN socket, not an inherited env value. */
@@ -3569,16 +3569,16 @@ int main(int argc, char *argv[]) {
 		snprintf(server.feed->wayland_display,
 			sizeof(server.feed->wayland_display), "%s", wl_socket);
 
-	/* Write display socket to ~/.leaves/wayland-display so the API server
+	/* Write display socket to ~/.marshal/wayland-display so the API server
 	 * and agents can discover which compositor to connect to. */
 	{
 		const char *home = getenv("HOME");
 		if (home) {
 			char path[512];
-			snprintf(path, sizeof(path), "%s/.leaves", home);
+			snprintf(path, sizeof(path), "%s/.marshal", home);
 			mkdir(path, 0700);
 			snprintf(path, sizeof(path),
-				"%s/.leaves/wayland-display", home);
+				"%s/.marshal/wayland-display", home);
 			FILE *f = fopen(path, "w");
 			if (f) {
 				fprintf(f, "%s\n", wl_socket);
@@ -3593,7 +3593,7 @@ int main(int argc, char *argv[]) {
 		if (!xdg) xdg = "/tmp";
 		char sock_path[256];
 		snprintf(sock_path, sizeof(sock_path),
-			"%s/leaves-compositor-events.sock", xdg);
+			"%s/marshal-compositor-events.sock", xdg);
 		unlink(sock_path);
 
 		server.event_srv_fd = socket(AF_UNIX,
@@ -3633,7 +3633,7 @@ int main(int argc, char *argv[]) {
 		if (!xdg) xdg = "/tmp";
 		char sock_path[256];
 		snprintf(sock_path, sizeof(sock_path),
-			"%s/leaves-proactive.sock", xdg);
+			"%s/marshal-proactive.sock", xdg);
 		unlink(sock_path);
 
 		int fd = socket(AF_UNIX,

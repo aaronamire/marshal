@@ -11,7 +11,7 @@ import pathlib
 
 from agents.base_agent import BaseAgent
 from config import MODEL_FAMILY
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 from inference.client import InferenceClient, InferenceRequest, RemoteAnthropicBackend
 
 
@@ -23,8 +23,8 @@ class WritingAgent(BaseAgent):
         action_type = action.get("type", "").upper()
         if action_type in ("COMPOSE", "WRITE"):
             return self._compose(action, action.get("params", {}))
-        raise LeavesError(
-            LeavesErrorCode.AGENT_NOT_AVAILABLE,
+        raise MarshalError(
+            MarshalErrorCode.AGENT_NOT_AVAILABLE,
             detail=f"WritingAgent: unsupported action type '{action_type}'",
         )
 
@@ -35,8 +35,8 @@ class WritingAgent(BaseAgent):
         path = params.get("path")
 
         if not topic:
-            raise LeavesError(
-                LeavesErrorCode.INFERENCE_BAD_RESPONSE,
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
                 detail="WritingAgent: params.topic is required",
             )
 
@@ -97,11 +97,11 @@ class WritingAgent(BaseAgent):
             self._audit_end(row_id, result=result)
             return result
 
-        except LeavesError:
+        except MarshalError:
             raise
         except Exception as e:
-            err = LeavesError(
-                LeavesErrorCode.INTERNAL_ERROR,
+            err = MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
                 detail=f"WritingAgent: {e}",
                 cause=e,
             )

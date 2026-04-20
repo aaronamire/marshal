@@ -1,5 +1,5 @@
 """
-Centralized configuration constants for Leaves OS.
+Centralized configuration constants for Marshal.
 All numeric thresholds and paths live here — never hardcode in business logic.
 """
 from pathlib import Path
@@ -61,7 +61,7 @@ TOOL_FAILURE_ESCALATION_THRESHOLD = 3  # same tool+args fail count before livelo
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).parent
 
-AUDIT_DB_PATH = Path.home() / ".leaves" / "intents.db"
+AUDIT_DB_PATH = Path.home() / ".marshal" / "intents.db"
 SCHEMA_PATH = _PROJECT_ROOT / "agents" / "schema" / "goal_spec.json"
 INTENT_PARSER_PROMPT_PATH = _PROJECT_ROOT / "agents" / "prompts" / "intent_parser.txt"
 GBNF_GRAMMAR_PATH = _PROJECT_ROOT / "inference" / "grammar" / "goal_spec.gbnf"
@@ -71,13 +71,13 @@ CLASSIFIER_PIPELINE_PATH = _PROJECT_ROOT / "models" / "layer1_pipeline.joblib"
 # ---------------------------------------------------------------------------
 # UI / display
 # ---------------------------------------------------------------------------
-LEAVES_PRIMARY_COLOR = "#7FDBFF"   # cyan-ish — used in banner and headers
-LEAVES_SUCCESS_COLOR = "#2ECC40"
-LEAVES_ERROR_COLOR = "#FF4136"
-LEAVES_WARNING_COLOR = "#FFDC00"
-LEAVES_DIM_COLOR = "#AAAAAA"
+MARSHAL_PRIMARY_COLOR = "#7FDBFF"   # cyan-ish — used in banner and headers
+MARSHAL_SUCCESS_COLOR = "#2ECC40"
+MARSHAL_ERROR_COLOR = "#FF4136"
+MARSHAL_WARNING_COLOR = "#FFDC00"
+MARSHAL_DIM_COLOR = "#AAAAAA"
 
-APP_NAME = "Leaves OS"
+APP_NAME = "Marshal"
 APP_VERSION = "0.3.0-phase2"
 
 # ---------------------------------------------------------------------------

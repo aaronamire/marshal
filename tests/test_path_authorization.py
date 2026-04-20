@@ -9,7 +9,7 @@ import pytest
 
 from agents.file_agent import FileAgent
 from db.audit import get_db
-from errors import LeavesError, LeavesErrorCode
+from errors import MarshalError, MarshalErrorCode
 
 
 @pytest.fixture
@@ -26,15 +26,15 @@ def test_home_path_authorized(agent):
 
 
 def test_path_outside_home_rejected(agent):
-    with pytest.raises(LeavesError) as exc_info:
+    with pytest.raises(MarshalError) as exc_info:
         agent._authorize("/etc/passwd")
-    assert exc_info.value.code == LeavesErrorCode.PATH_NOT_AUTHORIZED
+    assert exc_info.value.code == MarshalErrorCode.PATH_NOT_AUTHORIZED
 
 
 def test_root_path_rejected(agent):
-    with pytest.raises(LeavesError) as exc_info:
+    with pytest.raises(MarshalError) as exc_info:
         agent._authorize("/")
-    assert exc_info.value.code == LeavesErrorCode.PATH_NOT_AUTHORIZED
+    assert exc_info.value.code == MarshalErrorCode.PATH_NOT_AUTHORIZED
 
 
 def test_symlink_traversal_blocked(agent, tmp_path):
@@ -48,7 +48,7 @@ def test_symlink_traversal_blocked(agent, tmp_path):
     # and verify resolve() catches it.
 
     # Create temp dir outside home
-    outside_dir = Path(tempfile.mkdtemp(prefix="leaves_test_outside_"))
+    outside_dir = Path(tempfile.mkdtemp(prefix="marshal_test_outside_"))
     try:
         # Create a symlink inside home's structure pointing outside
         home = Path.home()
@@ -57,9 +57,9 @@ def test_symlink_traversal_blocked(agent, tmp_path):
 
         # The symlink is under tmp_path (which itself may or may not be under home)
         # Test the core: does _authorize resolve and reject /etc directly?
-        with pytest.raises(LeavesError) as exc_info:
+        with pytest.raises(MarshalError) as exc_info:
             agent._authorize("/etc")
-        assert exc_info.value.code == LeavesErrorCode.PATH_NOT_AUTHORIZED
+        assert exc_info.value.code == MarshalErrorCode.PATH_NOT_AUTHORIZED
 
         # Also test that resolve(strict=False) on a symlink to outside gives the real path
         resolved = link_path.resolve(strict=False)
