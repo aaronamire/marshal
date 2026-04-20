@@ -220,6 +220,42 @@ def _banner() -> None:
     console.print()
 
 
+def _ensure_tier_and_show() -> None:
+    """
+    Print the active model tier, running a first-run hardware probe if none
+    has been saved. Any error here is non-fatal — the REPL must still start.
+    """
+    try:
+        import hardware
+    except ImportError:
+        return
+    try:
+        if hardware.active_tier_name() is None:
+            profile = hardware.probe()
+            decision = hardware.select_tier(profile, bench=None)
+            hardware.write_decision(decision, hardware.CONFIG_PATH)
+            console.print(
+                f"[{MARSHAL_DIM_COLOR}]First-run hardware check: "
+                f"chose '{decision.chosen}' tier for {profile.total_ram_gb:.0f}GB RAM "
+                f"({'laptop' if profile.is_laptop else 'desktop'})"
+                f"[/{MARSHAL_DIM_COLOR}]"
+            )
+            tier_name = decision.chosen
+        else:
+            tier_name = hardware.active_tier_name() or "standard"
+        tier = hardware.TIER_BY_NAME.get(tier_name)
+        if tier is not None:
+            console.print(
+                f"[{MARSHAL_DIM_COLOR}]Model tier: {tier.name} "
+                f"({tier.param_billions:.1f}B, {tier.model_file})"
+                f"[/{MARSHAL_DIM_COLOR}]"
+            )
+    except Exception as e:
+        console.print(
+            f"[{MARSHAL_DIM_COLOR}]Hardware probe skipped: {e}[/{MARSHAL_DIM_COLOR}]"
+        )
+
+
 def _show_error(msg: str) -> None:
     console.print(f"[{MARSHAL_ERROR_COLOR}]Error:[/{MARSHAL_ERROR_COLOR}] {msg}")
 
@@ -873,6 +909,10 @@ def cmd_help() -> None:
         "  [white]watch <text> on <path>[/white]    — create a filesystem watcher\n"
         "  [white]watchers[/white]                  — list active watchers\n"
         "  [white]unwatch <id-prefix>[/white]       — deactivate a watcher\n"
+        "  [white]model[/white]                     — show the active model tier\n"
+        "  [white]model detect[/white]              — re-probe hardware and re-select tier\n"
+        "  [white]model <tier>[/white]              — force a tier (tiny|standard|pro|max)\n"
+        "  [white]model download <tier>[/white]    — download the GGUF for a tier\n"
         "  [white]help[/white]                      — show this help\n"
         "  [white]quit[/white] / [white]exit[/white]                — exit\n\n"
         "[bold]Examples:[/bold]\n"
@@ -1165,6 +1205,158 @@ def cmd_briefing(hours: int = 12) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Model tier commands
+# ---------------------------------------------------------------------------
+
+def cmd_model(arg: str) -> None:
+    """
+    Dispatch 'model ...' sub-commands.
+
+    Empty:           show the active tier and whether its GGUF is on disk.
+    'detect':        re-probe hardware, re-select, persist, print.
+    'download <t>':  fetch the GGUF for <t> via huggingface-cli (with consent).
+    '<tier>':        force a tier by name.
+    """
+    try:
+        import hardware
+    except ImportError:
+        _show_error("hardware module unavailable")
+        return
+
+    parts = arg.split(maxsplit=1)
+    sub = parts[0] if parts else ""
+    rest = parts[1] if len(parts) > 1 else ""
+
+    if sub == "":
+        _cmd_model_show(hardware)
+    elif sub == "detect":
+        _cmd_model_detect(hardware)
+    elif sub == "download":
+        if not rest:
+            _show_error("Usage: model download <tier>")
+            return
+        _cmd_model_download(hardware, rest.strip())
+    elif sub in hardware.TIER_BY_NAME:
+        _cmd_model_force(hardware, sub)
+    else:
+        _show_error(
+            f"Unknown model sub-command '{sub}'. "
+            f"Try: model | model detect | model <tier> | model download <tier>"
+        )
+
+
+def _cmd_model_show(hardware) -> None:
+    tier_name = hardware.active_tier_name() or "standard"
+    tier = hardware.TIER_BY_NAME.get(tier_name)
+    if tier is None:
+        _show_error(f"saved tier '{tier_name}' is not in the catalog — run 'model detect'")
+        return
+
+    # Preferred file vs. what the resolver would actually serve. If the two
+    # differ, the user is running a degraded tier and should know.
+    preferred_path = hardware.DEFAULT_MODELS_DIR / tier.model_file
+    resolved = hardware.resolve_model_path()
+    preferred_installed = preferred_path.exists()
+
+    if preferred_installed:
+        status = (
+            f"[{MARSHAL_SUCCESS_COLOR}]installed[/{MARSHAL_SUCCESS_COLOR}] "
+            f"at {preferred_path}"
+        )
+    elif resolved is not None:
+        status = (
+            f"[{MARSHAL_WARNING_COLOR}]preferred model not downloaded — "
+            f"serving {resolved.name} instead[/{MARSHAL_WARNING_COLOR}] "
+            f"(run 'model download {tier.name}' to upgrade)"
+        )
+    else:
+        status = (
+            f"[{MARSHAL_ERROR_COLOR}]no model installed[/{MARSHAL_ERROR_COLOR}] — "
+            f"run 'model download {tier.name}'"
+        )
+
+    console.print(
+        f"Preferred tier : [{MARSHAL_PRIMARY_COLOR}]{tier.name}[/{MARSHAL_PRIMARY_COLOR}] "
+        f"({tier.param_billions:.1f}B)\n"
+        f"Preferred file : {tier.model_file}\n"
+        f"Status         : {status}\n"
+        f"Description    : {tier.description}"
+    )
+
+
+def _cmd_model_detect(hardware) -> None:
+    profile = hardware.probe()
+    bench = hardware.calibrate()  # None if server unreachable; that's fine
+    decision = hardware.select_tier(profile, bench)
+    hardware.write_decision(decision, hardware.CONFIG_PATH)
+    console.print(
+        f"Re-selected [{MARSHAL_PRIMARY_COLOR}]{decision.chosen}[/{MARSHAL_PRIMARY_COLOR}]: "
+        f"{decision.reason}"
+    )
+
+
+def _cmd_model_force(hardware, tier_name: str) -> None:
+    """Save a forced tier choice (bypassing auto-detection)."""
+    profile = hardware.probe()
+    forced = hardware.TIER_BY_NAME[tier_name]
+    decision = hardware.TierDecision(
+        chosen=forced.name,
+        reason=f"forced from REPL: 'model {tier_name}'",
+        profile=profile,
+        bench=None,
+        estimated_gen_tok_s={},
+        disqualified={},
+        timestamp=hardware._utc_timestamp(),
+    )
+    hardware.write_decision(decision, hardware.CONFIG_PATH)
+    console.print(
+        f"Tier set to [{MARSHAL_PRIMARY_COLOR}]{tier_name}[/{MARSHAL_PRIMARY_COLOR}] "
+        f"({forced.param_billions:.1f}B, {forced.model_file}).\n"
+        f"[{MARSHAL_DIM_COLOR}]Restart the inference server to load the new model: "
+        f"bash scripts/start-inference.sh[/{MARSHAL_DIM_COLOR}]"
+    )
+
+
+def _cmd_model_download(hardware, tier_name: str) -> None:
+    tier = hardware.TIER_BY_NAME.get(tier_name)
+    if tier is None:
+        _show_error(f"unknown tier '{tier_name}' (choices: "
+                    f"{', '.join(t.name for t in hardware.TIERS)})")
+        return
+
+    def consent(t) -> bool:
+        try:
+            ans = input(
+                f"Download {t.hf_filename} from {t.hf_repo} "
+                f"(~{t.model_size_gb:.1f}GB)? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return False
+        return ans in ("y", "yes")
+
+    def progress(msg: str) -> None:
+        console.print(f"[{MARSHAL_DIM_COLOR}]{msg}[/{MARSHAL_DIM_COLOR}]")
+
+    try:
+        path = hardware.ensure_tier_model(
+            tier, consent_fn=consent, on_progress=progress,
+        )
+    except hardware.ModelDownloadError as e:
+        _show_error(str(e))
+        return
+
+    if path is None:
+        console.print(f"[{MARSHAL_DIM_COLOR}]download declined[/{MARSHAL_DIM_COLOR}]")
+        return
+    console.print(
+        f"[{MARSHAL_SUCCESS_COLOR}]✓[/{MARSHAL_SUCCESS_COLOR}] {path}\n"
+        f"[{MARSHAL_DIM_COLOR}]Restart the inference server to load it: "
+        f"bash scripts/start-inference.sh[/{MARSHAL_DIM_COLOR}]"
+    )
+
+
+# ---------------------------------------------------------------------------
 # REPL
 # ---------------------------------------------------------------------------
 
@@ -1172,6 +1364,7 @@ def repl() -> None:
     global _parser, _session
 
     _banner()
+    _ensure_tier_and_show()
 
     # Session memory: persists turns across REPL invocations within a
     # 1h window so the model can $prev-reference prior results.
@@ -1232,6 +1425,10 @@ def repl() -> None:
             cmd_unwatch(raw[8:].strip())
         elif lower.startswith("search "):
             cmd_search(raw[7:].strip())
+        elif lower == "model":
+            cmd_model("")
+        elif lower.startswith("model "):
+            cmd_model(raw[6:].strip())
         elif lower in ("briefing", "morning"):
             cmd_briefing()
         elif lower == "verbose":

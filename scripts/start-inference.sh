@@ -3,11 +3,32 @@
 # CPU-only — no GPU flags. i5-7200U / Intel HD 620.
 
 LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Tier-aware model resolution. hardware.py reads ~/.marshal/tier.json and
+# returns the absolute path of the GGUF that best matches the saved tier,
+# walking down the ladder if the preferred model isn't installed. If the
+# resolver can't produce a path (no models on disk), we fall through to the
+# historical fallback chain below so a fresh clone without hardware.py
+# configured still boots.
+MODEL=""
+if [ -x "$(command -v python3)" ]; then
+    MODEL_CANDIDATE="$(cd "$REPO_ROOT" && python3 hardware.py --resolve-model 2>/dev/null)"
+    if [ -n "$MODEL_CANDIDATE" ] && [ -f "$MODEL_CANDIDATE" ]; then
+        MODEL="$MODEL_CANDIDATE"
+        ACTIVE_TIER="$(cd "$REPO_ROOT" && python3 hardware.py --print-tier 2>/dev/null)"
+        echo "Tier: ${ACTIVE_TIER:-unknown} → $(basename "$MODEL")"
+    fi
+fi
+
+# Legacy fallbacks — kept so the script still works without a tier.json.
 # Phase 2: Fine-tuned GoalSpec model Q4_K_M (ChatML format, ~1.8GB)
 # Phase 1: Qwen2.5-3B-Instruct Q4_K_M (ChatML format, ~1.88GB) — fallback
 # Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — last resort
-MODEL="$(dirname "$0")/../models/goalspec_qwen25_3b_q4km.gguf"
-MODEL_FALLBACK_P1="$(dirname "$0")/../models/qwen2.5-3b-instruct-q4_k_m.gguf"
+if [ -z "$MODEL" ]; then
+    MODEL="$REPO_ROOT/models/goalspec_qwen25_3b_q4km.gguf"
+fi
+MODEL_FALLBACK_P1="$REPO_ROOT/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 MODEL_FALLBACK_P0="$HOME/marshal-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 PORT=8080
 HOST="127.0.0.1"
