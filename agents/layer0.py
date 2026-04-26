@@ -204,6 +204,50 @@ _rule(
 )
 
 
+# QUERY (well-known folders by name, no explicit path needed)
+#
+# Ships intents like "summarize my recent downloads", "show my recent
+# downloads", "list my downloads" straight to FileAgent.QUERY against
+# ~/Downloads. Without this rule the LLM was happily routing
+# "summarize my recent downloads" to WebAgent.QUERY (web search) because
+# the fine-tune set lacks enough examples that anchor "downloads" → file.
+#
+# Each entry maps a noun phrase (with common adjectives) to an absolute
+# path under $HOME. Add new folders here as they come up.
+_WELL_KNOWN_FOLDERS: dict[str, str] = {
+    "downloads":     "~/Downloads",
+    "download":      "~/Downloads",
+    "documents":     "~/Documents",
+    "docs":          "~/Documents",
+    "desktop":       "~/Desktop",
+    "pictures":      "~/Pictures",
+    "photos":        "~/Pictures",
+    "images":        "~/Pictures",
+    "videos":        "~/Videos",
+    "music":         "~/Music",
+}
+
+# Verb prefix matches: "summarize", "list", "show", "what's in", "what is in",
+# "what's new in", optionally with "my", "the", "recent".
+_FOLDER_NAME_RE = "(" + "|".join(re.escape(k) for k in _WELL_KNOWN_FOLDERS) + ")"
+_rule(
+    r"^\s*(?:summarize|list|show|show\s+me|view|browse|what's\s+(?:in|new\s+in)|what\s+is\s+in)"
+    r"\s+(?:my\s+|the\s+)?(?:recent\s+|latest\s+|new\s+)?"
+    + _FOLDER_NAME_RE +
+    r"(?:\s+(?:folder|directory|dir))?\s*$",
+    "QUERY", False,
+    lambda m: {
+        "path": _WELL_KNOWN_FOLDERS[m.group(1).lower()],
+        "pattern": "*",
+        "recursive": False,
+        "search_type": "glob",
+        "sort_by": "mtime",
+        "sort_order": "desc",
+        "limit": 25,
+    },
+)
+
+
 # ---------------------------------------------------------------------------
 # System query rules (agent="system", category="system_task")
 # These bypass L1+L2 entirely — the SystemAgent uses psutil, no LLM needed.
@@ -232,9 +276,9 @@ _sys_rule(r'\bstorage\s*(?:usage|space|left)?\b', "disk")
 _sys_rule(r'\bhow\s+much\s+(?:disk|storage|space)\b', "disk")
 
 # processes
-_sys_rule(r'\b(?:running\s+)?processes\b', "processes")
-_sys_rule(r'\btop\s+processes\b', "processes")
-_sys_rule(r'\bwhat(?:\'s|\s+is)\s+(?:running|using)\b', "processes")
+_sys_rule(r'\b(?:running\s+)?processes\b', "processes", lambda m: {"top_n": 25})
+_sys_rule(r'\btop\s+processes\b', "processes", lambda m: {"top_n": 25})
+_sys_rule(r'\bwhat(?:\'s|\s+is)\s+(?:running|using)\b', "processes", lambda m: {"top_n": 25})
 
 # uptime
 _sys_rule(r'\buptime\b', "uptime")

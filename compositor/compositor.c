@@ -988,7 +988,17 @@ static int wakeup_handler(int fd, uint32_t mask __attribute__((unused)),
 		void *data) {
 	struct marshal_server *server = data;
 	char byte;
-	while (read(fd, &byte, 1) == 1) {}
+	bool quit = false;
+	/* Drain the pipe. 'q' from feed_request_exit() means the user typed
+	 * "exit" / "quit" in the intent bar — terminate the compositor cleanly
+	 * after the read loop so we don't leave the pipe in an odd state. */
+	while (read(fd, &byte, 1) == 1) {
+		if (byte == 'q') quit = true;
+	}
+	if (quit) {
+		wl_display_terminate(server->display);
+		return 0;
+	}
 	schedule_panel_redraw(server);
 	wl_event_source_timer_update(server->anim_timer, 16);
 	return 0;

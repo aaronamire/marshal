@@ -166,4 +166,10 @@ bool feed_animate(struct marshal_feed *feed, float dt);
 void feed_confirm(struct marshal_feed *feed);
 void feed_cancel(struct marshal_feed *feed);
 
+/* Signal the main thread to terminate the compositor. Used when the user
+ * types "exit" / "quit" in the intent bar. Writes a 'q' byte to the
+ * wakeup pipe; wakeup_handler in compositor.c picks it up and calls
+ * wl_display_terminate(). Safe from any thread. */
+void feed_request_exit(struct marshal_feed *feed);
+
 #endif

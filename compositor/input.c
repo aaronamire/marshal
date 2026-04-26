@@ -115,17 +115,63 @@ bool input_handle_key(struct marshal_input *input, uint32_t keycode,
 		if (input->len > 0) {
 			input->buf[input->len] = '\0';
 
-			/* Route by prefix */
-			if (strncmp(input->buf, "search ", 7) == 0 &&
-					input->len > 7)
-				feed_search(input->feed, input->buf + 7);
-			else if (strncmp(input->buf, "find ", 5) == 0 &&
+			/* Route by prefix.
+			 *
+			 * "find ..." is the explicit local-cortex search prefix
+			 * (semantic search over indexed files/notes/etc.).
+			 *
+			 * "watch ..." creates a persistent filesystem watcher.
+			 *
+			 * Bare "history" / "hist" reloads /v1/history into the
+			 * feed instead of being parsed as an intent. Without
+			 * this shortcut "history" gets handed to the LLM, which
+			 * (very reasonably from its point of view) classifies
+			 * it as a system_task and shows system specs — the
+			 * exact bug users hit.
+			 *
+			 * Everything else — including "search ..." — goes
+			 * through the full intent pipeline. Users typing
+			 * "search for the latest news on X" mean a *web*
+			 * search; the LLM classifier routes that to WebAgent.
+			 * Routing it to feed_search would silently force a
+			 * cortex-only search and surprise the user with
+			 * "API unreachable" if the indexer query failed.
+			 */
+			if (strncmp(input->buf, "find ", 5) == 0 &&
 					input->len > 5)
 				feed_search(input->feed, input->buf + 5);
 			else if (strncmp(input->buf, "watch ", 6) == 0 &&
 					input->len > 6)
 				feed_create_watcher(input->feed,
 					input->buf + 6);
+			else if (strcmp(input->buf, "history") == 0 ||
+					strcmp(input->buf, "hist") == 0)
+				feed_load_history(input->feed);
+			else if (strcmp(input->buf, "exit") == 0 ||
+					strcmp(input->buf, "quit") == 0 ||
+					strcmp(input->buf, ":q") == 0)
+				/* Leave the OS. wakeup_handler in compositor.c
+				 * sees the 'q' byte and calls
+				 * wl_display_terminate(). */
+				feed_request_exit(input->feed);
+			else if (strcmp(input->buf, "process manager") == 0 ||
+					strcmp(input->buf, "task manager") == 0 ||
+					strcmp(input->buf, "processes") == 0 ||
+					strcmp(input->buf, "ps") == 0)
+				/* "Process manager" view = SystemAgent.QUERY
+				 * processes rendered in the standard card UI.
+				 * Layer 0 already matches "processes" so this
+				 * skips the LLM. To kill a process from the
+				 * list, type e.g. "kill marshal-inference" or
+				 * "kill <pid>". */
+				feed_submit(input->feed, "processes");
+			else if (strcmp(input->buf, "file manager") == 0 ||
+					strcmp(input->buf, "files") == 0)
+				/* "File manager" view = FileAgent.QUERY on
+				 * ~/. Layer 0's well-known-folders rule
+				 * catches this and skips the LLM. */
+				feed_submit(input->feed,
+					"show all files in ~");
 			else
 				feed_submit(input->feed, input->buf);
 

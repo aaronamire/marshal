@@ -46,6 +46,17 @@ static void draw_leaf_glyph(cairo_t *cr, double cx, double cy) {
 	cairo_restore(cr);
 }
 
+/* ── Taskbar logo (simple circle, ~12px radius) ── */
+
+static void draw_logo_glyph(cairo_t *cr, double cx, double cy) {
+	cairo_save(cr);
+	cairo_arc(cr, cx, cy, 11.0, 0.0, 2.0 * M_PI);
+	cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.75);
+	cairo_set_line_width(cr, 1.5);
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
 /* ── PangoLayout helper with letter spacing ── */
 
 static PangoLayout *create_layout(cairo_t *cr, PangoFontDescription *fd,
@@ -1505,7 +1516,7 @@ static void draw_taskbar(struct marshal_renderer *r,
 	/* ── Left zone: OS icon ── */
 	int icon_cx = TASKBAR_ICON_W / 2;
 	int icon_cy = bar_y + INPUT_HEIGHT / 2;
-	draw_leaf_glyph(cr, icon_cx, icon_cy);
+	draw_logo_glyph(cr, icon_cx, icon_cy);
 
 	/* Separator after icon */
 	set_color(cr, BORDER_SEPARATOR);

@@ -699,8 +699,16 @@ async def _run_via_pool(
     cgroup_applied = False
     is_launch = _is_app_launch(goal_spec)
 
+    # 16 MB read-buffer ceiling. The default asyncio StreamReader limit is
+    # 64 KB, which is too small: a single QUERY action over a populated
+    # directory (e.g. ~/Downloads with 500 entries × ~250 bytes each)
+    # produces a ~90 KB result frame on a single line. readline() then
+    # raises LimitOverrunError, the surrounding try/except converts it to
+    # INTERNAL_ERROR, and the audit log shows the action succeeded but the
+    # intent failed — exactly the "An internal error occurred. This is a
+    # bug" report users were hitting on "summarize my recent downloads".
     reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(str(_POOL_SOCK_PATH)),
+        asyncio.open_unix_connection(str(_POOL_SOCK_PATH), limit=16 * 1024 * 1024),
         timeout=_POOL_CONNECT_TIMEOUT_S,
     )
 
@@ -1145,39 +1153,81 @@ _INDEX_INTERVAL_SECONDS = 1800  # 30 minutes between incremental re-indexes
 
 async def _warm_inference_kv_cache() -> None:
     """
-    Send a dummy /completion request using the real intent-parser system prompt
-    so llama.cpp pre-fills the KV cache for the prefix shared by every request.
-    Subsequent user requests hit cache_prompt and skip the prefill.
+    Pre-fill llama.cpp's KV cache for the longest prefix shared by every
+    intent-parser request: the bare ChatML system header containing the
+    static system prompt.
 
-    Silent on failure — the inference server may not be up yet, and that must
-    never block agentd from serving.
+    Why ONLY the system prompt (no RAG block, no user_block):
+      cache_prompt does character-level prefix matching. Every real request
+      has a different RAG block (per-query few-shot retrieval) and a different
+      user_block. The longest universal prefix is the static system prompt
+      alone, so warming that gives every subsequent request a cache hit on
+      the largest possible chunk (~2000 tokens of the ~2500-token total
+      prompt). Including RAG examples in the warmup wasted ~30s of prefill
+      on tokens that no real request would reuse.
+
+    Why we don't import IntentParser:
+      IntentParser() pulls the RAG store, which on first boot triggers
+      sentence-transformers metadata downloads from HuggingFace. Those
+      fight the warmup for CPU and pushed the cold path past 90s on
+      Kaby Lake. We open and read the system prompt file directly.
+
+    Silent on failure — the inference server may not be up yet, and that
+    must never block agentd from serving.
+
+    Uses its own per-request timeout (240s) so the prefill has enough
+    headroom on slow CPUs without raising the steady-state TIMEOUT_READ_SECONDS.
     """
+    import pathlib
     loop = asyncio.get_event_loop()
 
     def _warm() -> str | None:
         try:
-            from agents.intent_parser import IntentParser
-            from inference.client import InferenceClient, InferenceRequest
+            from inference.client import LocalLlamaCppBackend
 
-            parser = IntentParser()
-            client: InferenceClient = parser._client
-            if not client.is_available():
+            backend = LocalLlamaCppBackend()
+            if not backend.is_available():
                 return "inference server unavailable"
-            # Minimal request — goal is cache population, not a useful response.
-            prompt = parser._build_prompt("warmup")
-            req = InferenceRequest(
-                prompt=prompt,
-                max_tokens=1,
-                grammar=None,
+
+            sys_prompt_path = (
+                pathlib.Path(__file__).parent
+                / "agents" / "prompts" / "intent_parser.txt"
             )
-            client.complete(req)
+            if not sys_prompt_path.is_file():
+                return f"system prompt file missing: {sys_prompt_path}"
+            system_prompt = sys_prompt_path.read_text()
+
+            # Just the ChatML system header — exact prefix every L2 request
+            # starts with. We deliberately omit the user-block opener so
+            # the cache covers the maximum reusable span.
+            prompt = f"<|im_start|>system\n{system_prompt}"
+
+            # Inline /completion call with an explicitly-extended read
+            # timeout. Cold prefill of ~2000 tokens on Kaby Lake legitimately
+            # takes 60–180s; we don't want to bump the config-level timeout
+            # since steady-state requests should fail fast.
+            payload = {
+                "prompt": prompt,
+                "n_predict": 1,
+                "temperature": 0.0,
+                "stop": [],
+                "stream": False,
+                "cache_prompt": True,
+            }
+            r = backend._session.post(
+                f"{backend._base_url}/completion",
+                json=payload,
+                timeout=(5, 240),
+            )
+            if r.status_code != 200:
+                return f"warmup HTTP {r.status_code}"
             return None
         except Exception as e:
             return str(e)
 
     err = await loop.run_in_executor(None, _warm)
     if err is None:
-        log.info("inference KV cache warmed")
+        log.info("inference KV cache warmed (system-prompt prefix only)")
     else:
         log.info("KV cache warmup skipped", extra={"reason": err})
 
@@ -1538,11 +1588,20 @@ async def _run_server() -> None:
     if _indexer is not None:
         asyncio.get_event_loop().create_task(_background_indexing(_indexer))
 
-    # Warm the inference KV cache with the intent-parser system prompt so the
-    # first user request doesn't pay the ~30s cold-start prefill on CPU.
-    # Runs in a background task so a missing inference server never blocks
-    # agentd from accepting connections.
-    asyncio.get_event_loop().create_task(_warm_inference_kv_cache())
+    # Warm the inference KV cache with the REAL intent-parser system prompt
+    # so the first user request hits cache_prompt and skips the ~30s cold
+    # prefill on CPU.
+    #
+    # Awaited (with a 90s ceiling) rather than scheduled in the background so
+    # a user request submitted in the first second after agentd starts can
+    # never race the warmup at the single llama.cpp slot. If the inference
+    # server is unreachable or wedged, the timeout lets us fall through to
+    # serving anyway — agentd must never refuse connections because of an
+    # inference outage.
+    try:
+        await asyncio.wait_for(_warm_inference_kv_cache(), timeout=300.0)
+    except asyncio.TimeoutError:
+        log.warning("inference KV warmup exceeded 300s — proceeding without cache prime")
 
     try:
         async with server:

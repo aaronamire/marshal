@@ -17,10 +17,15 @@ INFERENCE_SERVER_URL = f"http://{INFERENCE_SERVER_HOST}:{INFERENCE_SERVER_PORT}"
 # With prompt caching (cache_prompt=true on /completion endpoint), the system
 # prompt KV cache is reused across requests. Only the RAG examples + user intent
 # (~300-500 tokens) need fresh prefill. Warm-cache latency: ~4-8s total.
-# Cold-cache (first request or after server restart): ~26-30s full prefill.
-# 90s timeout handles cold-cache + thermal throttling worst case.
+# Cold-cache (first request or after server restart): ~26-30s full prefill on
+# a freshly mlocked model, BUT in practice the first user request sometimes
+# races with agentd's background warmup task — both arrive at the single
+# llama.cpp slot, the user's prompt waits behind a half-finished prefill, and
+# total wall time can exceed 2 minutes on Kaby Lake under thermal load.
+# 180s gives the worst-case race + cold prefill enough headroom to never
+# spuriously fail. Steady-state warm requests still return in <8s.
 TIMEOUT_CONNECT_SECONDS = 5
-TIMEOUT_READ_SECONDS = 90
+TIMEOUT_READ_SECONDS = 180
 TIMEOUT_HARD_SECONDS = 360
 
 # Generation parameters

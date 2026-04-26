@@ -346,6 +346,12 @@ void feed_destroy(struct marshal_feed *feed) {
 	free(feed);
 }
 
+void feed_request_exit(struct marshal_feed *feed) {
+	if (!feed) return;
+	char byte = 'q';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+}
+
 void feed_load_history(struct marshal_feed *feed) {
 	CURL *curl = curl_easy_init();
 	if (!curl) return;

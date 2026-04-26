@@ -97,7 +97,7 @@ TIERS: tuple[Tier, ...] = (
     ),
     Tier(
         name="standard",
-        model_file="qwen2.5-3b-instruct-q4_k_m.gguf",
+        model_file="goalspec_qwen25_3b_q4km.gguf",
         param_billions=3.0,
         model_size_gb=2.0,
         kv_cache_gb_at_4k=0.2,

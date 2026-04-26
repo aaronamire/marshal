@@ -19,12 +19,16 @@ from cortex.knowledge_graph import KnowledgeGraph
 
 log = logging.getLogger("cortex.briefing")
 
-# Collapse directories with fewer than this many items into "other"
-_MIN_GROUP_SIZE = 2
+# Collapse directories with fewer than this many items into "other".
+# Lowered to 1 so a one-file briefing still shows the directory name and
+# the file itself instead of an opaque "other (1)" entry.
+_MIN_GROUP_SIZE = 1
 # Max items to pull from temporal query
 _MAX_ITEMS = 200
 # Max directory groups to show per source type
 _MAX_DIR_GROUPS = 8
+# Items to surface inside each directory group
+_ITEMS_PER_GROUP = 5
 
 
 class BriefingGenerator:
@@ -179,16 +183,24 @@ class BriefingGenerator:
         if len(sections) == 1:
             s = sections[0]
             n_dirs = len(s["groups"])
+            stype = s["source_type"]
+            n_word = _english_count(total)
+            stype_word = _pluralize(stype, total)
+            if n_dirs == 1 and total <= 1:
+                return (
+                    f"{n_word} {stype_word} changed "
+                    f"in the last {_fmt_hours(hours)}"
+                )
             dir_word = "directory" if n_dirs == 1 else "directories"
             return (
-                f"{total} {s['source_type']}(s) changed "
+                f"{n_word} {stype_word} changed "
                 f"across {n_dirs} {dir_word} "
                 f"in the last {_fmt_hours(hours)}"
             )
 
         parts = []
         for s in sections:
-            parts.append(f"{s['count']} {s['source_type']}(s)")
+            parts.append(f"{s['count']} {_pluralize(s['source_type'], s['count'])}")
         joined = ", ".join(parts)
         return f"{total} changes ({joined}) in the last {_fmt_hours(hours)}"
 
@@ -230,3 +242,25 @@ def _fmt_hours(hours: int) -> str:
     if days == 1:
         return "day"
     return f"{days} days"
+
+
+def _english_count(n: int) -> str:
+    """Render small counts as words for a more natural one-liner."""
+    if n == 0:
+        return "No"
+    if n == 1:
+        return "One"
+    if n == 2:
+        return "Two"
+    if n == 3:
+        return "Three"
+    return str(n)
+
+
+def _pluralize(word: str, n: int) -> str:
+    """Naive pluralization good enough for source-type tokens like 'file'."""
+    if n == 1:
+        return word
+    if word.endswith("s"):
+        return word
+    return word + "s"

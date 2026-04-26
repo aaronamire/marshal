@@ -26,8 +26,29 @@ import psutil
 from agents.base_agent import BaseAgent
 from errors import MarshalError, MarshalErrorCode
 
+# Programs Marshal ships in-tree. shutil.which() won't find these unless the
+# user installs them system-wide, but they live in known builddir locations.
+# Lookup order: shutil.which() first, then this map.
+_MARSHAL_ROOT = pathlib.Path(__file__).parent.parent
+_MARSHAL_INTREE_BINARIES: dict[str, pathlib.Path] = {
+    "marshal-terminal":   _MARSHAL_ROOT / "terminal"   / "builddir" / "marshal-terminal",
+    "marshal-compositor": _MARSHAL_ROOT / "compositor" / "builddir" / "marshal-compositor",
+}
+
+
+def _resolve_executable(name: str) -> Optional[str]:
+    """Return absolute path of `name` from PATH or the in-tree builddir map."""
+    found = shutil.which(name)
+    if found:
+        return found
+    intree = _MARSHAL_INTREE_BINARIES.get(name)
+    if intree and intree.is_file() and os.access(intree, os.X_OK):
+        return str(intree)
+    return None
+
+
 # Common program aliases — maps user-friendly names to real executables.
-# Checked in order; first one found in PATH wins.
+# Checked in order; first one resolvable wins.
 _PROGRAM_ALIASES: dict[str, list[str]] = {
     "google": ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"],
     "chrome": ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"],
@@ -143,12 +164,14 @@ class SystemAgent(BaseAgent):
                 detail="No program specified for launch",
             )
 
-        # Try the literal name first, then check aliases.
-        exe = shutil.which(program)
+        # Try the literal name first, then check aliases. _resolve_executable
+        # checks PATH first, then falls back to Marshal's in-tree builddir
+        # binaries so e.g. `marshal-terminal` works even when not installed.
+        exe = _resolve_executable(program)
         if exe is None:
             candidates = _PROGRAM_ALIASES.get(program.lower(), [])
             for candidate in candidates:
-                exe = shutil.which(candidate)
+                exe = _resolve_executable(candidate)
                 if exe:
                     break
         if exe is None:
@@ -265,24 +288,37 @@ class SystemAgent(BaseAgent):
                 pass
 
             # Launch detached from our process group so it outlives us.
-            # Use PIPE instead of DEVNULL to avoid opening /dev/null,
-            # which Landlock's PATH_BENEATH can't grant on char devices.
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.PIPE,
-                start_new_session=True,
-                env=env,
-            )
-            # Close our end of the pipes immediately — the child keeps
-            # running with broken pipes (harmless for GUI apps).
-            if proc.stdin:
-                proc.stdin.close()
-            if proc.stdout:
-                proc.stdout.close()
-            if proc.stderr:
-                proc.stderr.close()
+            #
+            # Originally this used stdout/stderr=PIPE with an immediate
+            # close on the parent side, on the theory that "GUI apps don't
+            # write to stderr." That assumption was wrong: many Wayland
+            # clients (including marshal-terminal) print connection
+            # diagnostics at startup. Writing to a closed pipe delivers
+            # SIGPIPE, which by default terminates the process — so the
+            # GUI window the agent "successfully launched" would die a
+            # millisecond later, before mapping any surface, and the user
+            # would see "done" but no window.
+            #
+            # /dev/null is fine here because launch actions skip Landlock
+            # (see agents/sandboxed_runner.py:_is_launch). The /dev/null
+            # PATH_BENEATH-can't-grant comment that justified PIPE applies
+            # only to the sandboxed code path.
+            launch_log_dir = pathlib.Path.home() / ".marshal" / "logs" / "launches"
+            launch_log_dir.mkdir(parents=True, exist_ok=True)
+            launch_log = launch_log_dir / f"{exe_basename}.log"
+            log_fd = open(launch_log, "ab", buffering=0)
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fd,
+                    stderr=log_fd,
+                    start_new_session=True,
+                    env=env,
+                )
+            finally:
+                # The child has its own fd dup; we don't need ours.
+                log_fd.close()
             result = {
                 "launched": program,
                 "pid": proc.pid,
@@ -513,7 +549,9 @@ class SystemAgent(BaseAgent):
 
     def sys_processes(self, top_n: int = 10) -> dict:
         procs = []
-        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info", "status"]):
+        for p in psutil.process_iter(
+            ["pid", "name", "cpu_percent", "memory_info", "status", "username"]
+        ):
             try:
                 info = p.info
                 procs.append({
@@ -524,12 +562,13 @@ class SystemAgent(BaseAgent):
                         (info["memory_info"].rss if info["memory_info"] else 0) / (1024 ** 2), 1
                     ),
                     "status": info["status"] or "",
+                    "username": info.get("username") or "",
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
         procs.sort(key=lambda p: p["cpu_percent"], reverse=True)
-        return {"processes": procs[:top_n], "count": min(top_n, len(procs))}
+        return {"processes": procs[:top_n], "count": len(procs)}
 
     def sys_uptime(self) -> dict:
         boot_ts = psutil.boot_time()

@@ -96,6 +96,13 @@ _ENTRIES: tuple[AgentEntry, ...] = (
         class_name="WritingAgent",
         description="text composition (documents, reports, summaries)",
     ),
+    AgentEntry(
+        agent="briefing",
+        category="briefing",
+        import_path="agents.briefing_agent",
+        class_name="BriefingAgent",
+        description="recent-changes briefing across indexed sources",
+    ),
 )
 
 

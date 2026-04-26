@@ -106,7 +106,10 @@ declare -a SYS_PKGS_DNF=(
 )
 
 if [[ $WITH_COMPOSITOR -eq 1 ]]; then
-    SYS_PKGS_PACMAN+=(meson ninja wlroots wayland wayland-protocols
+    # Arch ships versioned wlroots packages (wlroots0.18, wlroots0.19, ...).
+    # The compositor pins wlroots-0.18 in compositor/meson.build, so install
+    # that exact version. Bumping the pin requires editing meson.build too.
+    SYS_PKGS_PACMAN+=(meson ninja wlroots0.18 wayland wayland-protocols
                       cairo pango libcurl-gnutls cjson libdrm libjpeg-turbo
                       libxcb xcb-util-wm alsa-lib systemd-libs xorg-xwayland)
     SYS_PKGS_APT+=(meson ninja-build libwlroots-dev libwayland-dev

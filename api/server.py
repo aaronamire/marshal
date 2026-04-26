@@ -466,14 +466,33 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
                 m = (int(r["uptime_seconds"]) % 3600) // 60
                 parts.append(f"Uptime: {h}h {m}m\nBoot: {r.get('boot_time_iso', '?')}")
             elif qt == "processes" or "processes" in r:
+                # Process-manager listing. Sorted by SystemAgent (CPU desc).
+                # Showing 25 rows is enough to identify "what's eating my
+                # battery / RAM" without overwhelming the card. To kill
+                # any of these, the user types e.g. "kill marshal-inference".
                 procs = r.get("processes", [])
-                lines = [f"{r.get('count', len(procs))} processes:"]
-                for p in procs[:10]:
+                total = r.get("count", len(procs))
+                header = (
+                    f"{'PID':>7}  {'NAME':<24}  {'CPU%':>6}  {'MEM (MB)':>9}  USER"
+                )
+                divider = "─" * len(header)
+                lines = [
+                    f"Processes — {total} running",
+                    divider,
+                    header,
+                    divider,
+                ]
+                for p in procs[:25]:
+                    name = (p.get("name") or "?")[:24]
+                    pid = p.get("pid", "?")
+                    cpu = p.get("cpu_percent", 0)
+                    mem = p.get("memory_mb", 0)
+                    user = (p.get("username") or "")[:12]
                     lines.append(
-                        f"  {p.get('name', '?'):20s}  "
-                        f"CPU {p.get('cpu_percent', 0):5.1f}%  "
-                        f"MEM {p.get('memory_mb', 0):7.1f} MB"
+                        f"{pid:>7}  {name:<24}  {cpu:>6.1f}  {mem:>9.1f}  {user}"
                     )
+                if total > 25:
+                    lines.append(f"… {total - 25} more (type 'kill <name>' to stop one)")
                 parts.append("\n".join(lines))
             else:
                 # Unknown system result — show as key-value pairs
@@ -481,17 +500,61 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
                 parts.append("\n".join(lines) if lines else str(r))
         elif agent == "file":
             if atype == "QUERY" and "files" in r:
-                n = r.get("count", len(r["files"]))
+                # File-manager listing. Three columns: name, size, mtime.
+                # The compositor's expanded card view handles scrolling for
+                # large result sets, so we render the full list rather than
+                # truncating.
+                files = r.get("files", []) or []
+                n = r.get("count", len(files))
+                path = r.get("path", "")
                 if n == 0:
-                    parts.append("No files found")
+                    parts.append(f"No files in {path}" if path else "No files found")
                 else:
-                    # Show all files — the compositor's expanded card
-                    # view handles scrolling for large result sets.
-                    names = "\n".join(
-                        f"  {f.get('name', f)}" if isinstance(f, dict) else f"  {f}"
-                        for f in r["files"]
-                    )
-                    parts.append(f"{n} file(s):\n{names}")
+                    import datetime
+                    header_path = f"{path}" if path else ""
+                    header = f"{'NAME':<40}  {'SIZE':>10}  MODIFIED"
+                    divider = "─" * len(header)
+                    lines = [
+                        f"Files — {n} entr{'y' if n == 1 else 'ies'}"
+                        + (f" in {header_path}" if header_path else ""),
+                        divider,
+                        header,
+                        divider,
+                    ]
+                    for f in files:
+                        if not isinstance(f, dict):
+                            lines.append(f"  {f}")
+                            continue
+                        name = (f.get("name") or "?")
+                        is_dir = f.get("is_dir")
+                        if is_dir:
+                            name = name + "/"
+                        name_disp = name[:40]
+                        size_b = f.get("size_bytes", 0) or 0
+                        if is_dir:
+                            size_str = "—"
+                        elif size_b >= 1024 * 1024 * 1024:
+                            size_str = f"{size_b/1024/1024/1024:.1f} GB"
+                        elif size_b >= 1024 * 1024:
+                            size_str = f"{size_b/1024/1024:.1f} MB"
+                        elif size_b >= 1024:
+                            size_str = f"{size_b/1024:.1f} KB"
+                        else:
+                            size_str = f"{size_b} B"
+                        mt = f.get("mtime", 0) or 0
+                        if mt:
+                            try:
+                                mtime_str = datetime.datetime.fromtimestamp(
+                                    mt
+                                ).strftime("%Y-%m-%d %H:%M")
+                            except (OSError, ValueError):
+                                mtime_str = "—"
+                        else:
+                            mtime_str = "—"
+                        lines.append(
+                            f"{name_disp:<40}  {size_str:>10}  {mtime_str}"
+                        )
+                    parts.append("\n".join(lines))
             elif atype == "READ" and "content" in r:
                 length = r.get("content_length", len(r.get("content", "")))
                 parts.append(f"Read {length} chars")
@@ -502,10 +565,74 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
                     parts.append(f"{atype.capitalize()} done")
         elif agent == "web":
             if "results" in r:
-                n = r.get("result_count", len(r["results"]))
-                parts.append(f"{n} web result(s)")
+                hits = r["results"] or []
+                n = r.get("result_count", len(hits))
+                if n == 0:
+                    parts.append(f"No web results for '{r.get('query', '?')}'")
+                else:
+                    lines = [f"{n} web result(s):"]
+                    for hit in hits[:5]:
+                        title = (hit.get("title") or "(untitled)").strip()
+                        url = (hit.get("url") or "").strip()
+                        snippet = (hit.get("snippet") or "").strip()
+                        if len(snippet) > 160:
+                            snippet = snippet[:157] + "…"
+                        lines.append(f"  • {title}")
+                        if url:
+                            lines.append(f"    {url}")
+                        if snippet:
+                            lines.append(f"    {snippet}")
+                    parts.append("\n".join(lines))
             elif "content" in r:
-                parts.append(f"Fetched {r.get('url', 'page')}")
+                title = (r.get("title") or "").strip()
+                url = r.get("url", "page")
+                content = (r.get("content") or "").strip()
+                preview = content[:400] + ("…" if len(content) > 400 else "")
+                head = f"Fetched {title} — {url}" if title else f"Fetched {url}"
+                parts.append(f"{head}\n{preview}" if preview else head)
+        elif agent == "briefing":
+            if r.get("empty"):
+                parts.append(r.get("headline") or "Nothing new in the recent window.")
+            else:
+                lines = []
+                headline = r.get("headline")
+                if headline:
+                    lines.append(headline)
+                lines.append("")  # blank separator before per-section detail
+                total = r.get("total_changes") or 0
+                # If the change set is small, surface the actual filenames
+                # so the user has something concrete to read instead of
+                # a directory-count summary. Threshold tuned so a
+                # one-file briefing produces a useful result.
+                show_items = total <= 5
+                for section in (r.get("sections") or [])[:5]:
+                    src = section.get("source_type", "?")
+                    cnt = section.get("count", 0)
+                    lines.append(f"{src}: {cnt}")
+                    groups = (section.get("groups") or [])[:5]
+                    for grp in groups:
+                        d = grp.get("directory") or grp.get("name", "?")
+                        gc = grp.get("count", 0)
+                        items = grp.get("items") or []
+                        if show_items and items:
+                            lines.append(f"  {d}")
+                            for it in items[:5]:
+                                title = (it.get("title") or "").strip()
+                                path = (it.get("path") or "").strip()
+                                ts = (it.get("timestamp") or "").strip()
+                                # Prefer the title, fall back to the
+                                # basename of the path. Show timestamp
+                                # only if it adds info beyond the title.
+                                label = title or (path.rsplit("/", 1)[-1] if path else "")
+                                line = f"    • {label}" if label else "    • (untitled)"
+                                if path and label and path != label:
+                                    line += f"  [{path}]"
+                                if ts:
+                                    line += f"  ({ts[:16].replace('T',' ')})"
+                                lines.append(line)
+                        else:
+                            lines.append(f"  {d} ({gc})")
+                parts.append("\n".join(lines))
     return " · ".join(parts) if parts else ""
 
 
