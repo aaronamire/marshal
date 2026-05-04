@@ -1,6 +1,10 @@
-# Models (too large for git)
+# Models (too large for git) — exceptions:
+#   MANIFEST.sha256       SHA pin used by scripts/download-model.sh
+#   layer1_pipeline.joblib  88KB sklearn classifier, required at startup
 *.gguf
-models/
+models/*
+!models/MANIFEST.sha256
+!models/layer1_pipeline.joblib
 
 # Python
 __pycache__/
@@ -45,6 +49,9 @@ Thumbs.db
 *.log
 /marshal-boot.log
 agentd.log
+
+# Local debugging notes (not for public repo)
+OBS_FIX.md
 
 # Editor / IDE caches
 .cache/

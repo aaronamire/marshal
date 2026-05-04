@@ -181,6 +181,10 @@ source "$VENV_DIR/bin/activate"
 log "installing Marshal into venv..."
 pip install --upgrade pip wheel >/dev/null
 pip install -e ".[rag,remote]" >/dev/null
+# huggingface_hub provides the `huggingface-cli` binary used by
+# scripts/download-model.sh. Not a Marshal runtime dep, so kept out of
+# pyproject.toml — installed here so first-run `bootstrap.sh` succeeds end-to-end.
+pip install --upgrade huggingface_hub >/dev/null
 ok "Python deps installed"
 
 # --- model download ---------------------------------------------------------

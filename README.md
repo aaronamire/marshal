@@ -31,6 +31,13 @@ that plan before it touches the system.
   writing agent call Claude for long-form content. Core planning stays
   local.
 
+## Requirements
+
+- Linux (pacman / apt / dnf based — Arch, Ubuntu 24.04+, Debian 13+, Fedora 39+)
+- Python **3.12 or newer** (Ubuntu 22.04 / Debian 12 ship older Pythons; install 3.12 from deadsnakes/pyenv first)
+- ~6 GB free disk for llama.cpp build + the GoalSpec model
+- For `--with-compositor`: wlroots 0.18 (Arch ships `wlroots0.18`; Ubuntu 24.04 only has 0.17 — skip the flag or build wlroots from source)
+
 ## Quick start
 
 One command bootstraps everything (system deps, llama.cpp build, venv,
@@ -117,6 +124,23 @@ When set, `WritingAgent` escalates to Claude for prose generation and
 falls back to the local model if the API is unavailable. Intent parsing
 stays local.
 
+## Models
+
+The GoalSpec models turn natural language into schema-validated
+`GoalSpec` JSON. Both fine-tunes are published openly on HuggingFace
+under the same Apache-2.0 license as Marshal — no auth required:
+
+- **[yudweb2/marshal-goalspec-3b](https://huggingface.co/yudweb2/marshal-goalspec-3b)** — Qwen-2.5-3B fine-tune, Q4_K_M GGUF (~2 GB). Default; fetched automatically by `bootstrap.sh`.
+- **[yudweb2/marshal-goalspec-7b](https://huggingface.co/yudweb2/marshal-goalspec-7b)** — Qwen-2.5-7B fine-tune, Q4_K_M GGUF (~4.5 GB). For higher accuracy on ambiguous intents at ~2× latency. Fetch with `./scripts/download-model.sh --7b`.
+
+Both are SHA-256 verified against `models/MANIFEST.sha256`.
+`./scripts/download-model.sh --phase1` falls back to the upstream
+`Qwen/Qwen2.5-3B-Instruct-GGUF` base model if you want to skip the
+fine-tune. Training data, the SHA manifest, and the GBNF grammar used at
+decode time are all in-tree (`data/`, `models/MANIFEST.sha256`,
+`inference/grammar/`) so the pipeline is fully reproducible.
+
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE). Same license applies to the
+GoalSpec model weights on HuggingFace.
