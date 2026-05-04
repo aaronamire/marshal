@@ -1,6 +1,6 @@
 [Unit]
 Description=Marshal graphical session
-Documentation=https://github.com/amirewontmiss/marshal
+Documentation=https://github.com/aaronamire/marshal
 BindsTo=graphical-session.target
 Wants=marshal-inference.service
 Wants=marshal-agentd.service

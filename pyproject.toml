@@ -84,10 +84,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/amirewontmiss/marshal"
-Repository = "https://github.com/amirewontmiss/marshal"
-Issues = "https://github.com/amirewontmiss/marshal/issues"
-Changelog = "https://github.com/amirewontmiss/marshal/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/aaronamire/marshal"
+Repository = "https://github.com/aaronamire/marshal"
+Issues = "https://github.com/aaronamire/marshal/issues"
+Changelog = "https://github.com/aaronamire/marshal/blob/main/CHANGELOG.md"
 
 [project.scripts]
 marshal = "main:main"

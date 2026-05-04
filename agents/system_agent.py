@@ -119,7 +119,7 @@ def _stop_inference() -> tuple[bool, str]:
     import subprocess as sp
 
     if shutil.which("systemctl"):
-        for unit in ("marshal-inference.service", "leaves-inference.service"):
+        for unit in ("marshal-inference.service",):
             check = sp.run(
                 ["systemctl", "--user", "list-unit-files", unit, "--no-legend"],
                 capture_output=True, text=True, timeout=4, check=False,
@@ -166,10 +166,9 @@ def _restart_inference() -> tuple[bool, str]:
     import subprocess as sp
     import time as _time
 
-    # 1) Systemd user units, in preferred-name order (the "leaves-" name is
-    #    the legacy install on this machine; new installs use "marshal-").
+    # 1) Systemd user units.
     if shutil.which("systemctl"):
-        for unit in ("marshal-inference.service", "leaves-inference.service"):
+        for unit in ("marshal-inference.service",):
             check = sp.run(
                 ["systemctl", "--user", "list-unit-files", unit, "--no-legend"],
                 capture_output=True, text=True, timeout=4, check=False,
@@ -494,8 +493,7 @@ class SystemAgent(BaseAgent):
 
         Restart strategy (first that works wins):
           1. systemctl --user restart marshal-inference
-          2. systemctl --user restart leaves-inference  (legacy unit name)
-          3. pkill llama-server  +  scripts/start-inference.sh &  (bare)
+          2. pkill llama-server  +  scripts/start-inference.sh &  (bare)
         """
         try:
             import hardware

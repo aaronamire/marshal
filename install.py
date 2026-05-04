@@ -346,7 +346,7 @@ class StepOS(InstallStep):
                 Remediation(
                     "Run Marshal in a Linux VM or container.",
                     ("docker compose up",),
-                    url="https://github.com/amirewontmiss/marshal#docker",
+                    url="https://github.com/aaronamire/marshal#docker",
                 ),
             )
         if not env.supports_landlock:
@@ -828,7 +828,7 @@ class StepSanityTest(InstallStep):
                 failure_kind=FailureKind.INTERNAL,
                 remediation=Remediation(
                     "A failing test is a bug — open a GitHub issue with the output above.",
-                    url="https://github.com/amirewontmiss/marshal/issues",
+                    url="https://github.com/aaronamire/marshal/issues",
                 ),
             )
         return ExecuteResult(True, "sanity tests passed",
