@@ -1,0 +1,34 @@
+#!/bin/bash
+# marshal-exit — end the current Marshal session.
+#
+# Equivalent of `hyprctl dispatch exit`: signals the marshal compositor
+# to terminate. start-session.sh waits on the compositor as its foreground
+# process, so the SIGTERM cascades into the cleanup trap which tears down
+# any standalone-mode children (agentd, llama-server, api). systemd-managed
+# units are left running, matching start-session.sh's existing semantics.
+#
+# Usage: marshal-exit [-f]
+#   -f   force kill (SIGKILL) — skips graceful shutdown
+set -e
+
+SIGNAL="TERM"
+if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--force" ]; then
+    SIGNAL="KILL"
+fi
+
+# Find the compositor process. The binary's comm name is "marshal-composi"
+# (Linux truncates comm to 15 chars), so match the exe path with pgrep -f.
+PIDS=$(pgrep -u "$USER" -f '(^|/)marshal-compositor($| )' 2>/dev/null || true)
+
+if [ -z "$PIDS" ]; then
+    echo "marshal-exit: no marshal-compositor process running" >&2
+    exit 1
+fi
+
+for pid in $PIDS; do
+    if kill -"$SIGNAL" "$pid" 2>/dev/null; then
+        echo "marshal-exit: sent SIG$SIGNAL to compositor (pid $pid)"
+    else
+        echo "marshal-exit: failed to signal pid $pid" >&2
+    fi
+done

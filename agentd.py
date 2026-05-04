@@ -1239,6 +1239,16 @@ async def _background_indexing(indexer) -> None:
     """
     loop = asyncio.get_event_loop()
 
+    # Hold off the initial scan for a bit. The cortex indexer embeds with
+    # sentence-transformers, which on a 2-core CPU pegs both cores for as
+    # long as it takes to walk $HOME — easily 10+ minutes on first run.
+    # If we start it the instant agentd boots, it competes with the API's
+    # IntentParser load (which uses the same model) and the user sees a
+    # 60-second-plus wait on their first intent. Letting the foreground
+    # services warm first costs nothing the user notices: indexing is
+    # eventual-consistency anyway.
+    await asyncio.sleep(90)
+
     # Initial full index
     try:
         log.info("starting initial index (background)")
@@ -1574,6 +1584,19 @@ async def _run_server() -> None:
     # of cgroup placement.
     _pool_proc = await _spawn_runner_pool()
 
+    # Warm the inference KV cache with the real intent-parser system prompt
+    # BEFORE binding the socket. If we bound the socket first and warmed in
+    # the background, the first L2 user request would race the warmup at
+    # llama.cpp's single slot — the user's prompt queues behind the warmup's
+    # ~60-180s prefill and total wall time can exceed the 180s read timeout,
+    # surfacing as the "inference server timed out" error reported on first
+    # boots. By gating socket creation on warmup we make the system strictly
+    # serial: callers see the socket appear only when the slot is free.
+    try:
+        await asyncio.wait_for(_warm_inference_kv_cache(), timeout=300.0)
+    except asyncio.TimeoutError:
+        log.warning("inference KV warmup exceeded 300s — proceeding without cache prime")
+
     server = await asyncio.start_unix_server(_handle_client, path=str(_SOCK_PATH))
     # Tighten socket perms before serving. Same-uid only, no group, no other.
     # Together with _check_peer_uid_allowed this gives belt-and-suspenders
@@ -1584,24 +1607,9 @@ async def _run_server() -> None:
         log.warning("failed to chmod socket to 0o600", extra={"error": str(e)})
     log.info("agentd listening", extra={"socket": str(_SOCK_PATH)})
 
-    # Schedule background indexing
+    # Schedule background indexing now that the socket is up.
     if _indexer is not None:
         asyncio.get_event_loop().create_task(_background_indexing(_indexer))
-
-    # Warm the inference KV cache with the REAL intent-parser system prompt
-    # so the first user request hits cache_prompt and skips the ~30s cold
-    # prefill on CPU.
-    #
-    # Awaited (with a 90s ceiling) rather than scheduled in the background so
-    # a user request submitted in the first second after agentd starts can
-    # never race the warmup at the single llama.cpp slot. If the inference
-    # server is unreachable or wedged, the timeout lets us fall through to
-    # serving anyway — agentd must never refuse connections because of an
-    # inference outage.
-    try:
-        await asyncio.wait_for(_warm_inference_kv_cache(), timeout=300.0)
-    except asyncio.TimeoutError:
-        log.warning("inference KV warmup exceeded 300s — proceeding without cache prime")
 
     try:
         async with server:
@@ -1630,11 +1638,18 @@ async def _run_server() -> None:
             _SOCK_PATH.unlink()
 
 
-if __name__ == "__main__":
-    # Ensure the project root is on sys.path so relative imports work when
-    # agentd.py is spawned as a subprocess from any working directory.
+def main() -> None:
+    """Entry point for `python -m agentd` and the `marshal-agentd` console script.
+
+    Ensures the project root is on sys.path so relative imports work when
+    agentd is spawned as a subprocess from any working directory.
+    """
     _project_root = str(pathlib.Path(__file__).parent.resolve())
     if _project_root not in sys.path:
         sys.path.insert(0, _project_root)
 
     asyncio.run(_run_server())
+
+
+if __name__ == "__main__":
+    main()

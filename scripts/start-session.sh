@@ -149,22 +149,37 @@ start_or_launch \
     "marshal-agentd.service" \
     "cd '$MARSHAL_ROOT' && exec '$PYTHON' agentd.py"
 
-echo "[marshal] waiting for agentd socket..."
+echo "[marshal] waiting for agentd socket (warming inference KV cache, may take 1-3 min on first boot)..."
 AGENTD_SOCK="$HOME/.marshal/agentd.sock"
-if ! timeout 30 bash -c 'until [ -S "'"$AGENTD_SOCK"'" ]; do sleep 0.1; done'; then
+# 360s ceiling: agentd primes the llama.cpp KV cache before binding the socket
+# so the first L2 user request never races the warmup. Cold prefill of the
+# ~2000-token system prompt on a CPU like Kaby Lake takes 60-180s; warm boots
+# (model still mlocked) are typically <10s.
+if ! timeout 360 bash -c 'until [ -S "'"$AGENTD_SOCK"'" ]; do sleep 0.5; done'; then
     echo "[marshal] ERROR: agentd socket $AGENTD_SOCK never appeared"
+    echo "[marshal] check $HOME/.marshal/logs/marshal-agentd.log (standalone) or journalctl --user -u marshal-agentd (systemd)"
     exit 1
 fi
 echo "[marshal] agentd ready"
 
 # ---------------------------------------------------------------------------
 # 3. API server (FastAPI on :8765)
+#
+# /v1/health is gated behind the FastAPI lifespan, which blocks until the
+# IntentParser singleton is fully warmed (sklearn pipeline + sentence-
+# transformers + RAG store). On a cold cache that pulls metadata from
+# huggingface.co and can run 30-90s; on a warm reboot it's ~10s. The 30s
+# budget the script previously used was too tight — first-run users got
+# "API server did not become healthy at ... within 30s" and exit 1 while
+# the server was actually still warming. 180s covers the slowest cold path
+# we've measured (network + tier=standard model). Override with
+# MARSHAL_API_BOOT_BUDGET=N for benchmarking.
 # ---------------------------------------------------------------------------
 start_or_launch \
     "marshal-api.service" \
     "cd '$MARSHAL_ROOT' && exec '$UVICORN' api.server:app --host 127.0.0.1 --port 8765"
 
-wait_for_url "http://127.0.0.1:8765/v1/health" 30 "API server"
+wait_for_url "http://127.0.0.1:8765/v1/health" "${MARSHAL_API_BOOT_BUDGET:-180}" "API server"
 
 # ---------------------------------------------------------------------------
 # 4. Wait for initial indexing (briefing needs data)
@@ -175,7 +190,20 @@ echo "[marshal] waiting for initial index..."
 INDEXED=0
 for i in $(seq 1 60); do
     STATUS=$(/usr/bin/curl -sf http://127.0.0.1:8765/v1/cortex/status 2>/dev/null || echo '{}')
-    TOTAL=$(echo "$STATUS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(s.get('count',0) for s in d.get('sources',{}).values()))" 2>/dev/null || echo "0")
+    # /v1/cortex/status returns one entry per registered adapter at the
+    # top level: {"file": {"count": N, "last_indexed": "..."}, "last_run": ...}
+    # Older versions wrapped these under a "sources" key — handle both shapes
+    # so this script works against API servers that haven't been restarted.
+    TOTAL=$(echo "$STATUS" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+sources = d.get("sources") if isinstance(d.get("sources"), dict) else d
+total = 0
+for k, v in sources.items():
+    if isinstance(v, dict) and isinstance(v.get("count"), int):
+        total += v["count"]
+print(total)
+' 2>/dev/null || echo "0")
     if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
         echo "[marshal] index ready ($TOTAL items)"
         INDEXED=1
@@ -212,7 +240,12 @@ for i in $(seq 1 100); do
         WAYLAND_DISPLAY="$(head -n1 "$WAYLAND_DISPLAY_FILE" | tr -d '[:space:]')"
         export WAYLAND_DISPLAY
         export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
-        export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-marshal}"
+        # Include "wlroots" so apps and portal backends that key off it
+        # (xdg-desktop-portal-wlr's UseIn matcher, electron/chromium screen
+        # share heuristics, mako, ...) treat us as a wlroots-family compositor.
+        # Convention: sway exports "sway:wlroots", Hyprland exports
+        # "Hyprland:wlroots" — we follow the same pattern.
+        export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-marshal:wlroots}"
         export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-marshal}"
         if command -v dbus-update-activation-environment >/dev/null 2>&1; then
             dbus-update-activation-environment --systemd \
@@ -223,6 +256,39 @@ for i in $(seq 1 100); do
                 || echo "[marshal] dbus-update-activation-environment failed (non-fatal)"
         else
             echo "[marshal] dbus-update-activation-environment not installed — D-Bus activated services may not see WAYLAND_DISPLAY"
+        fi
+
+        # If a desktop portal was already running (typically spawned by an
+        # earlier session — Hyprland on F1, KDE login, etc.), it cached the
+        # OLD WAYLAND_DISPLAY at activation time. Updating the dbus env now
+        # only affects FUTURE activations, so the running portal still
+        # routes screencasts to the wrong compositor — that's why OBS's
+        # screen-picker pops up on a different VT and the preview is black.
+        # Stop them so they're re-activated under Marshal's env on the
+        # next portal request.
+        for unit in \
+            xdg-desktop-portal-hyprland.service \
+            xdg-desktop-portal-wlr.service \
+            xdg-desktop-portal-gtk.service \
+            xdg-desktop-portal-gnome.service \
+            xdg-desktop-portal.service; do
+            if systemctl --user is-active "$unit" >/dev/null 2>&1; then
+                systemctl --user stop "$unit" 2>/dev/null || true
+            fi
+        done
+        # Also kill any non-systemd-managed portal procs as a belt-and-
+        # suspenders. They'll auto-respawn under Marshal's env on the
+        # next D-Bus screencast call.
+        pkill -u "$USER" -f xdg-desktop-portal-hyprland 2>/dev/null || true
+        pkill -u "$USER" -f xdg-desktop-portal-wlr 2>/dev/null || true
+        pkill -u "$USER" -f xdg-desktop-portal-gtk 2>/dev/null || true
+        pkill -u "$USER" -x xdg-desktop-portal 2>/dev/null || true
+
+        # Heads-up if the wlroots portal isn't installed — without it,
+        # screencast (OBS, Zoom screen-share, ...) can't capture Marshal.
+        if ! command -v /usr/lib/xdg-desktop-portal-wlr >/dev/null 2>&1 \
+                && ! [ -x /usr/libexec/xdg-desktop-portal-wlr ]; then
+            echo "[marshal] WARN: xdg-desktop-portal-wlr not installed — install it for OBS/Zoom screen capture (pacman -S xdg-desktop-portal-wlr)"
         fi
         break
     fi

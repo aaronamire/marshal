@@ -5,12 +5,12 @@ Requires=marshal-inference.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dev/marshal
-ExecStart=%h/dev/marshal/.os/bin/python3 -m agentd
+WorkingDirectory=__MARSHAL_ROOT__
+ExecStart=__MARSHAL_ROOT__/.os/bin/python3 __MARSHAL_ROOT__/agentd.py
 Restart=on-failure
 RestartSec=3
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/dev/marshal
+Environment=PYTHONPATH=__MARSHAL_ROOT__
 
 # Resource limits
 MemoryMax=1G

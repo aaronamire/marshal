@@ -1,19 +1,15 @@
 """
 Audio agent — PipeWire/PulseAudio volume and device control.
 
-Dispatch by action type:
-  QUERY  → routed by params["query_type"]:
-    "volume"      → get current volume level + mute state
-    "devices"     → list audio sinks/sources
-    "status"      → current default sink + volume + mute
-  WRITE  → routed by params["audio_action"]:
-    "set_volume"  → set volume to N% (params["level"])
-    "mute"        → mute default sink
-    "unmute"      → unmute default sink
-    "toggle_mute" → toggle mute on default sink
-    "set_sink"    → set default sink (params["sink"])
+Backed by `wpctl` (WirePlumber CLI) which ships with PipeWire and works
+unchanged against pipewire-pulse, so the same code covers PW-native and PA
+systems with no Python deps. Falls back to `pactl` if wpctl isn't on PATH.
 """
 from __future__ import annotations
+
+import re
+import shutil
+import subprocess
 
 from agents.base_agent import BaseAgent
 from errors import MarshalError, MarshalErrorCode
@@ -45,14 +41,17 @@ class AudioAgent(BaseAgent):
         query_type = params.get("query_type", "status")
         row_id = self._audit_start(action_id, "QUERY", params)
         try:
-            pulse = self._get_pulsectl()
-            if query_type == "volume":
-                result = self._get_volume(pulse)
-            elif query_type == "devices":
-                result = self._list_devices(pulse)
+            vol, muted = _wpctl_get_volume()
+            if query_type == "devices":
+                result = {"sinks": _wpctl_list_sinks()}
+            elif query_type == "volume":
+                result = {"volume_percent": vol, "muted": muted}
             else:  # "status" or default
-                result = self._get_status(pulse)
-            pulse.close()
+                result = {
+                    "volume_percent": vol,
+                    "muted": muted,
+                    "sinks": _wpctl_list_sinks(),
+                }
             self._audit_end(row_id, result)
             return result
         except MarshalError:
@@ -74,42 +73,6 @@ class AudioAgent(BaseAgent):
                 }
         return {"error": "No default sink found"}
 
-    def _list_devices(self, pulse) -> dict:
-        default_sink = pulse.server_info().default_sink_name
-        sinks = []
-        for s in pulse.sink_list():
-            sinks.append({
-                "name": s.name,
-                "description": s.description,
-                "volume_percent": round(pulse.volume_get_all_chans(s) * 100),
-                "muted": bool(s.mute),
-                "default": s.name == default_sink,
-            })
-        sources = []
-        for s in pulse.source_list():
-            if ".monitor" not in s.name:
-                sources.append({
-                    "name": s.name,
-                    "description": s.description,
-                    "volume_percent": round(pulse.volume_get_all_chans(s) * 100),
-                    "muted": bool(s.mute),
-                })
-        return {"sinks": sinks, "sources": sources}
-
-    def _get_status(self, pulse) -> dict:
-        info = pulse.server_info()
-        sink_name = info.default_sink_name
-        for s in pulse.sink_list():
-            if s.name == sink_name:
-                return {
-                    "default_sink": s.description,
-                    "sink_name": s.name,
-                    "volume_percent": round(pulse.volume_get_all_chans(s) * 100),
-                    "muted": bool(s.mute),
-                    "server": info.server_name,
-                }
-        return {"default_sink": sink_name, "error": "Sink details unavailable"}
-
     # ------------------------------------------------------------------
     # WRITE handlers
     # ------------------------------------------------------------------
@@ -118,23 +81,23 @@ class AudioAgent(BaseAgent):
         audio_action = params.get("audio_action", "set_volume")
         row_id = self._audit_start(action_id, "WRITE", params)
         try:
-            pulse = self._get_pulsectl()
             if audio_action == "set_volume":
-                result = self._set_volume(pulse, params)
+                result = _wpctl_set_volume(params.get("level"))
             elif audio_action == "mute":
-                result = self._set_mute(pulse, True)
+                _wpctl_set_mute("1")
+                result = {"action": "mute", "muted": True}
             elif audio_action == "unmute":
-                result = self._set_mute(pulse, False)
+                _wpctl_set_mute("0")
+                result = {"action": "unmute", "muted": False}
             elif audio_action == "toggle_mute":
-                result = self._toggle_mute(pulse)
-            elif audio_action == "set_sink":
-                result = self._set_default_sink(pulse, params)
+                _wpctl_set_mute("toggle")
+                _, muted = _wpctl_get_volume()
+                result = {"action": "toggle_mute", "muted": muted}
             else:
                 raise MarshalError(
                     MarshalErrorCode.AGENT_NOT_AVAILABLE,
                     detail=f"Unknown audio_action: {audio_action}",
                 )
-            pulse.close()
             self._audit_end(row_id, result)
             return result
         except MarshalError:
@@ -144,83 +107,133 @@ class AudioAgent(BaseAgent):
             self._audit_end(row_id, error=err)
             raise err
 
-    def _set_volume(self, pulse, params: dict) -> dict:
-        level = params.get("level")
-        if level is None:
-            raise MarshalError(
-                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
-                detail="No volume level provided",
-            )
-        level = max(0, min(150, int(level)))  # clamp 0-150%
-        sink = self._get_default_sink(pulse)
-        pulse.volume_set_all_chans(sink, level / 100.0)
-        return {
-            "action": "set_volume",
-            "volume_percent": level,
-            "sink": sink.description,
-        }
+# ----------------------------------------------------------------------
+# wpctl helpers (module-level so the agent stays stateless)
+# ----------------------------------------------------------------------
 
-    def _set_mute(self, pulse, mute: bool) -> dict:
-        sink = self._get_default_sink(pulse)
-        pulse.mute(sink, mute)
-        return {
-            "action": "mute" if mute else "unmute",
-            "muted": mute,
-            "sink": sink.description,
-        }
+_WPCTL_DEFAULT_SINK = "@DEFAULT_AUDIO_SINK@"
 
-    def _toggle_mute(self, pulse) -> dict:
-        sink = self._get_default_sink(pulse)
-        new_mute = not bool(sink.mute)
-        pulse.mute(sink, new_mute)
-        return {
-            "action": "toggle_mute",
-            "muted": new_mute,
-            "sink": sink.description,
-        }
 
-    def _set_default_sink(self, pulse, params: dict) -> dict:
-        target = params.get("sink", "")
-        if not target:
-            raise MarshalError(
-                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
-                detail="No sink name provided",
-            )
-        # Match by name or description (case-insensitive substring)
-        target_lower = target.lower()
-        for s in pulse.sink_list():
-            if target_lower in s.name.lower() or target_lower in s.description.lower():
-                pulse.default_set(s)
-                return {
-                    "action": "set_sink",
-                    "sink_name": s.name,
-                    "sink_description": s.description,
-                }
+def _which_audio_cli() -> str:
+    if shutil.which("wpctl"):
+        return "wpctl"
+    if shutil.which("pactl"):
+        return "pactl"
+    raise MarshalError(
+        MarshalErrorCode.AGENT_NOT_AVAILABLE,
+        detail="Neither wpctl nor pactl found on PATH",
+    )
+
+
+def _run(argv: list[str]) -> str:
+    try:
+        out = subprocess.run(
+            argv, capture_output=True, text=True, timeout=5, check=False
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         raise MarshalError(
             MarshalErrorCode.INTERNAL_ERROR,
-            detail=f"No sink matching '{target}' found",
+            detail=f"{argv[0]} failed: {e}",
+            cause=e,
         )
+    if out.returncode != 0:
+        raise MarshalError(
+            MarshalErrorCode.INTERNAL_ERROR,
+            detail=f"{' '.join(argv)} exited {out.returncode}: "
+                   f"{out.stderr.strip() or out.stdout.strip()}",
+        )
+    return out.stdout
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
-    def _get_pulsectl(self):
+def _wpctl_get_volume() -> tuple[int, bool]:
+    cli = _which_audio_cli()
+    if cli == "wpctl":
+        # "Volume: 0.42 [MUTED]"
+        s = _run(["wpctl", "get-volume", _WPCTL_DEFAULT_SINK])
+        m = re.search(r"Volume:\s*([0-9.]+)", s)
+        if not m:
+            raise MarshalError(MarshalErrorCode.INTERNAL_ERROR,
+                               detail=f"unparseable wpctl output: {s!r}")
+        pct = round(float(m.group(1)) * 100)
+        muted = "MUTED" in s
+        return pct, muted
+    # pactl fallback
+    s = _run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"])
+    m = re.search(r"(\d+)%", s)
+    pct = int(m.group(1)) if m else 0
+    s2 = _run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"]).strip()
+    muted = s2.endswith("yes")
+    return pct, muted
+
+
+def _wpctl_set_volume(level) -> dict:
+    if level is None:
+        raise MarshalError(
+            MarshalErrorCode.INFERENCE_BAD_RESPONSE,
+            detail="No volume level provided",
+        )
+    cli = _which_audio_cli()
+    # Relative steps from compositor hotkeys / "volume up/down" intents
+    if isinstance(level, str) and level.lower() in ("up", "down"):
+        delta = "5%+" if level.lower() == "up" else "5%-"
+        # Always unmute on adjust — matches what laptop volume keys do
+        if cli == "wpctl":
+            _run(["wpctl", "set-mute", _WPCTL_DEFAULT_SINK, "0"])
+            _run(["wpctl", "set-volume", "-l", "1.0",
+                  _WPCTL_DEFAULT_SINK, delta])
+        else:
+            _run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"])
+            _run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", delta])
+    else:
         try:
-            import pulsectl
-        except ImportError:
+            pct = max(0, min(150, int(level)))
+        except (TypeError, ValueError):
             raise MarshalError(
-                MarshalErrorCode.AGENT_NOT_AVAILABLE,
-                detail="pulsectl not installed (pip install pulsectl)",
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
+                detail=f"Bad volume level {level!r}",
             )
-        return pulsectl.Pulse("marshal")
+        if cli == "wpctl":
+            _run(["wpctl", "set-mute", _WPCTL_DEFAULT_SINK, "0"])
+            _run(["wpctl", "set-volume", "-l", "1.0",
+                  _WPCTL_DEFAULT_SINK, f"{pct}%"])
+        else:
+            _run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"])
+            _run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{pct}%"])
+    pct_now, muted = _wpctl_get_volume()
+    return {"action": "set_volume", "volume_percent": pct_now, "muted": muted}
 
-    def _get_default_sink(self, pulse):
-        sink_name = pulse.server_info().default_sink_name
-        for s in pulse.sink_list():
-            if s.name == sink_name:
-                return s
-        raise MarshalError(
-            MarshalErrorCode.INTERNAL_ERROR,
-            detail="No default audio sink found",
-        )
+
+def _wpctl_set_mute(state: str) -> None:
+    """state: '0' = unmute, '1' = mute, 'toggle' = flip."""
+    cli = _which_audio_cli()
+    if cli == "wpctl":
+        _run(["wpctl", "set-mute", _WPCTL_DEFAULT_SINK, state])
+    else:
+        pa_state = "toggle" if state == "toggle" else state
+        _run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", pa_state])
+
+
+def _wpctl_list_sinks() -> list[dict]:
+    """Best-effort sink listing — wpctl status output is human-readable, so
+    we just return the raw block; the agent's QUERY consumers don't iterate."""
+    try:
+        s = _run(["wpctl", "status"])
+    except MarshalError:
+        return []
+    # Pull the "Sinks:" section from wpctl status
+    sinks: list[dict] = []
+    in_sinks = False
+    for line in s.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Sinks:"):
+            in_sinks = True
+            continue
+        if in_sinks:
+            if not stripped or stripped.endswith(":"):
+                break
+            m = re.match(r"\*?\s*(\d+)\.\s+(.+?)\s*\[", stripped)
+            if m:
+                sinks.append({"id": int(m.group(1)),
+                              "description": m.group(2).strip(),
+                              "default": stripped.lstrip().startswith("*")})
+    return sinks

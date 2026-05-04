@@ -111,6 +111,23 @@ class IntentParser:
         # On match with is_implemented=True: build GoalSpec directly, skip L1+L2.
         l0 = layer0_match(user_text)
         if l0.matched:
+            # Note: even when inference is user-disabled, L0 matches still
+            # proceed — they don't need the LLM and the user expects regex-
+            # mapped builtins (volume up, switch fast, inference on, ...) to
+            # keep working.
+            pass
+        else:
+            # Inference user-disabled? Stop now with the friendly prompt
+            # instead of fighting the LLM client and surfacing a cryptic
+            # connection error.
+            from pathlib import Path as _Path
+            if (_Path.home() / ".marshal" / "inference-disabled").exists():
+                raise MarshalError(
+                    MarshalErrorCode.INFERENCE_DISABLED,
+                    detail="user toggled inference off",
+                )
+
+        if l0.matched:
             if not l0.is_implemented:
                 raise MarshalError(
                     MarshalErrorCode.NOT_IMPLEMENTED,

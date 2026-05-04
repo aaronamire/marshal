@@ -18,6 +18,7 @@ libcurl = dependency('libcurl')
 cjson = dependency('libcjson')
 drm = dependency('libdrm')
 jpeg = dependency('libjpeg')
+rsvg = dependency('librsvg-2.0', required : false)
 xcb = dependency('xcb')
 xcb_icccm = dependency('xcb-icccm')
 alsa = dependency('alsa')
@@ -69,6 +70,8 @@ executable('marshal-compositor',
     libsystemd,
     math,
     threads,
+    rsvg,
   ],
+  c_args : rsvg.found() ? ['-DMARSHAL_HAS_RSVG=1'] : [],
   install : true,
 )

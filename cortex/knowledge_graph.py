@@ -99,7 +99,12 @@ class KnowledgeGraph:
         if self._table is None:
             import lancedb
             db = lancedb.connect(str(self._lance_path))
-            table_names = db.table_names() if hasattr(db, 'table_names') else list(db)
+            # lancedb's list_tables() returns a ListTablesResponse wrapper
+            # whose names live on .tables; bare membership tests against the
+            # wrapper silently return False. Unwrap before checking.
+            table_names = db.list_tables() if hasattr(db, 'list_tables') else list(db)
+            if hasattr(table_names, "tables"):
+                table_names = table_names.tables
             if _LANCE_TABLE in table_names:
                 self._table = db.open_table(_LANCE_TABLE)
             else:

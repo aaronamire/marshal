@@ -172,4 +172,11 @@ void feed_cancel(struct marshal_feed *feed);
  * wl_display_terminate(). Safe from any thread. */
 void feed_request_exit(struct marshal_feed *feed);
 
+/* Synthesize a static help card listing the built-in compositor commands
+ * and the canonical demo intents. No HTTP, no LLM round-trip — content is
+ * compiled into the binary so this works even if the API is down. The
+ * card is inserted at the end of feed->intents with state DONE and a
+ * wakeup byte triggers a repaint. Safe to call from the input thread. */
+void feed_show_help(struct marshal_feed *feed);
+
 #endif

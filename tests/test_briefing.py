@@ -118,20 +118,32 @@ class TestBriefingWithData:
         assert any("dirA" in d for d in dirs)
         assert any("dirB" in d for d in dirs)
 
-    def test_collapses_small_groups_to_other(self, db, bg):
+    def test_single_file_directory_is_named_not_collapsed(self, db, bg):
+        """A directory with one file gets its own named group instead of
+        being lumped into "other". This matters for the demo: a sparse
+        briefing ("one file changed in the last 12 hours") needs to point
+        at WHERE that file was — opaque "other (1)" was the bug we hit.
+
+        _MIN_GROUP_SIZE was lowered from 2 to 1 specifically so single-
+        file briefings render meaningfully. If you ever raise it again,
+        update the renderer in api/server.py:_format_result_text(briefing)
+        to surface item titles even from the "other" bucket."""
         now = datetime.now(timezone.utc)
         # 5 files in one dir (big group)
         for i in range(5):
             ts = (now - timedelta(hours=1, minutes=i)).isoformat()
             _insert_knowledge_item(db, f"/home/user/main/f{i}.py", f"f{i}.py", ts)
-        # 1 file in another dir (too small → "other")
+        # 1 file in another dir — should still get a named group
         ts = (now - timedelta(hours=1)).isoformat()
         _insert_knowledge_item(db, "/home/user/misc/lone.txt", "lone.txt", ts)
 
         briefing = bg.generate(hours=12)
         groups = briefing["sections"][0]["groups"]
         group_dirs = {g["directory"] for g in groups}
-        assert "other" in group_dirs
+        assert any("misc" in d for d in group_dirs), (
+            f"single-file directory should be named, got {group_dirs}"
+        )
+        assert "other" not in group_dirs
 
     def test_headline_single_source(self, db, bg):
         self._populate(db)

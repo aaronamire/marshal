@@ -109,17 +109,25 @@ if [[ $WITH_COMPOSITOR -eq 1 ]]; then
     # Arch ships versioned wlroots packages (wlroots0.18, wlroots0.19, ...).
     # The compositor pins wlroots-0.18 in compositor/meson.build, so install
     # that exact version. Bumping the pin requires editing meson.build too.
+    #
+    # libtsm + pam are needed by the in-tree terminal and lockscreen
+    # (terminal/, locker/) which are built alongside the compositor.
+    # libxkbcommon is pulled in transitively by wlroots but the headers are
+    # needed for client-side terminal/locker compilation.
     SYS_PKGS_PACMAN+=(meson ninja wlroots0.18 wayland wayland-protocols
                       cairo pango libcurl-gnutls cjson libdrm libjpeg-turbo
-                      libxcb xcb-util-wm alsa-lib systemd-libs xorg-xwayland)
+                      libxcb xcb-util-wm alsa-lib systemd-libs xorg-xwayland
+                      libxkbcommon libtsm pam)
     SYS_PKGS_APT+=(meson ninja-build libwlroots-dev libwayland-dev
                    wayland-protocols libcairo2-dev libpango1.0-dev libcurl4-openssl-dev
                    libcjson-dev libdrm-dev libjpeg-dev libxcb1-dev libxcb-icccm4-dev
-                   libasound2-dev libsystemd-dev xwayland)
+                   libasound2-dev libsystemd-dev xwayland
+                   libxkbcommon-dev libtsm-dev libpam0g-dev)
     SYS_PKGS_DNF+=(meson ninja-build wlroots-devel wayland-devel
                    wayland-protocols-devel cairo-devel pango-devel libcurl-devel
                    cjson-devel libdrm-devel libjpeg-turbo-devel libxcb-devel
-                   xcb-util-wm-devel alsa-lib-devel systemd-devel xorg-x11-server-Xwayland)
+                   xcb-util-wm-devel alsa-lib-devel systemd-devel xorg-x11-server-Xwayland
+                   libxkbcommon-devel libtsm-devel pam-devel)
 fi
 
 log "installing system packages..."
@@ -132,8 +140,12 @@ esac
 ok "system deps installed"
 
 # --- llama.cpp build --------------------------------------------------------
+# Pinned llama.cpp revision. This is the version Marshal is tested against;
+# bumping it requires re-running tests/eval_suite.py since prompt-cache and
+# GBNF parser behavior are revision-sensitive. Override with
+# LLAMA_CPP_COMMIT=<sha> to test a different revision.
 LLAMA_DIR="${LLAMA_CPP_DIR:-$HOME/dev/llama.cpp}"
-LLAMA_PIN="${LLAMA_CPP_COMMIT:-master}"  # TODO: pin a specific commit hash for reproducibility
+LLAMA_PIN="${LLAMA_CPP_COMMIT:-f5ddcd1696eca5069dc7915f4d4c03c9a709afea}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 
 if [[ ! -d "$LLAMA_DIR/.git" ]]; then
@@ -180,15 +192,31 @@ else
 fi
 
 # --- compositor build (optional) --------------------------------------------
-if [[ $WITH_COMPOSITOR -eq 1 ]]; then
-    log "building Wayland compositor..."
-    pushd "$MARSHAL_ROOT/compositor" >/dev/null
+# When --with-compositor is set, also build the in-tree clients
+# (terminal, notifyd, locker). They share the wlroots/Wayland deps already
+# installed above. Skipping any one of them is fine — we log the failure and
+# continue so a missing libtsm doesn't block the compositor itself.
+build_meson_subproject() {
+    local name="$1"     # display name
+    local subdir="$2"   # repo-relative dir
+    log "building $name..."
+    pushd "$MARSHAL_ROOT/$subdir" >/dev/null
     if [[ ! -d builddir ]]; then
-        meson setup builddir
+        meson setup builddir || { warn "$name: meson setup failed (skipping)"; popd >/dev/null; return 1; }
     fi
-    meson compile -C builddir
+    if meson compile -C builddir; then
+        ok "$name built — $MARSHAL_ROOT/$subdir/builddir"
+    else
+        warn "$name: build failed (skipping)"
+    fi
     popd >/dev/null
-    ok "compositor built — $MARSHAL_ROOT/compositor/builddir/marshal-compositor"
+}
+
+if [[ $WITH_COMPOSITOR -eq 1 ]]; then
+    build_meson_subproject "Wayland compositor" "compositor"
+    build_meson_subproject "terminal"            "terminal"
+    build_meson_subproject "notification daemon" "notifyd"
+    build_meson_subproject "session locker"      "locker"
 fi
 
 # --- systemd units (optional) -----------------------------------------------

@@ -92,9 +92,17 @@ class RagStore:
         tokenized = [t.lower().split() for t in texts]
         bm25 = BM25Okapi(tokenized)
 
-        # Build or open LanceDB table
+        # Build or open LanceDB table.
+        # list_tables() returns a ListTablesResponse (lancedb >=0.x); the
+        # actual list of names is on .tables. Membership tests on the bare
+        # response object always evaluate False — that's the trap that
+        # silently caused "table already exists" failures when the legacy
+        # table_names() call was naively swapped for list_tables().
         db = lancedb.connect(str(_DB_PATH))
-        if rebuild or _TABLE_NAME not in db.table_names():
+        existing_tables = db.list_tables()
+        if hasattr(existing_tables, "tables"):
+            existing_tables = existing_tables.tables
+        if rebuild or _TABLE_NAME not in existing_tables:
             # Load model once — reuse for both building index and later retrieval
             model = cls._get_or_load_model()
             embeddings = model.encode(texts, show_progress_bar=False).tolist()
@@ -108,7 +116,7 @@ class RagStore:
                 }
                 for i, (ex, emb) in enumerate(zip(examples, embeddings))
             ]
-            if _TABLE_NAME in db.table_names():
+            if _TABLE_NAME in existing_tables:
                 db.drop_table(_TABLE_NAME)
             table = db.create_table(_TABLE_NAME, data=data)
         else:

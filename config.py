@@ -83,7 +83,7 @@ MARSHAL_WARNING_COLOR = "#FFDC00"
 MARSHAL_DIM_COLOR = "#AAAAAA"
 
 APP_NAME = "Marshal"
-APP_VERSION = "0.3.0-phase2"
+APP_VERSION = "0.4.0"
 
 # ---------------------------------------------------------------------------
 # Authorized path roots (relative to home — expanded at runtime)

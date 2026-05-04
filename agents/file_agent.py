@@ -10,10 +10,7 @@ Security requirements (non-negotiable):
 """
 from __future__ import annotations
 
-import fnmatch
-import os
 import shutil
-import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -75,15 +72,24 @@ class FileAgent(BaseAgent):
         path: str,
         pattern: str = "*",
         recursive: bool = False,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        limit: Optional[int] = None,
         **_: Any,
     ) -> dict:
         resolved = self._authorize(path)
         row_id = self._audit_start(
             action_id, "QUERY",
-            {"path": path, "pattern": pattern, "recursive": recursive},
+            {
+                "path": path, "pattern": pattern, "recursive": recursive,
+                "sort_by": sort_by, "sort_order": sort_order, "limit": limit,
+            },
         )
         try:
-            results = self._do_list(resolved, pattern, recursive)
+            results = self._do_list(
+                resolved, pattern, recursive,
+                sort_by=sort_by, sort_order=sort_order, limit=limit,
+            )
             result = {"count": len(results), "files": results, "path": str(resolved)}
             self._audit_end(row_id, result)
             return result
@@ -511,7 +517,15 @@ class FileAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _do_list(self, directory: Path, pattern: str, recursive: bool) -> list[dict]:
+    def _do_list(
+        self,
+        directory: Path,
+        pattern: str,
+        recursive: bool,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        limit: Optional[int] = None,
+    ) -> list[dict]:
         if not directory.exists():
             raise MarshalError(MarshalErrorCode.PATH_DOES_NOT_EXIST, detail=str(directory))
         if not directory.is_dir():
@@ -520,12 +534,15 @@ class FileAgent(BaseAgent):
                 detail=f"{directory} is not a directory",
             )
 
-        results = []
+        # Walk the whole match set first, then sort/limit. We still cap raw
+        # collection at MAX_LIST_RESULTS so a recursive=true on /home can't
+        # OOM us — but we only stop early when sort_by=="name" and order
+        # ascending, since that's the one case where insertion order is
+        # already stable. Any other sort needs the full set to be correct.
+        results: list[dict] = []
         glob_fn = directory.rglob if recursive else directory.glob
         try:
             for p in glob_fn(pattern):
-                if len(results) >= MAX_LIST_RESULTS:
-                    break
                 try:
                     stat = p.stat()
                     results.append({
@@ -537,9 +554,20 @@ class FileAgent(BaseAgent):
                     })
                 except (PermissionError, OSError):
                     continue
+                if len(results) >= MAX_LIST_RESULTS:
+                    break
         except PermissionError as e:
             raise MarshalError(MarshalErrorCode.PERMISSION_DENIED, detail=str(e), cause=e)
 
-        return sorted(results, key=lambda x: x["name"])
+        key_funcs = {
+            "name":  lambda x: x["name"].lower(),
+            "mtime": lambda x: x["mtime"],
+            "size":  lambda x: x["size_bytes"],
+        }
+        key_fn = key_funcs.get(sort_by, key_funcs["name"])
+        results.sort(key=key_fn, reverse=(sort_order == "desc"))
+
+        effective_limit = limit if (limit is not None and limit > 0) else MAX_LIST_RESULTS
+        return results[:effective_limit]
 
     # _audit_start / _audit_end inherited from BaseAgent

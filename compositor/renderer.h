@@ -40,6 +40,26 @@ struct card_text_sel {
 	int focus;              /* byte offset of selection end */
 };
 
+/* Running-app indicator shown in the bottom bar. Compositor populates
+ * `apps[0..app_count-1]` each frame from server->toplevels. Renderer paints
+ * the resolved B/W icon (loaded from /usr/share/icons + desaturated, cached
+ * by icon name) per entry, falling back to a monogram only when no icon
+ * file is found. */
+#define MARSHAL_MAX_BAR_APPS 8
+struct marshal_bar_app {
+	char label[64];      /* "Google", "Firefox", "Terminal" */
+	char icon_name[96];  /* freedesktop icon name, e.g. "firefox" */
+	char glyph[8];       /* UTF-8 monogram fallback, e.g. "G" */
+	bool focused;        /* render with stronger contrast when focused */
+	int  hit_x, hit_y, hit_w, hit_h;  /* set by renderer for click tests */
+};
+
+#define MARSHAL_ICON_CACHE_MAX 32
+struct marshal_icon_cache_entry {
+	char name[96];
+	cairo_surface_t *surface;  /* B/W ARGB32, NULL = lookup failed */
+};
+
 struct marshal_renderer {
 	int width;
 	int height;
@@ -89,11 +109,29 @@ struct marshal_renderer {
 
 	int  dropdown_x, dropdown_y, dropdown_w, dropdown_h;
 
+	/* Quick-settings hit rects (set when dropdown is drawn). All -1 if
+	 * the corresponding section is not rendered. Click dispatch in
+	 * cursor_button_handler tests these to toggle WiFi/BT/mute or set
+	 * volume by clicking on the bar. */
+	int  qs_wifi_x,   qs_wifi_y,   qs_wifi_w,   qs_wifi_h;
+	int  qs_bt_x,     qs_bt_y,     qs_bt_w,     qs_bt_h;
+	int  qs_vol_x,    qs_vol_y,    qs_vol_w,    qs_vol_h;
+
 	int  history_icon_x, history_icon_y;    /* top-left of icon zone */
 	int  history_icon_w, history_icon_h;
 
 	int  input_field_right_x;   /* right boundary of the input field */
 	int  status_zone_left_x;    /* left edge of status indicator zone */
+
+	/* Running-app indicators. Compositor sets app_count + apps[] each
+	 * frame; renderer paints icons + writes back hit rects. */
+	struct marshal_bar_app apps[MARSHAL_MAX_BAR_APPS];
+	int                    app_count;
+
+	/* Icon cache: keyed by icon_name. Surfaces stay alive for the
+	 * renderer's lifetime; entries are evicted FIFO when full. */
+	struct marshal_icon_cache_entry icon_cache[MARSHAL_ICON_CACHE_MAX];
+	int icon_cache_count;
 
 	/* Card text selection */
 	struct card_text_hit card_hits[200]; /* matches MAX_INTENTS */

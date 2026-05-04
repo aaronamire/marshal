@@ -913,6 +913,9 @@ def cmd_help() -> None:
         "  [white]model detect[/white]              — re-probe hardware and re-select tier\n"
         "  [white]model <tier>[/white]              — force a tier (tiny|standard|pro|max)\n"
         "  [white]model download <tier>[/white]    — download the GGUF for a tier\n"
+        "  [white]switch <tier>[/white]             — alias for 'model <tier>' (also: fast|best)\n"
+        "  [white]inference on / off / status[/white] — control the local LLM server\n"
+        "  [white]marshal-exit[/white]              — exit Marshal entirely (terminal-only)\n"
         "  [white]help[/white]                      — show this help\n"
         "  [white]quit[/white] / [white]exit[/white]                — exit\n\n"
         "[bold]Examples:[/bold]\n"
@@ -1411,7 +1414,7 @@ def repl() -> None:
         if lower in ("quit", "exit", "q"):
             console.print("Goodbye.")
             break
-        elif lower in ("help", "?"):
+        elif lower in ("help", "?", "commands"):
             cmd_help()
         elif lower in ("history", "hist"):
             cmd_history()
@@ -1429,6 +1432,12 @@ def repl() -> None:
             cmd_model("")
         elif lower.startswith("model "):
             cmd_model(raw[6:].strip())
+        elif lower.startswith("switch "):
+            # Alias: 'switch <tier>' === 'model <tier>'. Same handler — same
+            # tier.json write — but exposed under the verb users actually
+            # reach for ("switch to fast" reads more naturally than
+            # "model fast").
+            cmd_model(raw[7:].strip())
         elif lower in ("briefing", "morning"):
             cmd_briefing()
         elif lower == "verbose":

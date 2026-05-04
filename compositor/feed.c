@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 struct curl_buf {
@@ -352,6 +353,99 @@ void feed_request_exit(struct marshal_feed *feed) {
 	(void)write(feed->wakeup_pipe[1], &byte, 1);
 }
 
+/* ── Static help text ──
+ *
+ * Compiled into the binary so `help` works without the API server. Kept
+ * under MarshalIntent.result_summary's 64 KB cap with comfortable margin.
+ * Group order matches the README's demo table; one-liners describe what
+ * each shortcut does, not how it's implemented. */
+static const char HELP_TEXT[] =
+"Marshal — built-in commands\n"
+"\n"
+"Compositor shortcuts (handled directly, no LLM):\n"
+"  help, ?, commands       — show this card\n"
+"  history, hist           — reload the past-intents feed\n"
+"  exit, quit, :q          — leave the compositor\n"
+"  files, file manager     — list ~ by mtime (skip the LLM)\n"
+"  processes, ps           — process listing (skip the LLM)\n"
+"  task manager            — same as 'processes'\n"
+"  find <query>            — local cortex semantic search\n"
+"  watch <pattern> on <p>  — register a persistent filesystem watcher\n"
+"\n"
+"Intents (Layer 0 regex, sub-millisecond):\n"
+"  briefing                — recent-changes briefing across indexed sources\n"
+"  cpu, ram, uptime        — system stats via psutil\n"
+"  volume up, volume down  — audio control via PipeWire/PulseAudio\n"
+"  mute, unmute            — toggle output mute\n"
+"  switch <tier>           — change active model: fast|tiny|standard|pro|max|best\n"
+"                            (auto-restarts the inference server)\n"
+"  inference on / off      — start or stop the local LLM server\n"
+"  inference status        — report whether llama-server is running\n"
+"  launch <app>            — spawn an XDG-installed application\n"
+"  kill <name|pid>         — terminate a process by name or pid\n"
+"  summarize my downloads  — list ~/Downloads sorted by mtime, newest first\n"
+"  list ~/<path>           — list a directory\n"
+"  find *.pdf in ~/<path>  — glob search\n"
+"\n"
+"LLM-routed intents (full pipeline: regex -> classifier -> Qwen2.5-3B):\n"
+"  search for <topic>      — DuckDuckGo web search via WebAgent\n"
+"  read ~/<file>           — file contents (capped at 64 KiB)\n"
+"  delete ~/<file>         — destructive; requires Y/N confirmation\n"
+"  move ~/<src> to ~/<d>   — destructive; requires Y/N\n"
+"  any natural-language    — falls through to GBNF-constrained planner\n"
+"\n"
+"Card actions (when a card is selected):\n"
+"  Y / N                   — confirm or cancel a destructive plan\n"
+"  Enter                   — expand the selected card\n"
+"  R                       — replay a history card (destructive replays refused)\n"
+"  Esc                     — close overlays / clear selection\n";
+
+void feed_show_help(struct marshal_feed *feed) {
+	if (!feed) return;
+
+	pthread_mutex_lock(&feed->mutex);
+
+	/* Drop the oldest card if we're at the cap, same eviction policy
+	 * as feed_search/feed_submit. */
+	if (feed->count >= MAX_INTENTS) {
+		memmove(&feed->intents[0], &feed->intents[1],
+			(MAX_INTENTS - 1) * sizeof(MarshalIntent));
+		feed->count = MAX_INTENTS - 1;
+	}
+
+	MarshalIntent *intent = &feed->intents[feed->count];
+	memset(intent, 0, sizeof(*intent));
+
+	snprintf(intent->intent_id, sizeof(intent->intent_id),
+		"help-%ld", (long)time(NULL));
+	snprintf(intent->natural_text, sizeof(intent->natural_text), "help");
+	snprintf(intent->action_chain, sizeof(intent->action_chain),
+		"built-in help");
+
+	/* HELP_TEXT is a compile-time literal; strlen is bounded by the
+	 * source. result_summary is 64 KiB — clamp on the off-chance the
+	 * text grows past that. */
+	size_t hlen = strlen(HELP_TEXT);
+	if (hlen >= sizeof(intent->result_summary))
+		hlen = sizeof(intent->result_summary) - 1;
+	memcpy(intent->result_summary, HELP_TEXT, hlen);
+	intent->result_summary[hlen] = '\0';
+
+	intent->state = CARD_STATE_DONE;
+	intent->duration_ms = 0.0;
+
+	/* Same entry animation as a normal completed intent. */
+	spring_init(&intent->anim_y, 12.0f, 0.0f);
+	spring_init(&intent->anim_opacity, 0.0f, 1.0f);
+
+	feed->count++;
+	pthread_mutex_unlock(&feed->mutex);
+
+	/* Wake the main thread so the card paints immediately. */
+	char byte = 'u';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
+}
+
 void feed_load_history(struct marshal_feed *feed) {
 	CURL *curl = curl_easy_init();
 	if (!curl) return;
@@ -383,9 +477,39 @@ void feed_load_history(struct marshal_feed *feed) {
 
 	if (cJSON_IsArray(intents_arr)) {
 		pthread_mutex_lock(&feed->mutex);
-		const cJSON *item;
-		cJSON_ArrayForEach(item, intents_arr) {
-			if (feed->count >= MAX_INTENTS) break;
+
+		/* Drop any previously-loaded HISTORY cards before re-populating —
+		 * otherwise typing `history` a second time stacks duplicate
+		 * copies of every past intent. We intentionally KEEP non-history
+		 * cards (in-flight pending/executing/done intents from this
+		 * session) so the user doesn't lose their live work. */
+		int kept = 0;
+		for (int i = 0; i < feed->count; i++) {
+			if (feed->intents[i].state == CARD_STATE_HISTORY) continue;
+			if (kept != i)
+				feed->intents[kept] = feed->intents[i];
+			kept++;
+		}
+		feed->count = kept;
+
+		/* /v1/history returns rows in `created_at DESC` order (newest
+		 * first). The renderer draws `feed->intents[count-1]` at the
+		 * visible bottom of the feed — the slot the user reads as
+		 * "most recent" — and walks upward. If we appended forward,
+		 * the OLDEST item would land at count-1 and dominate the view
+		 * while genuinely recent activity scrolled off the top, making
+		 * `history` look like a dump of random ancient intents.
+		 *
+		 * Append in reverse so the newest row ends up at count-1.
+		 * If the API returned more rows than we have free slots, drop
+		 * the OLDEST (truncate the tail of the response window) rather
+		 * than the newest. */
+		const int n = cJSON_GetArraySize(intents_arr);
+		const int slots = MAX_INTENTS - feed->count;
+		const int take = n < slots ? n : slots;
+		for (int idx = take - 1; idx >= 0; idx--) {
+			const cJSON *item = cJSON_GetArrayItem(intents_arr, idx);
+			if (!item) continue;
 			MarshalIntent *intent = &feed->intents[feed->count];
 			memset(intent, 0, sizeof(*intent));
 			parse_intent_response(item, intent);
@@ -397,10 +521,23 @@ void feed_load_history(struct marshal_feed *feed) {
 			intent->anim_opacity.pos = intent->anim_opacity.target;
 			feed->count++;
 		}
+		/* Reset scroll so newest cards (at the bottom in our layout) are
+		 * the first thing the user sees. */
+		feed->scroll_offset = 0;
+
 		pthread_mutex_unlock(&feed->mutex);
 	}
 
 	cJSON_Delete(root);
+
+	/* Wake the main thread so the panel actually re-renders. Without
+	 * this byte, history cards loaded silently into the array but the
+	 * compositor never repainted — typing `history` looked like it
+	 * did nothing. The 'h' selector also nudges compositor.c to flip
+	 * status->history_open on so the feed pane is visible (it lives
+	 * in compositor.c next to the click-history-icon path). */
+	const char byte = 'h';
+	(void)write(feed->wakeup_pipe[1], &byte, 1);
 }
 
 /* ── Proactive insertion (pushed from agentd) ── */

@@ -95,6 +95,135 @@ _PROTECTED_PROCESSES = frozenset({
 _MAX_TERMINATE = 5
 
 
+def _llama_server_running() -> bool:
+    """True iff at least one llama-server process is alive for this user."""
+    import subprocess as sp
+    try:
+        out = sp.run(
+            ["pgrep", "-u", str(os.getuid()), "-f", "llama-server"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        return bool(out.stdout.strip())
+    except (FileNotFoundError, sp.TimeoutExpired):
+        return False
+
+
+def _stop_inference() -> tuple[bool, str]:
+    """
+    Bring the inference server down. Tries systemd user units first, then
+    falls back to SIGTERM on running llama-server processes. Returns
+    (stopped_anything, method_used).
+    """
+    import shutil
+    import signal
+    import subprocess as sp
+
+    if shutil.which("systemctl"):
+        for unit in ("marshal-inference.service", "leaves-inference.service"):
+            check = sp.run(
+                ["systemctl", "--user", "list-unit-files", unit, "--no-legend"],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            if unit in check.stdout:
+                rc = sp.run(
+                    ["systemctl", "--user", "stop", unit],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                if rc.returncode == 0:
+                    return True, f"systemd ({unit})"
+
+    # Bare SIGTERM
+    try:
+        out = sp.run(
+            ["pgrep", "-u", str(os.getuid()), "-f", "llama-server"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        pids = [int(p) for p in out.stdout.split() if p.isdigit()]
+    except (FileNotFoundError, sp.TimeoutExpired):
+        pids = []
+
+    if not pids:
+        return False, "none"
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return True, "SIGTERM"
+
+
+def _restart_inference() -> tuple[bool, str]:
+    """
+    Bring down the running llama-server (if any) and bring it up again with
+    the current tier.json. Tries systemd --user units first, then falls back
+    to a bare process replace.
+
+    Returns (success, method_used).
+    """
+    import shutil
+    import signal
+    import subprocess as sp
+    import time as _time
+
+    # 1) Systemd user units, in preferred-name order (the "leaves-" name is
+    #    the legacy install on this machine; new installs use "marshal-").
+    if shutil.which("systemctl"):
+        for unit in ("marshal-inference.service", "leaves-inference.service"):
+            check = sp.run(
+                ["systemctl", "--user", "list-unit-files", unit, "--no-legend"],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            if unit in check.stdout:
+                rc = sp.run(
+                    ["systemctl", "--user", "restart", unit],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                if rc.returncode == 0:
+                    return True, f"systemd ({unit})"
+
+    # 2) Bare process restart. Find any running llama-server, send SIGTERM,
+    #    wait briefly, then re-launch start-inference.sh in the background.
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    script = repo_root / "scripts" / "start-inference.sh"
+    if not script.exists():
+        return False, "none"
+
+    # SIGTERM existing llama-server processes
+    try:
+        out = sp.run(
+            ["pgrep", "-f", "llama-server"],
+            capture_output=True, text=True, timeout=4, check=False,
+        )
+        for pid_str in out.stdout.split():
+            try:
+                os.kill(int(pid_str), signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        # Brief wait for graceful exit
+        for _ in range(20):
+            check = sp.run(
+                ["pgrep", "-f", "llama-server"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            if not check.stdout.strip():
+                break
+            _time.sleep(0.1)
+    except (FileNotFoundError, sp.TimeoutExpired):
+        pass
+
+    # Re-spawn detached so it survives this request
+    try:
+        sp.Popen(
+            ["bash", str(script)],
+            stdout=sp.DEVNULL, stderr=sp.DEVNULL, stdin=sp.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+        return True, "bare process"
+    except OSError:
+        return False, "spawn failed"
+
+
 class SystemAgent(BaseAgent):
     AGENT_TYPE = "system"
 
@@ -125,6 +254,13 @@ class SystemAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _handle_query(self, action_id: str, params: dict) -> dict:
+        # Inline-routed: inference status QUERY shares the toggle handler
+        # so the user-disabled marker and live llama-server check are in one
+        # place.
+        inference_action = params.get("inference_action")
+        if inference_action == "status":
+            return self._handle_inference_toggle(action_id, "status")
+
         query_type = params.get("query_type", "")
         top_n = params.get("top_n", 10)
 
@@ -157,6 +293,17 @@ class SystemAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _handle_launch(self, action_id: str, params: dict) -> dict:
+        # Inline-routed sub-action: tier switch lives under SystemAgent.WRITE
+        # so the existing audit + dispatch path covers it. New action_type
+        # values would force schema changes across the planner / enforcer.
+        switch_tier = params.get("switch_tier")
+        if switch_tier:
+            return self._handle_switch_tier(action_id, switch_tier)
+
+        inference_action = params.get("inference_action")
+        if inference_action:
+            return self._handle_inference_toggle(action_id, inference_action)
+
         program = params.get("program", "").strip()
         if not program:
             raise MarshalError(
@@ -331,6 +478,179 @@ class SystemAgent(BaseAgent):
                 MarshalErrorCode.INTERNAL_ERROR,
                 detail=f"Failed to launch '{program}': {e}",
                 cause=e,
+            )
+            self._audit_end(row_id, error=err)
+            raise err
+
+    # ------------------------------------------------------------------
+    # WRITE sub-action — switch the active model tier
+    # ------------------------------------------------------------------
+
+    def _handle_switch_tier(self, action_id: str, tier_name: str) -> dict:
+        """
+        Persist a forced tier choice to ~/.marshal/tier.json AND swap the
+        running inference server in-place so the new model is live without
+        the user touching anything else.
+
+        Restart strategy (first that works wins):
+          1. systemctl --user restart marshal-inference
+          2. systemctl --user restart leaves-inference  (legacy unit name)
+          3. pkill llama-server  +  scripts/start-inference.sh &  (bare)
+        """
+        try:
+            import hardware
+        except ImportError as e:
+            raise MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR,
+                detail=f"hardware module unavailable: {e}",
+                cause=e,
+            )
+
+        tier_name = (tier_name or "").strip().lower()
+        if tier_name not in hardware.TIER_BY_NAME:
+            raise MarshalError(
+                MarshalErrorCode.INFERENCE_BAD_RESPONSE,
+                detail=(
+                    f"Unknown tier '{tier_name}'. "
+                    f"Choices: {', '.join(t.name for t in hardware.TIERS)}"
+                ),
+            )
+
+        row_id = self._audit_start(action_id, "WRITE", {"switch_tier": tier_name})
+        try:
+            tier = hardware.TIER_BY_NAME[tier_name]
+            profile = hardware.probe()
+            decision = hardware.TierDecision(
+                chosen=tier.name,
+                reason=f"forced via 'switch {tier_name}'",
+                profile=profile,
+                bench=None,
+                estimated_gen_tok_s={},
+                disqualified={},
+                timestamp=hardware._utc_timestamp(),
+            )
+            hardware.write_decision(decision, hardware.CONFIG_PATH)
+
+            restart_status, restart_via = _restart_inference()
+
+            summary = (
+                f"Tier set to {tier.name} ({tier.param_billions:.1f}B, "
+                f"{tier.model_file}). "
+            )
+            if restart_status:
+                summary += (
+                    f"Inference server restarting via {restart_via}; "
+                    f"new model will be live in ~5–30 s."
+                )
+            else:
+                summary += (
+                    "Could not auto-restart inference — start it manually "
+                    "with: bash scripts/start-inference.sh"
+                )
+
+            result = {
+                "action": "switch_tier",
+                "tier": tier.name,
+                "model_file": tier.model_file,
+                "param_billions": tier.param_billions,
+                "restarted": restart_status,
+                "restart_method": restart_via,
+                "summary": summary,
+            }
+            self._audit_end(row_id, result)
+            return result
+        except MarshalError:
+            raise
+        except Exception as e:
+            err = MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e
+            )
+            self._audit_end(row_id, error=err)
+            raise err
+
+    # ------------------------------------------------------------------
+    # WRITE/QUERY sub-action — inference server power toggle
+    # ------------------------------------------------------------------
+
+    def _handle_inference_toggle(self, action_id: str, action: str) -> dict:
+        """
+        action ∈ {"on", "off", "toggle", "status"}.
+
+        - on:   delete marker, restart inference (start fresh if not running)
+        - off:  write marker, stop inference (graceful SIGTERM, fallback systemctl)
+        - toggle: read marker, flip
+        - status: report whether llama-server is up + whether user disabled it
+        """
+        marker = pathlib.Path.home() / ".marshal" / "inference-disabled"
+
+        # Resolve "toggle" up-front so the rest of the function only deals
+        # with concrete on/off/status.
+        if action == "toggle":
+            action = "on" if marker.exists() else "off"
+
+        if action == "status":
+            running = _llama_server_running()
+            disabled = marker.exists()
+            return {
+                "action": "inference_status",
+                "running": running,
+                "disabled_by_user": disabled,
+                "summary": (
+                    f"Inference server: "
+                    f"{'running' if running else 'stopped'}"
+                    f"{' (disabled by user)' if disabled else ''}."
+                ),
+            }
+
+        row_id = self._audit_start(action_id, "WRITE", {"inference_action": action})
+        try:
+            if action == "off":
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+                stopped, method = _stop_inference()
+                result = {
+                    "action": "inference_off",
+                    "stopped": stopped,
+                    "method": method,
+                    "summary": (
+                        "Inference server turned off."
+                        if stopped else
+                        "Marker set; no running llama-server process found."
+                    ),
+                }
+            elif action == "on":
+                # Drop the user-disabled marker first, otherwise the next
+                # intent would still hit the friendly "inference is off"
+                # prompt even though the server is up.
+                try:
+                    marker.unlink()
+                except FileNotFoundError:
+                    pass
+                started, method = _restart_inference()
+                result = {
+                    "action": "inference_on",
+                    "started": started,
+                    "method": method,
+                    "summary": (
+                        f"Inference server starting via {method}; "
+                        f"ready in ~5–30 s."
+                        if started else
+                        "Could not start inference automatically — "
+                        "run: bash scripts/start-inference.sh"
+                    ),
+                }
+            else:
+                raise MarshalError(
+                    MarshalErrorCode.INFERENCE_BAD_RESPONSE,
+                    detail=f"Unknown inference_action {action!r}",
+                )
+            self._audit_end(row_id, result)
+            return result
+        except MarshalError:
+            raise
+        except Exception as e:
+            err = MarshalError(
+                MarshalErrorCode.INTERNAL_ERROR, detail=str(e), cause=e
             )
             self._audit_end(row_id, error=err)
             raise err
@@ -568,7 +888,15 @@ class SystemAgent(BaseAgent):
                 continue
 
         procs.sort(key=lambda p: p["cpu_percent"], reverse=True)
-        return {"processes": procs[:top_n], "count": len(procs)}
+        # `count` = how many rows we're returning (matches len(processes));
+        # `total` = the full process universe so the renderer can show
+        # "… N more" without lying about the slice size.
+        returned = procs[:top_n]
+        return {
+            "processes": returned,
+            "count": len(returned),
+            "total": len(procs),
+        }
 
     def sys_uptime(self) -> dict:
         boot_ts = psutil.boot_time()

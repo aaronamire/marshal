@@ -30,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # ---------------------------------------------------------------------------
 VALID_ACTION_TYPES = frozenset({
     "QUERY", "READ", "WRITE", "DELETE", "MOVE", "COPY", "COMPOSE",
+    # BRIEFING is L0-only (regex fast-path) — the LLM never produces it,
+    # but it must appear in the schema/grammar enum for the L0-built
+    # GoalSpec to pass jsonschema.validate(). Keeping it here keeps the
+    # static-consistency tests happy.
+    "BRIEFING",
 })
 
 # Types the model would plausibly generate without grammar constraints.

@@ -1,4 +1,12 @@
 [portal]
-DBusName=org.freedesktop.impl.portal.desktop.marshal
+# Marshal does not ship its own xdg-desktop-portal backend — there's no
+# org.freedesktop.impl.portal.desktop.marshal binary or .service file. Route
+# Screenshot/ScreenCast to xdg-desktop-portal-wlr (which IS installed and
+# implements zwlr-screencopy/PipeWire screencast against any wlroots-based
+# compositor). Marshal's compositor advertises zwlr_screencopy_manager_v1,
+# so wlr is the correct backend.
+DBusName=org.freedesktop.impl.portal.desktop.wlr
 Interfaces=org.freedesktop.impl.portal.Screenshot;org.freedesktop.impl.portal.ScreenCast;
-UseIn=marshal-compositor
+# Must match a token in XDG_CURRENT_DESKTOP. start-session.sh exports
+# "marshal:wlroots", so either token will pick this portal.
+UseIn=marshal;wlroots;

@@ -7,7 +7,7 @@
 
 set -e
 
-export XDG_CURRENT_DESKTOP=marshal
+export XDG_CURRENT_DESKTOP=marshal:wlroots
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=marshal
 

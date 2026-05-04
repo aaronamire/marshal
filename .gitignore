@@ -45,3 +45,15 @@ Thumbs.db
 *.log
 /marshal-boot.log
 agentd.log
+
+# Editor / IDE caches
+.cache/
+.clangd/
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local runtime state
+/.os/
+/.marshal/

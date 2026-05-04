@@ -19,7 +19,10 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <math.h>
 #include <linux/input-event-codes.h>
+
+#include <cairo.h>
 
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
@@ -32,6 +35,7 @@
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_seat.h>
@@ -140,9 +144,153 @@ static struct marshal_panel_buffer *panel_buffer_create(void *data,
 	return buf;
 }
 
+/* ── Window control glyph buffer (PlayStation-style: ◯ ▢ ✕) ──
+ * Owns a cairo_surface_t that is released when the buffer is dropped. */
+
+struct marshal_glyph_buffer {
+	struct wlr_buffer base;
+	cairo_surface_t *surface;
+};
+
+static void glyph_buffer_destroy(struct wlr_buffer *wlr_buf) {
+	struct marshal_glyph_buffer *b = wl_container_of(wlr_buf, b, base);
+	cairo_surface_destroy(b->surface);
+	free(b);
+}
+
+static bool glyph_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buf,
+		uint32_t flags, void **data, uint32_t *format, size_t *stride) {
+	struct marshal_glyph_buffer *b = wl_container_of(wlr_buf, b, base);
+	if (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) return false;
+	*data = cairo_image_surface_get_data(b->surface);
+	*format = DRM_FORMAT_ARGB8888;
+	*stride = (size_t)cairo_image_surface_get_stride(b->surface);
+	return true;
+}
+
+static void glyph_buffer_end_data_ptr_access(struct wlr_buffer *wlr_buf) {
+	(void)wlr_buf;
+}
+
+static const struct wlr_buffer_impl glyph_buffer_impl = {
+	.destroy = glyph_buffer_destroy,
+	.begin_data_ptr_access = glyph_buffer_begin_data_ptr_access,
+	.end_data_ptr_access = glyph_buffer_end_data_ptr_access,
+};
+
+enum marshal_ps_glyph {
+	MARSHAL_PS_CIRCLE,    /* close    — black ring   (◯) */
+	MARSHAL_PS_TRIANGLE,  /* maximize — black square (▢) — drawn as a
+	                       * rectangle inscribed in the same bounding
+	                       * box as the circle so the row reads as a
+	                       * symmetric ◯ ▢ ✕ trio. The enum name is
+	                       * historical (PlayStation-shape lineage). */
+	MARSHAL_PS_CROSS,     /* minimize — black cross  (✕) */
+};
+
+#define MARSHAL_BTN_PX 20
+
+static struct wlr_buffer *make_ps_glyph_buffer(enum marshal_ps_glyph g) {
+	const int sz = MARSHAL_BTN_PX;
+	cairo_surface_t *surf = cairo_image_surface_create(
+		CAIRO_FORMAT_ARGB32, sz, sz);
+	if (!surf || cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+		if (surf) cairo_surface_destroy(surf);
+		return NULL;
+	}
+	cairo_t *cr = cairo_create(surf);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_rgba(cr, 0, 0, 0, 0);
+	cairo_paint(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
+
+	const double cx = sz / 2.0;
+	const double cy = sz / 2.0;
+	const double r  = sz * 0.40;
+
+	/* Monochrome black on transparent — matches the rest of the
+	 * compositor chrome. No filled disc background. */
+	cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 1.0);
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+	switch (g) {
+	case MARSHAL_PS_CIRCLE: {
+		cairo_set_line_width(cr, 2.0);
+		cairo_arc(cr, cx, cy, r, 0, 2 * M_PI);
+		cairo_stroke(cr);
+		break;
+	}
+	case MARSHAL_PS_TRIANGLE: {
+		/* Square inscribed in the same bounding box as the circle
+		 * (side = 2r), so the middle button reads at the same
+		 * visual weight as the circle on either side. */
+		cairo_set_line_width(cr, 2.0);
+		cairo_rectangle(cr, cx - r, cy - r, 2 * r, 2 * r);
+		cairo_stroke(cr);
+		break;
+	}
+	case MARSHAL_PS_CROSS: {
+		cairo_set_line_width(cr, 2.2);
+		double a = r * 0.85;
+		cairo_move_to(cr, cx - a, cy - a);
+		cairo_line_to(cr, cx + a, cy + a);
+		cairo_move_to(cr, cx + a, cy - a);
+		cairo_line_to(cr, cx - a, cy + a);
+		cairo_stroke(cr);
+		break;
+	}
+	}
+
+	cairo_destroy(cr);
+	cairo_surface_flush(surf);
+
+	struct marshal_glyph_buffer *buf = calloc(1, sizeof(*buf));
+	if (!buf) {
+		cairo_surface_destroy(surf);
+		return NULL;
+	}
+	wlr_buffer_init(&buf->base, &glyph_buffer_impl, sz, sz);
+	buf->surface = surf;
+	return &buf->base;
+}
+
+static struct wlr_scene_buffer *create_ps_button(struct wlr_scene_tree *parent,
+		enum marshal_ps_glyph g) {
+	struct wlr_buffer *buf = make_ps_glyph_buffer(g);
+	if (!buf) return NULL;
+	struct wlr_scene_buffer *sbuf = wlr_scene_buffer_create(parent, buf);
+	wlr_buffer_drop(buf);
+	return sbuf;
+}
+
+/* ── Scene-tree owners ──
+ *
+ * Three different struct types embed a wlr_scene_tree and stash a back-pointer
+ * to themselves in `node.data` (so cursor hit-testing can recover the owner).
+ * They are NOT layout-compatible. To distinguish them safely, every such
+ * struct begins with a `kind` tag; readers of `node.data` MUST check the tag
+ * before casting.
+ *
+ * Why this exists: prior to the tag, `toplevel_at()` blindly returned the
+ * `node.data` pointer cast to `marshal_toplevel*`. Clicking a layer-shell
+ * surface (mako notification, slurp region picker, lock surface) handed
+ * `focus_toplevel()` a `marshal_layer_surface*`; reading the struct at
+ * offsets that exist in `marshal_toplevel` but not in `marshal_layer_surface`
+ * crashed in `wlr_scene_node_place_above`, taking the whole session down.
+ */
+enum marshal_scene_kind {
+	MARSHAL_SCENE_KIND_NONE = 0,
+	MARSHAL_SCENE_KIND_TOPLEVEL,   /* marshal_toplevel        — XDG */
+	MARSHAL_SCENE_KIND_XWAYLAND,   /* marshal_xwayland_surface */
+	MARSHAL_SCENE_KIND_LAYER,      /* marshal_layer_surface    */
+};
+
 /* ── Toplevel (managed app window) ── */
 
 struct marshal_toplevel {
+	enum marshal_scene_kind kind;  /* must be first; MARSHAL_SCENE_KIND_TOPLEVEL */
 	struct wl_list link;  /* marshal_server.toplevels */
 	struct marshal_server *server;
 	struct wlr_xdg_toplevel *xdg_toplevel;
@@ -150,17 +298,17 @@ struct marshal_toplevel {
 	/* Scene hierarchy:
 	 *   frame_tree (positioned at window x,y in app_tree)
 	 *     ├── titlebar_bg   (rect: title bar background)
-	 *     ├── btn_close      (rect: red dot)
-	 *     ├── btn_max        (rect: green dot)
-	 *     ├── btn_min        (rect: yellow dot)
+	 *     ├── btn_close      (◯ — close)
+	 *     ├── btn_max        (▢ — maximize)
+	 *     ├── btn_min        (✕ — minimize)
 	 *     └── scene_tree     (xdg surface, at y=TITLEBAR_H)
 	 */
 	struct wlr_scene_tree *frame_tree;
 	struct wlr_scene_tree *scene_tree;
 	struct wlr_scene_rect *titlebar_bg;
-	struct wlr_scene_rect *btn_close;
-	struct wlr_scene_rect *btn_max;
-	struct wlr_scene_rect *btn_min;
+	struct wlr_scene_buffer *btn_close;
+	struct wlr_scene_buffer *btn_max;
+	struct wlr_scene_buffer *btn_min;
 
 	/* Floating geometry (output coords) */
 	int x, y;
@@ -182,6 +330,7 @@ struct marshal_toplevel {
 /* ── Layer surface (layer shell) ── */
 
 struct marshal_layer_surface {
+	enum marshal_scene_kind kind;  /* must be first; MARSHAL_SCENE_KIND_LAYER */
 	struct marshal_server *server;
 	struct wlr_layer_surface_v1 *layer_surface;
 	struct wlr_scene_layer_surface_v1 *scene;
@@ -195,6 +344,7 @@ struct marshal_layer_surface {
 /* ── XWayland surface ── */
 
 struct marshal_xwayland_surface {
+	enum marshal_scene_kind kind;  /* must be first; MARSHAL_SCENE_KIND_XWAYLAND */
 	struct wl_list link;  /* marshal_server.toplevels — shares list with xdg */
 	struct marshal_server *server;
 	struct wlr_xwayland_surface *xsurface;
@@ -203,9 +353,9 @@ struct marshal_xwayland_surface {
 	struct wlr_scene_tree *frame_tree;
 	struct wlr_scene_tree *scene_tree;
 	struct wlr_scene_rect *titlebar_bg;
-	struct wlr_scene_rect *btn_close;
-	struct wlr_scene_rect *btn_max;
-	struct wlr_scene_rect *btn_min;
+	struct wlr_scene_buffer *btn_close;
+	struct wlr_scene_buffer *btn_max;
+	struct wlr_scene_buffer *btn_min;
 
 	int x, y;
 	int width, height;
@@ -989,15 +1139,22 @@ static int wakeup_handler(int fd, uint32_t mask __attribute__((unused)),
 	struct marshal_server *server = data;
 	char byte;
 	bool quit = false;
+	bool open_history = false;
 	/* Drain the pipe. 'q' from feed_request_exit() means the user typed
 	 * "exit" / "quit" in the intent bar — terminate the compositor cleanly
-	 * after the read loop so we don't leave the pipe in an odd state. */
+	 * after the read loop so we don't leave the pipe in an odd state.
+	 * 'h' = history was just (re)loaded; flip the feed pane open so the
+	 * user actually sees the cards instead of the bare desktop. */
 	while (read(fd, &byte, 1) == 1) {
 		if (byte == 'q') quit = true;
+		else if (byte == 'h') open_history = true;
 	}
 	if (quit) {
 		wl_display_terminate(server->display);
 		return 0;
+	}
+	if (open_history && server->status) {
+		server->status->history_open = true;
 	}
 	schedule_panel_redraw(server);
 	wl_event_source_timer_update(server->anim_timer, 16);
@@ -1026,6 +1183,71 @@ static void update_panel_buffer(struct marshal_server *server) {
 	if (server->lrenderer->width != pw ||
 			server->lrenderer->height != ph) {
 		renderer_resize(server->lrenderer, pw, ph);
+	}
+
+	/* Snapshot the running-toplevel list into the renderer so the bottom
+	 * bar can paint a monogram per app. We resolve a display label and a
+	 * one-character glyph here (UI-side) instead of in the renderer so
+	 * Wayland surface details stay out of the rendering layer. */
+	{
+		struct marshal_renderer *lr = server->lrenderer;
+		struct wlr_surface *focused =
+			server->seat ? server->seat->keyboard_state.focused_surface
+				: NULL;
+		int n = 0;
+		struct marshal_toplevel *t;
+		wl_list_for_each(t, &server->toplevels, link) {
+			if (n >= MARSHAL_MAX_BAR_APPS) break;
+			if (t->workspace != server->active_workspace) continue;
+			/* DON'T skip minimized — the bar's whole purpose is to give
+			 * the user a way back to a hidden window. We dim the icon
+			 * for minimized windows below (focused != true), so they
+			 * still read as "running, just not visible right now". */
+
+			const char *label = NULL;
+			if (t->xdg_toplevel) {
+				if (t->xdg_toplevel->app_id && t->xdg_toplevel->app_id[0])
+					label = t->xdg_toplevel->app_id;
+				else if (t->xdg_toplevel->title && t->xdg_toplevel->title[0])
+					label = t->xdg_toplevel->title;
+			}
+			if (!label || !label[0]) label = "App";
+
+			/* Last "."-separated component is the human-readable name
+			 * for reverse-DNS app_ids ("org.mozilla.firefox" → "firefox") */
+			const char *base = strrchr(label, '.');
+			base = base ? base + 1 : label;
+
+			snprintf(lr->apps[n].label, sizeof(lr->apps[n].label),
+				"%s", base);
+			/* Icon name: full app_id (some Icon=lines key off the
+			 * reverse-DNS form like org.mozilla.firefox), with the
+			 * shortened base preserved as a secondary search term
+			 * via the resolver's lower-case fallback. */
+			snprintf(lr->apps[n].icon_name,
+				sizeof(lr->apps[n].icon_name), "%s", label);
+			/* First UTF-8 codepoint, uppercased if ASCII. */
+			unsigned char c = (unsigned char)base[0];
+			if (c < 0x80) {
+				if (c >= 'a' && c <= 'z') c -= ('a' - 'A');
+				lr->apps[n].glyph[0] = (char)c;
+				lr->apps[n].glyph[1] = '\0';
+			} else {
+				int len = 1;
+				if      ((c & 0xE0) == 0xC0) len = 2;
+				else if ((c & 0xF0) == 0xE0) len = 3;
+				else if ((c & 0xF8) == 0xF0) len = 4;
+				memcpy(lr->apps[n].glyph, base, len);
+				lr->apps[n].glyph[len] = '\0';
+			}
+			lr->apps[n].focused = (focused != NULL &&
+				t->xdg_toplevel != NULL &&
+				t->xdg_toplevel->base->surface == focused);
+			lr->apps[n].hit_x = lr->apps[n].hit_y = 0;
+			lr->apps[n].hit_w = lr->apps[n].hit_h = 0;
+			n++;
+		}
+		lr->app_count = n;
 	}
 
 	int stride;
@@ -1098,13 +1320,16 @@ static void output_destroy(struct wl_listener *listener, void *data) {
 static void update_titlebar_decorations(struct marshal_toplevel *toplevel) {
 	wlr_scene_rect_set_size(toplevel->titlebar_bg,
 		toplevel->width, TITLEBAR_H);
-	int btn_y = (TITLEBAR_H - 12) / 2;
+	const int bsz = MARSHAL_BTN_PX;
+	const int gap = 6;
+	const int margin = 10;
+	int btn_y = (TITLEBAR_H - bsz) / 2;
 	wlr_scene_node_set_position(&toplevel->btn_close->node,
-		toplevel->width - 12 - 10, btn_y);
+		toplevel->width - bsz - margin, btn_y);
 	wlr_scene_node_set_position(&toplevel->btn_max->node,
-		toplevel->width - 12 - 10 - 12 - 8, btn_y);
+		toplevel->width - 2 * bsz - margin - gap, btn_y);
 	wlr_scene_node_set_position(&toplevel->btn_min->node,
-		toplevel->width - 12 - 10 - 12 - 8 - 12 - 8, btn_y);
+		toplevel->width - 3 * bsz - margin - 2 * gap, btn_y);
 }
 
 static void toplevel_map(struct wl_listener *listener, void *data) {
@@ -1345,6 +1570,7 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel *xdg_toplevel = data;
 
 	struct marshal_toplevel *toplevel = calloc(1, sizeof(*toplevel));
+	toplevel->kind = MARSHAL_SCENE_KIND_TOPLEVEL;
 	toplevel->server = server;
 	toplevel->xdg_toplevel = xdg_toplevel;
 
@@ -1357,18 +1583,13 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	toplevel->titlebar_bg = wlr_scene_rect_create(
 		toplevel->frame_tree, 800, TITLEBAR_H, tb_color);
 
-	/* Window control buttons (macOS-style dots, right-aligned) */
-	float close_color[4] = {0.937f, 0.267f, 0.267f, 1.0f};  /* red */
-	toplevel->btn_close = wlr_scene_rect_create(
-		toplevel->frame_tree, 12, 12, close_color);
-
-	float max_color[4] = {0.133f, 0.784f, 0.251f, 1.0f};  /* green */
-	toplevel->btn_max = wlr_scene_rect_create(
-		toplevel->frame_tree, 12, 12, max_color);
-
-	float min_color[4] = {1.0f, 0.741f, 0.180f, 1.0f};  /* yellow */
-	toplevel->btn_min = wlr_scene_rect_create(
-		toplevel->frame_tree, 12, 12, min_color);
+	/* Window control buttons (monochrome glyphs, right-aligned) */
+	toplevel->btn_close = create_ps_button(toplevel->frame_tree,
+		MARSHAL_PS_CIRCLE);
+	toplevel->btn_max = create_ps_button(toplevel->frame_tree,
+		MARSHAL_PS_TRIANGLE);
+	toplevel->btn_min = create_ps_button(toplevel->frame_tree,
+		MARSHAL_PS_CROSS);
 
 	/* XDG surface below the title bar */
 	toplevel->scene_tree = wlr_scene_xdg_surface_create(
@@ -1597,6 +1818,40 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				(base_sym == XKB_KEY_s || raw_sym == XKB_KEY_s)) {
 			take_screenshot(true);
 			handled = true;
+		}
+
+		/* ── XF86 media keys: volume / mic / brightness ──
+		 * These ship on every laptop keyboard but were never bound, so
+		 * the audio agent (which only reacts to typed "volume up")
+		 * was unreachable from the hardware keys. Shell out to wpctl
+		 * (PipeWire) — it falls through to PulseAudio's compatibility
+		 * layer when only PA is running, so a single binary covers
+		 * both stacks. Fire-and-forget; we don't need the exit code. */
+		if (!handled) {
+			const char *cmd = NULL;
+			if (raw_sym == XKB_KEY_XF86AudioRaiseVolume)
+				cmd = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
+			else if (raw_sym == XKB_KEY_XF86AudioLowerVolume)
+				cmd = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
+			else if (raw_sym == XKB_KEY_XF86AudioMute)
+				cmd = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
+			else if (raw_sym == XKB_KEY_XF86AudioMicMute)
+				cmd = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
+			else if (raw_sym == XKB_KEY_XF86MonBrightnessUp)
+				cmd = "brightnessctl set +5%";
+			else if (raw_sym == XKB_KEY_XF86MonBrightnessDown)
+				cmd = "brightnessctl set 5%-";
+			if (cmd) {
+				char *argv[] = { "sh", "-c", (char *)cmd, NULL };
+				launch_subprocess("sh", argv);
+				/* Force a status repoll so the on-screen volume %
+				 * updates immediately instead of waiting for the
+				 * next 30 s tick. */
+				if (server->status)
+					status_poll(server->status);
+				schedule_panel_redraw(server);
+				handled = true;
+			}
 		}
 
 		/* ── Ctrl+R: time-machine replay of the currently expanded
@@ -1877,12 +2132,26 @@ static struct marshal_toplevel *toplevel_at(struct marshal_server *server,
 		&server->scene->tree.node, lx, ly, sx, sy);
 	if (!node) return NULL;
 
-	/* Walk up the tree to find the toplevel */
+	/* Walk up the tree to find the nearest scene-owner. We then verify
+	 * the kind tag — `node.data` may be a layer surface or an XWayland
+	 * surface, neither of which is layout-compatible with marshal_toplevel.
+	 * Returning a mis-typed pointer here is what previously crashed the
+	 * compositor when slurp / mako / lock surfaces were clicked. */
 	struct wlr_scene_tree *tree = node->parent;
 	while (tree && !tree->node.data) {
 		tree = tree->node.parent;
 	}
-	if (!tree) return NULL;
+	if (!tree || !tree->node.data) return NULL;
+
+	enum marshal_scene_kind kind =
+		*(enum marshal_scene_kind *)tree->node.data;
+	if (kind != MARSHAL_SCENE_KIND_TOPLEVEL) {
+		/* Layer-shell or XWayland — not a marshal_toplevel. The pointer
+		 * notify_button() above the call site already routed the click
+		 * to the right client; we just must not raise/focus it as if it
+		 * were one of our managed app windows. */
+		return NULL;
+	}
 
 	/* Try to resolve a wlr_surface for pointer routing */
 	*surface = NULL;
@@ -2079,26 +2348,28 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 			int rel_y = (int)my - toplevel->y;
 
 			if (rel_y < TITLEBAR_H) {
+				const int bsz = MARSHAL_BTN_PX;
+				const int gap = 6;
 				int btn_r = toplevel->width - 10;
-				int btn_t = (TITLEBAR_H - 12) / 2;
-				int btn_b = btn_t + 12;
+				int btn_t = (TITLEBAR_H - bsz) / 2;
+				int btn_b = btn_t + bsz;
 
 				/* Close button (rightmost) */
-				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
+				if (rel_x >= btn_r - bsz && rel_x < btn_r &&
 						rel_y >= btn_t && rel_y < btn_b) {
 					wlr_xdg_toplevel_send_close(toplevel->xdg_toplevel);
 					goto done_press;
 				}
-				btn_r -= 12 + 8;
+				btn_r -= bsz + gap;
 				/* Maximize button */
-				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
+				if (rel_x >= btn_r - bsz && rel_x < btn_r &&
 						rel_y >= btn_t && rel_y < btn_b) {
 					toggle_maximize(toplevel);
 					goto done_press;
 				}
-				btn_r -= 12 + 8;
+				btn_r -= bsz + gap;
 				/* Minimize button */
-				if (rel_x >= btn_r - 12 && rel_x < btn_r &&
+				if (rel_x >= btn_r - bsz && rel_x < btn_r &&
 						rel_y >= btn_t && rel_y < btn_b) {
 					minimize_window(toplevel);
 					goto done_press;
@@ -2132,6 +2403,82 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 						mx < lr->dropdown_x + lr->dropdown_w &&
 						my >= lr->dropdown_y &&
 						my < lr->dropdown_y + lr->dropdown_h) {
+					/* Translate click to dropdown-relative coords —
+					 * the section hit rects are in absolute panel
+					 * coords because that's what draw_dropdown
+					 * recorded. */
+					const char *cmd = NULL;
+
+					/* WiFi row → nmcli (polkit-friendly), fall back to
+					 * rfkill if NM isn't installed. rfkill alone fails
+					 * silently on most distros because /dev/rfkill is
+					 * root-only without a udev rule, which is why the
+					 * old version "did nothing." */
+					if (lr->qs_wifi_w > 0 &&
+							mx >= lr->qs_wifi_x &&
+							mx < lr->qs_wifi_x + lr->qs_wifi_w &&
+							my >= lr->qs_wifi_y &&
+							my < lr->qs_wifi_y + lr->qs_wifi_h) {
+						cmd = server->status->wifi_connected
+							? "nmcli radio wifi off 2>/dev/null || "
+							  "rfkill block wifi"
+							: "nmcli radio wifi on 2>/dev/null || "
+							  "rfkill unblock wifi";
+					}
+					/* Bluetooth row → bluetoothctl (uses polkit),
+					 * fall back to rfkill. */
+					else if (lr->qs_bt_w > 0 &&
+							mx >= lr->qs_bt_x &&
+							mx < lr->qs_bt_x + lr->qs_bt_w &&
+							my >= lr->qs_bt_y &&
+							my < lr->qs_bt_y + lr->qs_bt_h) {
+						cmd = server->status->bt_enabled
+							? "bluetoothctl power off 2>/dev/null || "
+							  "rfkill block bluetooth"
+							: "bluetoothctl power on 2>/dev/null || "
+							  "rfkill unblock bluetooth";
+					}
+					/* Volume bar → set level by horizontal position.
+					 * Clamp to [0,100]; pct=0 doesn't unmute, so we
+					 * also unmute on any click. */
+					else if (lr->qs_vol_w > 0 &&
+							mx >= lr->qs_vol_x &&
+							mx < lr->qs_vol_x + lr->qs_vol_w &&
+							my >= lr->qs_vol_y &&
+							my < lr->qs_vol_y + lr->qs_vol_h) {
+						int pct = (int)((mx - lr->qs_vol_x) * 100
+							/ lr->qs_vol_w);
+						if (pct < 0) pct = 0;
+						if (pct > 100) pct = 100;
+						char buf[128];
+						snprintf(buf, sizeof(buf),
+							"wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 && "
+							"wpctl set-volume -l 1.0 "
+							"@DEFAULT_AUDIO_SINK@ %d%%",
+							pct);
+						char *argv[] = { "sh", "-c", buf, NULL };
+						launch_subprocess("sh", argv);
+						if (server->status)
+							status_poll(server->status);
+						schedule_panel_redraw(server);
+						goto done_press;
+					}
+
+					if (cmd) {
+						char *argv[] = { "sh", "-c", (char *)cmd, NULL };
+						launch_subprocess("sh", argv);
+						/* status_poll is sysfs/popen — runs on the
+						 * main thread. The toggled state takes a
+						 * moment to propagate (NetworkManager,
+						 * bluetoothd), so the immediate poll often
+						 * still sees the OLD state. We re-poll on
+						 * the next animator tick to catch up. */
+						if (server->status)
+							status_poll(server->status);
+						wl_event_source_timer_update(
+							server->anim_timer, 250);
+					}
+
 					/* Inside dropdown — consume click */
 					schedule_panel_redraw(server);
 					goto done_press;
@@ -2163,6 +2510,40 @@ static void cursor_button_handler(struct wl_listener *listener, void *data) {
 						!server->status->dropdown_open;
 					schedule_panel_redraw(server);
 					wlr_seat_keyboard_clear_focus(server->seat);
+					goto done_press;
+				}
+
+				/* Running-app monogram? Click focuses (or restores +
+				 * focuses, if the app was minimised between renders). */
+				for (int ai = 0; ai < lr->app_count; ai++) {
+					struct marshal_bar_app *a = &lr->apps[ai];
+					if (a->hit_w <= 0) continue;
+					if (mx < a->hit_x ||
+							mx >= a->hit_x + a->hit_w ||
+							my < a->hit_y ||
+							my >= a->hit_y + a->hit_h)
+						continue;
+					/* Walk the toplevel list with the same filter the
+					 * snapshot block uses (active workspace, minimized
+					 * INCLUDED) so the index `ai` matches the painted
+					 * order. If the user clicked a minimized window's
+					 * icon, unminimize before focusing — that's the
+					 * whole reason the icon is on the bar. */
+					struct marshal_toplevel *t;
+					int idx = 0;
+					wl_list_for_each(t, &server->toplevels, link) {
+						if (t->workspace != server->active_workspace)
+							continue;
+						if (idx == ai) {
+							if (t->minimized)
+								unminimize_window(t);
+							server->focus_mode = FOCUS_APP;
+							focus_toplevel(server, t);
+							break;
+						}
+						idx++;
+					}
+					schedule_panel_redraw(server);
 					goto done_press;
 				}
 
@@ -2539,6 +2920,7 @@ static void server_new_layer_surface(struct wl_listener *listener, void *data) {
 	struct wlr_scene_tree *parent = server->layer_trees[layer];
 
 	struct marshal_layer_surface *ls = calloc(1, sizeof(*ls));
+	ls->kind = MARSHAL_SCENE_KIND_LAYER;
 	ls->server = server;
 	ls->layer_surface = layer_surface;
 	ls->scene = wlr_scene_layer_surface_v1_create(parent, layer_surface);
@@ -2714,25 +3096,37 @@ static void xwayland_surface_map(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, xs, map);
 	struct marshal_server *server = xs->server;
 
-	wl_list_insert(&server->toplevels, &xs->link);
+	bool is_or = xs->xsurface->override_redirect;
+
+	/* Only real toplevels go in the toplevel list (used by the bar-icon
+	 * snapshot, focus cycling, and map/unmap focus chain). OR popups
+	 * are children — including them would put a duplicate "App" icon
+	 * on the bar for every Qt menu the user opens. */
+	if (!is_or)
+		wl_list_insert(&server->toplevels, &xs->link);
+
 	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
-	update_xwayland_decorations(xs);
+	if (!is_or)
+		update_xwayland_decorations(xs);
 
 	emit_window_event(server, "window_opened",
 		xs->xsurface->class, xs->xsurface->title,
 		xs->xsurface->pid, server->active_workspace);
 
-	/* Focus the new X11 window */
-	server->focus_mode = FOCUS_APP;
 	wlr_scene_node_raise_to_top(&xs->frame_tree->node);
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
-	if (keyboard) {
-		wlr_seat_keyboard_notify_enter(server->seat,
-			xs->xsurface->surface,
-			keyboard->keycodes, keyboard->num_keycodes,
-			&keyboard->modifiers);
+
+	if (!is_or) {
+		/* Focus the new X11 window */
+		server->focus_mode = FOCUS_APP;
+		struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+		if (keyboard) {
+			wlr_seat_keyboard_notify_enter(server->seat,
+				xs->xsurface->surface,
+				keyboard->keycodes, keyboard->num_keycodes,
+				&keyboard->modifiers);
+		}
+		wlr_xwayland_surface_activate(xs->xsurface, true);
 	}
-	wlr_xwayland_surface_activate(xs->xsurface, true);
 	schedule_panel_redraw(server);
 }
 
@@ -2745,7 +3139,9 @@ static void xwayland_surface_unmap(struct wl_listener *listener, void *data) {
 		xs->xsurface->class, "", xs->xsurface->pid,
 		xs->workspace);
 
-	wl_list_remove(&xs->link);
+	/* Symmetric with map: only real toplevels were inserted into the list. */
+	if (!xs->xsurface->override_redirect)
+		wl_list_remove(&xs->link);
 
 	if (!wl_list_empty(&server->toplevels)) {
 		/* Focus next toplevel (could be xdg or xwayland) */
@@ -2800,7 +3196,8 @@ static void xwayland_surface_request_configure(struct wl_listener *listener,
 	xs->width = ev->width;
 	xs->height = ev->height;
 	wlr_scene_node_set_position(&xs->frame_tree->node, xs->x, xs->y);
-	update_xwayland_decorations(xs);
+	if (!xs->xsurface->override_redirect)
+		update_xwayland_decorations(xs);
 }
 
 static void xwayland_surface_request_maximize(struct wl_listener *listener,
@@ -2842,15 +3239,37 @@ static void xwayland_surface_set_geometry(struct wl_listener *listener,
 		void *data) {
 	struct marshal_xwayland_surface *xs =
 		wl_container_of(listener, xs, set_geometry);
+	(void)data;
+	/* For OR popups, the X server has just told us where the surface
+	 * wants to be. Push that into our scene tree so a click on a Qt
+	 * "File" button opens the dropdown UNDER the button instead of at
+	 * stale coordinates. */
+	if (xs->xsurface->override_redirect) {
+		xs->x = xs->xsurface->x;
+		xs->y = xs->xsurface->y;
+		xs->width  = xs->xsurface->width;
+		xs->height = xs->xsurface->height;
+		wlr_scene_node_set_position(&xs->frame_tree->node,
+			xs->x, xs->y);
+		return;
+	}
 	update_xwayland_decorations(xs);
 }
 
 static void update_xwayland_decorations(struct marshal_xwayland_surface *xs) {
+	if (!xs->titlebar_bg) return;  /* OR popup — no chrome */
 	int w = xs->width > 0 ? xs->width : 800;
 	wlr_scene_rect_set_size(xs->titlebar_bg, w, TITLEBAR_H);
-	wlr_scene_node_set_position(&xs->btn_close->node, w - 20, 10);
-	wlr_scene_node_set_position(&xs->btn_max->node, w - 40, 10);
-	wlr_scene_node_set_position(&xs->btn_min->node, w - 60, 10);
+	const int bsz = MARSHAL_BTN_PX;
+	const int gap = 6;
+	const int margin = 10;
+	int btn_y = (TITLEBAR_H - bsz) / 2;
+	wlr_scene_node_set_position(&xs->btn_close->node,
+		w - bsz - margin, btn_y);
+	wlr_scene_node_set_position(&xs->btn_max->node,
+		w - 2 * bsz - margin - gap, btn_y);
+	wlr_scene_node_set_position(&xs->btn_min->node,
+		w - 3 * bsz - margin - 2 * gap, btn_y);
 }
 
 static void server_xwayland_new_surface(struct wl_listener *listener,
@@ -2860,43 +3279,68 @@ static void server_xwayland_new_surface(struct wl_listener *listener,
 	struct wlr_xwayland_surface *xsurface = data;
 
 	struct marshal_xwayland_surface *xs = calloc(1, sizeof(*xs));
+	xs->kind = MARSHAL_SCENE_KIND_XWAYLAND;
 	xs->server = server;
 	xs->xsurface = xsurface;
 
-	/* Create SSD frame tree (same pattern as xdg toplevels) */
-	xs->frame_tree = wlr_scene_tree_create(server->app_tree);
-	xs->frame_tree->node.data = xs;
+	/* OR (override_redirect) and modal/transient dialogs from Qt apps —
+	 * menus, tooltips, dropdowns, the OBS screen-picker — must NOT be
+	 * decorated and must use the X server's exact placement. Wrapping
+	 * them in our SSD frame and re-centering them was why OBS's "File"
+	 * dropdown looked detached, OR popups landed in the wrong place,
+	 * and Qt menus were unclickable. Skip every UI hack: build a flat
+	 * scene-subsurface-tree at the X server's coordinates and let the
+	 * client drive positioning. */
+	bool is_or = xsurface->override_redirect;
 
-	float tb_color[4] = {0.898f, 0.898f, 0.898f, 1.0f};
-	xs->titlebar_bg = wlr_scene_rect_create(
-		xs->frame_tree, 800, TITLEBAR_H, tb_color);
+	if (is_or) {
+		xs->frame_tree = wlr_scene_tree_create(server->app_tree);
+		xs->frame_tree->node.data = xs;
+		xs->scene_tree = wlr_scene_subsurface_tree_create(
+			xs->frame_tree, xsurface->surface);
+		xs->scene_tree->node.data = xs;
+		/* OR surfaces aren't toplevels — they don't get a title bar,
+		 * close/max/min buttons, or focus management. They follow the
+		 * X-side coordinates exactly. */
+		xs->titlebar_bg = NULL;
+		xs->btn_close   = NULL;
+		xs->btn_max     = NULL;
+		xs->btn_min     = NULL;
+		xs->x = xsurface->x;
+		xs->y = xsurface->y;
+		xs->width  = xsurface->width;
+		xs->height = xsurface->height;
+		wlr_scene_node_set_position(&xs->frame_tree->node,
+			xs->x, xs->y);
+	} else {
+		/* Regular toplevel: SSD frame, default centred placement. */
+		xs->frame_tree = wlr_scene_tree_create(server->app_tree);
+		xs->frame_tree->node.data = xs;
 
-	float close_color[4] = {0.937f, 0.267f, 0.267f, 1.0f};
-	xs->btn_close = wlr_scene_rect_create(
-		xs->frame_tree, 12, 12, close_color);
+		float tb_color[4] = {0.898f, 0.898f, 0.898f, 1.0f};
+		xs->titlebar_bg = wlr_scene_rect_create(
+			xs->frame_tree, 800, TITLEBAR_H, tb_color);
 
-	float max_color[4] = {0.133f, 0.784f, 0.251f, 1.0f};
-	xs->btn_max = wlr_scene_rect_create(
-		xs->frame_tree, 12, 12, max_color);
+		xs->btn_close = create_ps_button(xs->frame_tree,
+			MARSHAL_PS_CIRCLE);
+		xs->btn_max = create_ps_button(xs->frame_tree,
+			MARSHAL_PS_TRIANGLE);
+		xs->btn_min = create_ps_button(xs->frame_tree,
+			MARSHAL_PS_CROSS);
 
-	float min_color[4] = {1.0f, 0.741f, 0.180f, 1.0f};
-	xs->btn_min = wlr_scene_rect_create(
-		xs->frame_tree, 12, 12, min_color);
+		xs->scene_tree = wlr_scene_subsurface_tree_create(
+			xs->frame_tree, xsurface->surface);
+		wlr_scene_node_set_position(&xs->scene_tree->node, 0, TITLEBAR_H);
+		xs->scene_tree->node.data = xs;
 
-	/* XWayland surface scene node below title bar */
-	xs->scene_tree = wlr_scene_subsurface_tree_create(
-		xs->frame_tree, xsurface->surface);
-	wlr_scene_node_set_position(&xs->scene_tree->node, 0, TITLEBAR_H);
-	xs->scene_tree->node.data = xs;
-
-	/* Default floating position */
-	int ow = output_width(server);
-	int oh = output_height(server);
-	int usable_h = oh - INPUT_HEIGHT;
-	xs->width  = xsurface->width > 0 ? xsurface->width : ow * 7 / 10;
-	xs->height = xsurface->height > 0 ? xsurface->height : usable_h * 7 / 10;
-	xs->x = (ow - xs->width) / 2;
-	xs->y = (usable_h - xs->height - TITLEBAR_H) / 2;
+		int ow = output_width(server);
+		int oh = output_height(server);
+		int usable_h = oh - INPUT_HEIGHT;
+		xs->width  = xsurface->width > 0 ? xsurface->width : ow * 7 / 10;
+		xs->height = xsurface->height > 0 ? xsurface->height : usable_h * 7 / 10;
+		xs->x = (ow - xs->width) / 2;
+		xs->y = (usable_h - xs->height - TITLEBAR_H) / 2;
+	}
 
 	xs->map.notify = xwayland_surface_map;
 	wl_signal_add(&xsurface->surface->events.map, &xs->map);
@@ -3316,9 +3760,16 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	/* Wayland compositor globals — required for clients */
+	/* Wayland compositor globals — required for clients.
+	 *
+	 * wl_subcompositor must be advertised separately from wl_compositor —
+	 * wlroots does not auto-create it. Without it, Qt-Wayland clients
+	 * (OBS Studio, Qt apps in general) can't compose popups/tooltips and
+	 * log "Can't create subsurface, not supported by the compositor".
+	 * The screen-picker portal dialog renders garbled until this is set. */
 	server.compositor =
 		wlr_compositor_create(server.display, 6, server.renderer);
+	wlr_subcompositor_create(server.display);
 	wlr_data_device_manager_create(server.display);
 
 	/* Output layout */

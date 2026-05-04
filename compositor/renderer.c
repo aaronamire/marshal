@@ -8,10 +8,12 @@
 #include "status.h"
 #include <math.h>
 #include <jpeglib.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /* ── Rounded rectangle path ── */
 
@@ -135,6 +137,10 @@ void renderer_destroy(struct marshal_renderer *r) {
 	pango_font_description_free(r->font_overlay_mono);
 	pango_font_description_free(r->font_overlay_button);
 	if (r->wallpaper) cairo_surface_destroy(r->wallpaper);
+	for (int i = 0; i < r->icon_cache_count; i++) {
+		if (r->icon_cache[i].surface)
+			cairo_surface_destroy(r->icon_cache[i].surface);
+	}
 	free(r);
 }
 
@@ -1284,6 +1290,147 @@ void renderer_load_wallpaper(struct marshal_renderer *r, const char *path) {
 	cairo_surface_set_user_data(r->wallpaper, &key, data, free);
 }
 
+/* ── Greeting (no-wallpaper desktop) ──
+ *
+ * "Hi, <Name>" centred big and quiet, in the spirit of Claude / ChatGPT's
+ * empty-conversation state. We avoid loading a real-name PNG portrait or
+ * accent colour: this is a *content-free desktop* — the greeting should
+ * read, not perform.
+ *
+ * Name resolution priority: $USER → getlogin() → getpwuid()->pw_gecos
+ * (full name; first comma-delimited field) → getpwuid()->pw_name. We
+ * Title-Case it because login names are usually lowercase and "hi, xan"
+ * looks like a chat sender, not a salutation. */
+static void draw_greeting(struct marshal_renderer *r, int y, int h) {
+	cairo_t *cr = r->cr;
+
+	/* Resolve display name once per frame — cheap (env + libc).
+	 *
+	 * Priority:
+	 *   1. ~/.marshal/greeting-name  ← user-set override (single line)
+	 *   2. GECOS full-name field      ← real name from /etc/passwd
+	 *   3. $USER                      ← login name
+	 *   4. getlogin()                 ← fallback
+	 *   5. pw_name                    ← last resort
+	 *   6. "there"                    ← extreme fallback
+	 *
+	 * The override file is intentional: changing GECOS via chfn requires
+	 * PAM and a password prompt — overkill for "what name shows on the
+	 * desktop." A plain text file the user owns is the right ergonomics. */
+	char raw[128] = {0};
+	const char *home = getenv("HOME");
+	if (home) {
+		char path[256];
+		snprintf(path, sizeof(path), "%s/.marshal/greeting-name", home);
+		FILE *f = fopen(path, "r");
+		if (f) {
+			if (fgets(raw, sizeof(raw), f)) {
+				size_t len = strlen(raw);
+				while (len && (raw[len-1] == '\n' ||
+						raw[len-1] == '\r' ||
+						raw[len-1] == ' '))
+					raw[--len] = '\0';
+			}
+			fclose(f);
+		}
+	}
+	if (!raw[0]) {
+		struct passwd *pw = getpwuid(getuid());
+		if (pw && pw->pw_gecos && pw->pw_gecos[0] &&
+				pw->pw_gecos[0] != ',') {
+			size_t n = 0;
+			const char *p = pw->pw_gecos;
+			while (*p && *p != ',' && n < sizeof(raw) - 1)
+				raw[n++] = *p++;
+			raw[n] = '\0';
+		}
+	}
+	if (!raw[0]) {
+		const char *envu = getenv("USER");
+		if (envu && envu[0])
+			snprintf(raw, sizeof(raw), "%s", envu);
+	}
+	if (!raw[0]) {
+		const char *lg = getlogin();
+		if (lg && lg[0])
+			snprintf(raw, sizeof(raw), "%s", lg);
+	}
+	if (!raw[0]) {
+		struct passwd *pw = getpwuid(getuid());
+		if (pw && pw->pw_name)
+			snprintf(raw, sizeof(raw), "%s", pw->pw_name);
+	}
+	if (!raw[0]) snprintf(raw, sizeof(raw), "there");
+
+	/* Title-case the first letter, leave the rest as-is. Login names are
+	 * usually lowercase ("xan" → "Xan"), real names from GECOS already
+	 * capitalised. */
+	if (raw[0] >= 'a' && raw[0] <= 'z') raw[0] = raw[0] - ('a' - 'A');
+
+	char greeting[160];
+	/* Period reads warmer / quieter than "!", which feels presentational. */
+	snprintf(greeting, sizeof(greeting), "Hi, %s.", raw);
+
+	/* Pick a font size proportional to the canvas. */
+	int px = h / 13;
+	if (px < 38) px = 38;
+	if (px > 110) px = 110;
+
+	/* Editorial serif — Source Serif 4 Display, italic, light. Geist at
+	 * this size reads like a slide title; a serif italic reads like a
+	 * page header (Claude.ai, Medium, NYT). Source Serif 4 ships an
+	 * optical-size "Display" cut tuned for headlines. We list real
+	 * fallbacks so machines without Adobe Source Serif still render
+	 * sanely — every fontconfig setup has a "serif" default. */
+	PangoFontDescription *fd = pango_font_description_from_string(
+		"Source Serif 4 Display, Source Serif 4, Source Serif Pro, "
+		"Iowan Old Style, Charter, Georgia, serif");
+	pango_font_description_set_style(fd, PANGO_STYLE_ITALIC);
+	pango_font_description_set_weight(fd, PANGO_WEIGHT_LIGHT);
+	pango_font_description_set_absolute_size(fd, px * PANGO_SCALE);
+
+	/* Slight negative tracking so the display-size serif feels tight
+	 * rather than airy. */
+	PangoLayout *layout = create_layout(cr, fd, -10);
+	pango_layout_set_text(layout, greeting, -1);
+	int tw, th;
+	pango_layout_get_pixel_size(layout, &tw, &th);
+
+	/* Centre vertically with a 6% upward lift so the input bar's
+	 * visual weight at the bottom doesn't pull the optical centre. */
+	int cx_x = (r->width - tw) / 2;
+	int cy_y = y + (h - th) / 2 - h * 6 / 100;
+
+	cairo_move_to(cr, cx_x, cy_y);
+	/* Lower contrast than before — softer, less "title-card" feel. */
+	cairo_set_source_rgba(cr, 0.13, 0.13, 0.15, 0.85);
+	pango_cairo_show_layout(cr, layout);
+	g_object_unref(layout);
+
+	/* Subtitle in upright Geist for a clear typographic hierarchy
+	 * (italic serif headline + upright sans subhead = editorial pair).
+	 * Smaller and quieter so the eye flows past it. */
+	int sub_px = px * 2 / 5;
+	if (sub_px < 17) sub_px = 17;
+	PangoFontDescription *sub_fd = pango_font_description_copy(
+		r->font_empty_sub);
+	pango_font_description_set_weight(sub_fd, PANGO_WEIGHT_NORMAL);
+	pango_font_description_set_absolute_size(sub_fd,
+		sub_px * PANGO_SCALE);
+
+	PangoLayout *sub = create_layout(cr, sub_fd, 20);
+	pango_layout_set_text(sub, "What would you like to do?", -1);
+	int sw, sh;
+	pango_layout_get_pixel_size(sub, &sw, &sh);
+	cairo_move_to(cr, (r->width - sw) / 2, cy_y + th + sub_px / 2);
+	cairo_set_source_rgba(cr, 0.45, 0.45, 0.50, 0.78);
+	pango_cairo_show_layout(cr, sub);
+	g_object_unref(sub);
+
+	pango_font_description_free(sub_fd);
+	pango_font_description_free(fd);
+}
+
 /* Draw wallpaper in "cover" mode within [0, y .. y+h] */
 static void draw_wallpaper(struct marshal_renderer *r, int y, int h) {
 	if (!r->wallpaper) return;
@@ -1498,6 +1645,337 @@ static void draw_volume_icon(cairo_t *cr, int x, int cy, int pct, bool muted) {
 	}
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * App icon resolution + B/W conversion
+ *
+ * The bottom-bar app indicators are real freedesktop icons desaturated to
+ * B/W. Pipeline:
+ *
+ *   1. app_id ("org.mozilla.firefox", "google-chrome", "marshal-terminal")
+ *      → icon name. We try the .desktop file's `Icon=` field first, then
+ *      fall back to the app_id itself, with a cheap reverse-DNS strip
+ *      (last "."-component) so app_ids like "org.mozilla.firefox" still
+ *      hit "firefox".
+ *
+ *   2. icon name → file path. Search:
+ *        $XDG_DATA_DIRS/icons/hicolor/{scalable,128x128,96x96,64x64,48x48}/apps/<name>.{svg,png}
+ *        /usr/share/pixmaps/<name>.{png,svg,xpm}
+ *      Larger sizes preferred so downscaling stays clean. SVG only when
+ *      librsvg was found at build time.
+ *
+ *   3. file → cairo_image_surface (ARGB32). PNG: cairo native loader.
+ *      SVG: rsvg_handle_render_document into a fresh ARGB32 surface.
+ *
+ *   4. Desaturate. Per-pixel: luma = 0.299R + 0.587G + 0.114B; rewrite
+ *      RGB to (luma, luma, luma), keep alpha. Cairo uses pre-multiplied
+ *      ARGB32 so we un-premul before the math and re-premul after.
+ *
+ *   5. Cache by icon name on the renderer. FIFO eviction at 32 entries.
+ *
+ * Result: launching Firefox shows the actual Firefox flame in monochrome.
+ * Only when icon resolution genuinely fails does the renderer fall back
+ * to the monogram circle. */
+
+#ifdef MARSHAL_HAS_RSVG
+#include <librsvg/rsvg.h>
+#endif
+
+static void desaturate_argb32(cairo_surface_t *surface) {
+	if (!surface) return;
+	if (cairo_image_surface_get_format(surface) != CAIRO_FORMAT_ARGB32) return;
+
+	cairo_surface_flush(surface);
+	int w = cairo_image_surface_get_width(surface);
+	int h = cairo_image_surface_get_height(surface);
+	int stride = cairo_image_surface_get_stride(surface);
+	unsigned char *data = cairo_image_surface_get_data(surface);
+	if (!data) return;
+
+	for (int y = 0; y < h; y++) {
+		uint32_t *row = (uint32_t *)(data + y * stride);
+		for (int x = 0; x < w; x++) {
+			uint32_t px = row[x];
+			uint8_t a = (px >> 24) & 0xff;
+			if (a == 0) { continue; }
+			uint8_t r_ = (px >> 16) & 0xff;
+			uint8_t g_ = (px >> 8)  & 0xff;
+			uint8_t b_ = (px)       & 0xff;
+			/* Un-premultiply, compute luma, re-premultiply. */
+			if (a < 0xff) {
+				r_ = (uint8_t)((r_ * 255 + a / 2) / a);
+				g_ = (uint8_t)((g_ * 255 + a / 2) / a);
+				b_ = (uint8_t)((b_ * 255 + a / 2) / a);
+			}
+			uint32_t luma = (299u * r_ + 587u * g_ + 114u * b_ + 500u)
+				/ 1000u;
+			if (luma > 255) luma = 255;
+			uint8_t l8 = (uint8_t)luma;
+			uint8_t lr = (uint8_t)((l8 * a + 127) / 255);
+			row[x] = ((uint32_t)a  << 24) |
+				 ((uint32_t)lr << 16) |
+				 ((uint32_t)lr <<  8) |
+				 ((uint32_t)lr);
+		}
+	}
+	cairo_surface_mark_dirty(surface);
+}
+
+static char *read_icon_field_from_desktop(const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) return NULL;
+	char line[1024];
+	bool in_main = false;
+	while (fgets(line, sizeof(line), f)) {
+		size_t n = strlen(line);
+		while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+		if (line[0] == '[') {
+			in_main = (strcmp(line, "[Desktop Entry]") == 0);
+			continue;
+		}
+		if (!in_main) continue;
+		if (strncmp(line, "Icon=", 5) == 0 && line[5]) {
+			char *out = strdup(line + 5);
+			fclose(f);
+			return out;
+		}
+	}
+	fclose(f);
+	return NULL;
+}
+
+/* Walk XDG_DATA_DIRS looking for `<dir>/applications/<app_id>.desktop`.
+ * Returns malloc'd icon name (caller frees), or NULL. */
+static char *resolve_icon_name_via_desktop(const char *app_id) {
+	if (!app_id || !app_id[0]) return NULL;
+
+	const char *xdg = getenv("XDG_DATA_DIRS");
+	if (!xdg || !xdg[0]) xdg = "/usr/local/share:/usr/share";
+
+	const char *home = getenv("HOME");
+	char user_data[512] = {0};
+	if (home) snprintf(user_data, sizeof(user_data),
+		"%s/.local/share", home);
+
+	/* Build candidate list: ~/.local/share first, then XDG_DATA_DIRS. */
+	const char *roots[8];
+	int nroot = 0;
+	if (user_data[0]) roots[nroot++] = user_data;
+
+	char xdg_buf[1024];
+	snprintf(xdg_buf, sizeof(xdg_buf), "%s", xdg);
+	char *save = NULL;
+	for (char *tok = strtok_r(xdg_buf, ":", &save);
+			tok && nroot < 8;
+			tok = strtok_r(NULL, ":", &save)) {
+		roots[nroot++] = tok;
+	}
+
+	char path[1024];
+	for (int i = 0; i < nroot; i++) {
+		snprintf(path, sizeof(path), "%s/applications/%s.desktop",
+			roots[i], app_id);
+		char *icon = read_icon_field_from_desktop(path);
+		if (icon) return icon;
+
+		/* Also try lower-cased app_id — wlroots gives raw class names
+		 * which can be mixed-case (e.g. "Firefox"). */
+		char lower[128];
+		size_t alen = strlen(app_id);
+		if (alen >= sizeof(lower)) continue;
+		for (size_t j = 0; j < alen; j++)
+			lower[j] = (app_id[j] >= 'A' && app_id[j] <= 'Z')
+				? app_id[j] + 32 : app_id[j];
+		lower[alen] = '\0';
+		snprintf(path, sizeof(path), "%s/applications/%s.desktop",
+			roots[i], lower);
+		icon = read_icon_field_from_desktop(path);
+		if (icon) return icon;
+	}
+	return NULL;
+}
+
+/* Find an actual icon file on disk for a given icon name. Returns malloc'd
+ * absolute path (caller frees), or NULL. Tries scalable SVG first (only
+ * if librsvg was linked), then large-then-small PNGs. */
+static char *find_icon_file(const char *icon_name) {
+	if (!icon_name || !icon_name[0]) return NULL;
+
+	/* If the name is already an absolute path (some .desktop files use
+	 * an absolute Icon= line), use it directly. */
+	if (icon_name[0] == '/') {
+		if (access(icon_name, R_OK) == 0) return strdup(icon_name);
+	}
+
+	const char *xdg = getenv("XDG_DATA_DIRS");
+	if (!xdg || !xdg[0]) xdg = "/usr/local/share:/usr/share";
+	const char *home = getenv("HOME");
+
+	const char *icon_roots[8];
+	int nroot = 0;
+	char user_icons[512] = {0};
+	if (home) {
+		snprintf(user_icons, sizeof(user_icons), "%s/.local/share",
+			home);
+		icon_roots[nroot++] = user_icons;
+	}
+	char xdg_buf[1024];
+	snprintf(xdg_buf, sizeof(xdg_buf), "%s", xdg);
+	char *save = NULL;
+	for (char *tok = strtok_r(xdg_buf, ":", &save);
+			tok && nroot < 8;
+			tok = strtok_r(NULL, ":", &save)) {
+		icon_roots[nroot++] = tok;
+	}
+
+	const char *sizes[] = {
+#ifdef MARSHAL_HAS_RSVG
+		"scalable",
+#endif
+		"512x512", "256x256", "192x192", "128x128", "96x96",
+		"64x64", "48x48", "32x32", "24x24", "16x16",
+	};
+	const char *exts_svg[] = { "svg" };
+	const char *exts_png[] = { "png" };
+
+	char path[1024];
+	for (int i = 0; i < nroot; i++) {
+		for (size_t s = 0; s < sizeof(sizes)/sizeof(sizes[0]); s++) {
+			const char **exts = (strcmp(sizes[s], "scalable") == 0)
+				? exts_svg : exts_png;
+			int n_exts = (strcmp(sizes[s], "scalable") == 0) ? 1 : 1;
+			for (int e = 0; e < n_exts; e++) {
+				snprintf(path, sizeof(path),
+					"%s/icons/hicolor/%s/apps/%s.%s",
+					icon_roots[i], sizes[s], icon_name,
+					exts[e]);
+				if (access(path, R_OK) == 0) return strdup(path);
+			}
+		}
+		/* Also try /usr/share/pixmaps/<name>.{png,svg} */
+		const char *pm_exts[] = {
+			"png",
+#ifdef MARSHAL_HAS_RSVG
+			"svg",
+#endif
+			"xpm",
+		};
+		for (size_t e = 0; e < sizeof(pm_exts)/sizeof(pm_exts[0]); e++) {
+			snprintf(path, sizeof(path), "%s/pixmaps/%s.%s",
+				icon_roots[i], icon_name, pm_exts[e]);
+			if (access(path, R_OK) == 0) return strdup(path);
+		}
+	}
+	return NULL;
+}
+
+#define ICON_RENDER_PX 96  /* pre-rasterised cache size; cairo scales when drawn */
+
+static cairo_surface_t *load_icon_surface(const char *path) {
+	if (!path) return NULL;
+	const char *dot = strrchr(path, '.');
+	if (!dot) return NULL;
+
+	if (strcasecmp(dot, ".png") == 0) {
+		cairo_surface_t *s = cairo_image_surface_create_from_png(path);
+		if (!s || cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) {
+			if (s) cairo_surface_destroy(s);
+			return NULL;
+		}
+		return s;
+	}
+#ifdef MARSHAL_HAS_RSVG
+	if (strcasecmp(dot, ".svg") == 0) {
+		GError *err = NULL;
+		RsvgHandle *handle = rsvg_handle_new_from_file(path, &err);
+		if (!handle) {
+			if (err) g_error_free(err);
+			return NULL;
+		}
+		cairo_surface_t *s = cairo_image_surface_create(
+			CAIRO_FORMAT_ARGB32, ICON_RENDER_PX, ICON_RENDER_PX);
+		cairo_t *cr = cairo_create(s);
+		RsvgRectangle vp = { 0, 0, ICON_RENDER_PX, ICON_RENDER_PX };
+		gboolean ok = rsvg_handle_render_document(handle, cr, &vp, &err);
+		cairo_destroy(cr);
+		g_object_unref(handle);
+		if (err) g_error_free(err);
+		if (!ok) {
+			cairo_surface_destroy(s);
+			return NULL;
+		}
+		return s;
+	}
+#endif
+	return NULL;
+}
+
+/* Look up `key` in the renderer's cache. The key is whatever the caller
+ * has — usually app_id like "org.mozilla.firefox" or "Firefox". On miss
+ * we try in order:
+ *   1. find an icon file under hicolor/pixmaps for the literal key,
+ *   2. read `.desktop` for that key, follow Icon= field,
+ *   3. strip reverse-DNS prefix (last "." component) and try again.
+ * First hit wins, gets desaturated and cached.
+ *
+ * Returns NULL if no icon could be found — caller falls back to monogram. */
+static cairo_surface_t *icon_cache_get(struct marshal_renderer *r,
+		const char *key) {
+	if (!key || !key[0]) return NULL;
+	for (int i = 0; i < r->icon_cache_count; i++) {
+		if (strcmp(r->icon_cache[i].name, key) == 0)
+			return r->icon_cache[i].surface;
+	}
+
+	/* 1. literal key as icon name */
+	char *path = find_icon_file(key);
+
+	/* 2. .desktop's Icon= field */
+	if (!path) {
+		char *via_desktop = resolve_icon_name_via_desktop(key);
+		if (via_desktop) {
+			path = find_icon_file(via_desktop);
+			free(via_desktop);
+		}
+	}
+
+	/* 3. last reverse-DNS component */
+	if (!path) {
+		const char *dot = strrchr(key, '.');
+		if (dot && dot[1]) {
+			path = find_icon_file(dot + 1);
+			if (!path) {
+				char *via = resolve_icon_name_via_desktop(dot + 1);
+				if (via) {
+					path = find_icon_file(via);
+					free(via);
+				}
+			}
+		}
+	}
+
+	cairo_surface_t *s = load_icon_surface(path);
+	free(path);
+	if (s) desaturate_argb32(s);
+
+	/* Insert (with FIFO eviction). Even on miss we cache NULL so we
+	 * don't re-stat the filesystem on every frame. */
+	int idx;
+	if (r->icon_cache_count < MARSHAL_ICON_CACHE_MAX) {
+		idx = r->icon_cache_count++;
+	} else {
+		idx = 0;
+		if (r->icon_cache[0].surface)
+			cairo_surface_destroy(r->icon_cache[0].surface);
+		memmove(&r->icon_cache[0], &r->icon_cache[1],
+			(MARSHAL_ICON_CACHE_MAX - 1) * sizeof(r->icon_cache[0]));
+		idx = MARSHAL_ICON_CACHE_MAX - 1;
+	}
+	snprintf(r->icon_cache[idx].name, sizeof(r->icon_cache[idx].name),
+		"%s", key);
+	r->icon_cache[idx].surface = s;
+	return s;
+}
+
 static void draw_taskbar(struct marshal_renderer *r,
 		struct marshal_input *input, struct marshal_feed *feed) {
 	cairo_t *cr = r->cr;
@@ -1536,7 +2014,8 @@ static void draw_taskbar(struct marshal_renderer *r,
 	int lw, lh;
 
 	if (input->len == 0) {
-		pango_layout_set_text(layout, "What should we do?", -1);
+		pango_layout_set_text(layout,
+			"What should we do? Try \"help\"", -1);
 		pango_layout_get_pixel_size(layout, &lw, &lh);
 		cairo_move_to(cr, input_x, bar_y + (INPUT_HEIGHT - lh) / 2);
 		set_color(cr, TEXT_PLACEHOLDER);
@@ -1712,6 +2191,72 @@ static void draw_taskbar(struct marshal_renderer *r,
 	r->history_icon_h = INPUT_HEIGHT;
 
 	rx -= HISTORY_ICON_W;
+
+	/* ── Running-app icons ──
+	 * Walk r->apps[] right-to-left. Each app gets the freedesktop icon
+	 * for its app_id, desaturated to B/W and cached. If resolution fails
+	 * we fall back to a thin-stroke monogram circle.
+	 *
+	 * Focused app is rendered at full opacity; background apps are
+	 * dimmed to ~55% so the active window reads as primary. */
+	int app_size = INPUT_HEIGHT - 22;       /* visual diameter */
+	int app_gap  = 10;
+	for (int i = r->app_count - 1; i >= 0; i--) {
+		int icx = rx - app_size / 2 - SPACE_XS;
+		int icy = bar_cy;
+
+		struct marshal_bar_app *app = &r->apps[i];
+		cairo_surface_t *icon = icon_cache_get(r, app->icon_name);
+
+		if (icon) {
+			int iw = cairo_image_surface_get_width(icon);
+			int ih = cairo_image_surface_get_height(icon);
+			double sc = (double)app_size / (iw > ih ? iw : ih);
+			double draw_x = icx - iw * sc / 2.0;
+			double draw_y = icy - ih * sc / 2.0;
+
+			cairo_save(cr);
+			cairo_translate(cr, draw_x, draw_y);
+			cairo_scale(cr, sc, sc);
+			cairo_set_source_surface(cr, icon, 0, 0);
+			cairo_paint_with_alpha(cr, app->focused ? 0.97 : 0.55);
+			cairo_restore(cr);
+		} else {
+			/* Fallback: monogram in a thin-stroke circle. */
+			double radius = app_size / 2.0;
+			if (app->focused) {
+				cairo_arc(cr, icx, icy, radius, 0, 2 * M_PI);
+				cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 0.95);
+				cairo_fill(cr);
+			} else {
+				cairo_arc(cr, icx, icy, radius - 0.5, 0, 2 * M_PI);
+				cairo_set_source_rgba(cr, 0.20, 0.20, 0.20, 0.85);
+				cairo_set_line_width(cr, 1.2);
+				cairo_stroke(cr);
+			}
+			PangoLayout *gl = create_layout(cr, r->font_input, 0);
+			pango_layout_set_text(gl,
+				app->glyph[0] ? app->glyph : "?", -1);
+			int gw, gh;
+			pango_layout_get_pixel_size(gl, &gw, &gh);
+			cairo_move_to(cr, icx - gw / 2, icy - gh / 2);
+			if (app->focused)
+				cairo_set_source_rgba(cr, 1, 1, 1, 0.97);
+			else
+				cairo_set_source_rgba(cr, 0.20, 0.20, 0.20, 0.95);
+			pango_cairo_show_layout(cr, gl);
+			g_object_unref(gl);
+		}
+
+		/* Store hit rect — compositor uses these to focus on click */
+		app->hit_x = icx - app_size / 2;
+		app->hit_y = bar_y + (INPUT_HEIGHT - app_size) / 2;
+		app->hit_w = app_size;
+		app->hit_h = app_size;
+
+		rx -= app_size + app_gap;
+	}
+
 	r->input_field_right_x = rx;
 }
 
@@ -1753,6 +2298,11 @@ static void draw_dropdown(struct marshal_renderer *r,
 	r->dropdown_y = dy;
 	r->dropdown_w = dw;
 	r->dropdown_h = dh;
+
+	/* Reset section hit rects — populated below as each section renders */
+	r->qs_wifi_x = r->qs_wifi_y = r->qs_wifi_w = r->qs_wifi_h = -1;
+	r->qs_bt_x   = r->qs_bt_y   = r->qs_bt_w   = r->qs_bt_h   = -1;
+	r->qs_vol_x  = r->qs_vol_y  = r->qs_vol_w  = r->qs_vol_h  = -1;
 
 	/* Shadow */
 	cairo_set_source_rgba(cr, 0, 0, 0, 0.08);
@@ -1799,6 +2349,12 @@ static void draw_dropdown(struct marshal_renderer *r,
 			cairo_stroke(cr);
 		}
 		g_object_unref(lbl);
+		/* Whole row is the click target — users aim at the label, not
+		 * the 5px dot. */
+		r->qs_wifi_x = cx;
+		r->qs_wifi_y = cy;
+		r->qs_wifi_w = cw;
+		r->qs_wifi_h = row_h;
 		cy += row_h;
 
 		/* SSID / disconnected */
@@ -1841,6 +2397,10 @@ static void draw_dropdown(struct marshal_renderer *r,
 			cairo_stroke(cr);
 		}
 		g_object_unref(lbl);
+		r->qs_bt_x = cx;
+		r->qs_bt_y = cy;
+		r->qs_bt_w = cw;
+		r->qs_bt_h = row_h;
 		cy += row_h;
 
 		PangoLayout *st = create_layout(cr, r->font_timing, 0);
@@ -1888,6 +2448,13 @@ static void draw_dropdown(struct marshal_renderer *r,
 			set_color(cr, ACCENT_BLUE);
 			cairo_fill(cr);
 		}
+
+		/* Click target is the entire bar row — a 6px-tall bar would be
+		 * impossible to hit. */
+		r->qs_vol_x = cx;
+		r->qs_vol_y = cy;
+		r->qs_vol_w = bar_w;
+		r->qs_vol_h = row_h;
 
 		/* Muted / active label */
 		PangoLayout *vsl = create_layout(cr, r->font_timing, 0);
@@ -2348,12 +2915,20 @@ unsigned char *renderer_draw_frame(struct marshal_renderer *r,
 	bool show_feed = r->status && r->status->history_open;
 	int wall_h = r->height - INPUT_HEIGHT;
 
-	/* 1. Background: wallpaper or plain white */
+	/* 1. Background: wallpaper, or — when no wallpaper image is set —
+	 * a Claude/ChatGPT-style centred "Hi, <Name>" greeting. The greeting
+	 * lives on the panel cairo surface, so app windows (which are
+	 * scene-graph siblings above the panel buffer) cleanly cover it the
+	 * moment something is launched. No special hide-when-app-running
+	 * logic needed. */
 	if (!show_feed && r->wallpaper) {
 		draw_wallpaper(r, 0, wall_h);
 	} else {
 		set_color(cr, BG_BASE);
 		cairo_paint(cr);
+		if (!show_feed) {
+			draw_greeting(r, 0, wall_h);
+		}
 	}
 
 	int top_offset = 0;

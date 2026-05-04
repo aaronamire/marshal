@@ -6,7 +6,7 @@ PartOf=marshal-session.target
 [Service]
 Type=dbus
 BusName=org.freedesktop.Notifications
-ExecStart=/usr/local/bin/marshal-notifyd
+ExecStart=__MARSHAL_ROOT__/notifyd/builddir/marshal-notifyd
 Restart=on-failure
 RestartSec=3
 Environment=HOME=%h

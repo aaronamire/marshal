@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Marshal
 Comment=AI-native operating system
-Exec=/home/xan/dev/marshal/scripts/start-session.sh
+Exec=/usr/local/bin/marshal-session
 Type=Application
 DesktopNames=marshal
 Keywords=wayland;compositor;ai;

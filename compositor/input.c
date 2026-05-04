@@ -147,6 +147,14 @@ bool input_handle_key(struct marshal_input *input, uint32_t keycode,
 			else if (strcmp(input->buf, "history") == 0 ||
 					strcmp(input->buf, "hist") == 0)
 				feed_load_history(input->feed);
+			else if (strcmp(input->buf, "help") == 0 ||
+					strcmp(input->buf, "?") == 0 ||
+					strcmp(input->buf, "commands") == 0)
+				/* Built-in help card. Synthesized locally —
+				 * no API call, no LLM round-trip — so it
+				 * works even if agentd / inference are
+				 * starting up or down. */
+				feed_show_help(input->feed);
 			else if (strcmp(input->buf, "exit") == 0 ||
 					strcmp(input->buf, "quit") == 0 ||
 					strcmp(input->buf, ":q") == 0)

@@ -5,12 +5,12 @@ Requires=marshal-agentd.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dev/marshal
-ExecStart=%h/dev/marshal/.os/bin/uvicorn api.server:app --host 127.0.0.1 --port 8765 --workers 1
+WorkingDirectory=__MARSHAL_ROOT__
+ExecStart=__MARSHAL_ROOT__/.os/bin/uvicorn api.server:app --host 127.0.0.1 --port 8765 --workers 1
 Restart=on-failure
 RestartSec=3
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/dev/marshal
+Environment=PYTHONPATH=__MARSHAL_ROOT__
 
 # Resource limits
 MemoryMax=512M

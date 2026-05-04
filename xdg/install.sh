@@ -28,9 +28,18 @@ if [ -f "$PORTAL_DIR/marshal-portals.conf" ]; then
     echo "installed marshal-portals.conf"
 fi
 
-# Install session desktop entry
+# Install session desktop entry. The .desktop file points at
+# /usr/local/bin/marshal-session so it's portable across users; we generate
+# that wrapper now so it invokes the start-session.sh from this checkout.
 SESSION_DIR="$SCRIPT_DIR/../session"
+MARSHAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -f "$SESSION_DIR/marshal.desktop" ]; then
+    sudo tee /usr/local/bin/marshal-session >/dev/null <<EOF
+#!/bin/sh
+exec "$MARSHAL_ROOT/scripts/start-session.sh" "\$@"
+EOF
+    sudo chmod 755 /usr/local/bin/marshal-session
+    echo "installed marshal-session wrapper to /usr/local/bin/ (root: $MARSHAL_ROOT)"
     sudo install -m 644 "$SESSION_DIR/marshal.desktop" /usr/share/wayland-sessions/
     echo "installed marshal.desktop to /usr/share/wayland-sessions/"
 fi

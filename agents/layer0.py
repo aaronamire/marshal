@@ -204,6 +204,25 @@ _rule(
 )
 
 
+# QUERY (bare "files" / "file manager") — opens a non-recursive listing of ~
+# matching what the README documents. Without this rule the bare token "files"
+# falls to L2, which generated `recursive=true` and a 80s+ enumeration of the
+# whole home tree on first launch. Plain home listing is what the user wants.
+_rule(
+    r'^\s*(?:files|file\s*manager|file_manager|fm)\s*$',
+    "QUERY", False,
+    lambda m: {
+        "path": "~",
+        "pattern": "*",
+        "recursive": False,
+        "search_type": "glob",
+        "sort_by": "mtime",
+        "sort_order": "desc",
+        "limit": 50,
+    },
+)
+
+
 # QUERY (well-known folders by name, no explicit path needed)
 #
 # Ships intents like "summarize my recent downloads", "show my recent
@@ -581,6 +600,57 @@ _not_impl(r'\bmark\b.+\be-?mails?\b')
 
 
 # ---------------------------------------------------------------------------
+# Model-tier switch rules (agent="system", category="system_task")
+# "switch fast" / "switch standard" / "switch pro" / "switch max" — write
+# ~/.marshal/tier.json. The catalog lives in hardware.TIERS; mirror its names
+# here. "fast" / "best" are friendly aliases the user is likely to type.
+# ---------------------------------------------------------------------------
+
+_TIER_ALIASES = {
+    "fast": "tiny",          # smallest, fastest
+    "best": "max",           # largest, slowest
+    "tiny": "tiny",
+    "standard": "standard",
+    "default": "standard",
+    "pro": "pro",
+    "max": "max",
+}
+
+_SWITCH_TIER_RE = re.compile(
+    r'^\s*(?:switch|use)\s+(?:to\s+|the\s+)?'
+    r'(?:model\s+|tier\s+)?'
+    r'(' + "|".join(_TIER_ALIASES.keys()) + r')'
+    r'(?:\s+model|\s+tier)?\s*$',
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Inference server power toggle: `inference on/off/toggle/status`,
+# `start/stop inference`, `turn (the) inference (server) on/off`.
+# Routes to SystemAgent.WRITE with params.inference_action.
+# ---------------------------------------------------------------------------
+_INFERENCE_TOGGLE_RE = re.compile(
+    r'^\s*(?:'
+    r'inference\s+(on|off|toggle|status|start|stop)'
+    r'|(start|stop)\s+inference(?:\s+server)?'
+    r'|turn\s+(?:the\s+)?inference(?:\s+server)?\s+(on|off)'
+    r')\s*$',
+    re.IGNORECASE,
+)
+
+
+def _parse_inference_action(m: "re.Match[str]") -> str:
+    """Reduce the matched alt-group to one of: on / off / toggle / status."""
+    raw = (m.group(1) or m.group(2) or m.group(3) or "").lower()
+    if raw == "start":
+        return "on"
+    if raw == "stop":
+        return "off"
+    return raw
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -594,6 +664,43 @@ def match(user_text: str) -> Layer0Result:
     The caller should raise MarshalError(NOT_IMPLEMENTED) immediately in that case.
     """
     t0 = time.monotonic()
+
+    # Inference power toggle — runs first since some phrasings ("stop inference")
+    # could be misread by app-terminate rules ("stop X").
+    m_inf = _INFERENCE_TOGGLE_RE.match(user_text)
+    if m_inf:
+        action = _parse_inference_action(m_inf)
+        latency_ms = (time.monotonic() - t0) * 1000
+        return Layer0Result(
+            matched=True,
+            action_type="QUERY" if action == "status" else "WRITE",
+            params={"inference_action": action, "destructive": False},
+            confidence=0.99,
+            latency_ms=latency_ms,
+            is_implemented=True,
+            agent="system",
+            category="system_task",
+            preview_required=False,
+        )
+
+    # Tier switch — runs before everything else because "switch X" is short
+    # enough that broader rules might claim it, and it has zero ambiguity.
+    m_sw = _SWITCH_TIER_RE.match(user_text)
+    if m_sw:
+        tier = _TIER_ALIASES[m_sw.group(1).lower()]
+        latency_ms = (time.monotonic() - t0) * 1000
+        return Layer0Result(
+            matched=True,
+            action_type="WRITE",
+            params={"switch_tier": tier, "destructive": False},
+            confidence=0.99,
+            latency_ms=latency_ms,
+            is_implemented=True,
+            agent="system",
+            category="system_task",
+            preview_required=False,
+        )
+
     for pattern, action_type, destructive, extractor in _RULES:
         m = pattern.match(user_text)
         if m:

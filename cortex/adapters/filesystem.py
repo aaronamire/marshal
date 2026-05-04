@@ -30,6 +30,15 @@ SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".cache", ".local",
     ".mozilla", ".thunderbird", ".npm", ".cargo", ".rustup",
     "venv", ".venv", ".os", ".lancedb",
+    # Heavy third-party trees: package archives, build outputs. Indexing
+    # these blows out the scan budget (26K conda package files in one user's
+    # tree, vs. ~hundreds of files in their actual repos), so the walker
+    # never reaches the user's work — the briefing then sees an "empty"
+    # window and surfaces only top-level dotfiles like ~/.claude.json.
+    "miniconda3", "anaconda3", "Miniconda3", "Anaconda3", "conda-meta",
+    "site-packages", "dist-packages",
+    "target", "build", "dist", ".tox", ".pytest_cache",
+    ".next", ".nuxt", ".turbo", ".gradle", ".m2",
 }
 
 # Dotdirs we DO index
@@ -56,12 +65,15 @@ class FilesystemAdapter(BaseAdapter):
         for root, dirs, files in os.walk(self._root):
             root_path = Path(root)
 
-            # Prune skip dirs
-            dirs[:] = [
+            # Prune skip dirs. Sort for deterministic walk order — without this
+            # os.walk follows inode order, so partial scans (the indexer is
+            # interrupted on every agentd restart) consistently miss whatever
+            # the FS happens to enumerate last.
+            dirs[:] = sorted(
                 d for d in dirs
                 if d not in SKIP_DIRS
                 and (not d.startswith(".") or d in KEEP_DOTDIRS)
-            ]
+            )
 
             for fname in files:
                 fpath = root_path / fname

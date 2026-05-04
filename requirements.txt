@@ -9,6 +9,9 @@ psutil>=5.9.0
 beautifulsoup4>=4.12.0
 ddgs>=9.0
 
+# Filesystem watcher (cortex/watcher.py)
+watchdog>=4.0
+
 # HTTP API
 fastapi>=0.109.0
 uvicorn>=0.27.0

@@ -5,7 +5,98 @@ All notable changes to Marshal are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] — 2026-04-29 — Demo release
+
+### Added
+- **Briefing as a first-class agent** — `agents/briefing_agent.py` wraps
+  `cortex/briefing.py` behind the standard `BaseAgent` interface, registered
+  under the `briefing` agent + `briefing` category. Layer 0 already
+  recognized phrases like `briefing`, `good morning`, `what changed`; they
+  now actually execute end-to-end instead of returning NOT_IMPLEMENTED.
+  Schema (`agents/schema/goal_spec.json`) and grammar
+  (`inference/grammar/goal_spec.gbnf`) updated with the new `BRIEFING`
+  action type and `briefing` agent/category enums.
+- **In-OS process manager and file manager** — typing `processes`,
+  `process manager`, `task manager`, `ps`, `files`, or `file manager` in
+  the compositor's intent bar opens a tabular listing rendered with the
+  existing card pipeline. Process listing shows PID/name/CPU%/MEM/user
+  (sorted by CPU desc, top 25) and walks the user toward `kill <name>`
+  for termination. File listing shows name/size/mtime in human units.
+  Both bypass the LLM via Layer 0 fast-paths.
+- **Compositor exit shortcut** — typing `exit`, `quit`, or `:q` in the
+  intent bar triggers a clean `wl_display_terminate()` via the existing
+  wakeup-pipe channel. Joins Ctrl+Alt+Backspace as a non-emergency exit.
+- **Compositor history shortcut** — typing `history` or `hist` reloads
+  `/v1/history?limit=50` into the feed instead of forwarding to the LLM
+  (which used to misclassify the bare word as a `system_task`).
+- **Well-known folder fast-paths** — Layer 0 catches phrasings like
+  "summarize my recent downloads" / "list documents" / "show my pictures"
+  and routes them to `FileAgent.QUERY` against the right `~/<Folder>`,
+  sorted by mtime desc. Closes the LLM-misroute that was sending these
+  to `WebAgent.QUERY` and producing web search results for filesystem
+  queries.
+
+### Changed
+- **KV-cache warmup** is now awaited (with a 300s ceiling) before agentd
+  accepts user connections, eliminating the cold-start race that caused
+  the first user intent to time out. The warmup primes only the bare
+  ChatML system header — the longest prefix every L2 request shares —
+  so cache_prompt actually pays off; the previous version included a
+  per-query RAG block that broke the prefix match. Also bypasses
+  `IntentParser` construction so HuggingFace metadata downloads don't
+  steal CPU during the prefill.
+- **`scripts/start-session.sh`** detects whether marshal-*.service units
+  are loaded; if not, falls back to direct background launches with logs
+  in `~/.marshal/logs/`. New `reset_standalone_leftovers` step kills
+  stale daemons from a prior crashed run before binding new sockets.
+- **Inference timeouts** — `TIMEOUT_READ_SECONDS` 90s → 180s for
+  steady-state requests; warmup uses its own dedicated 240s timeout.
+- **Result rendering** in `api/server.py:_format_result_text`:
+  - Web results now list titles/URLs/snippets (was: count-only `5 web result(s)`).
+  - Web fetches show title + URL + 400-char preview.
+  - Briefings surface item filenames when the change set is small (≤5).
+  - Process listing is now tabular with columns and a `… N more` footer.
+  - File listing is now tabular with NAME/SIZE/MODIFIED columns.
+- **Compositor input routing** — `search ...` no longer auto-routes to
+  cortex search; it goes through the full intent pipeline so the LLM
+  can choose between web and cortex. `find ...` remains the explicit
+  cortex prefix.
+- **Default standard-tier model** is now `goalspec_qwen25_3b_q4km.gguf`
+  (the fine-tuned GoalSpec model) rather than the base Qwen2.5-3B.
+- **Briefing groups of size 1** are now named directories instead of
+  being collapsed into "other" — fixes the opaque single-file briefing.
+- **Compositor logo** in the taskbar replaced with a simple stroked
+  circle (`draw_logo_glyph`); the leaf glyph is retained for the
+  empty-state placeholder.
+
+### Fixed
+- **Internal-error on large file listings** — `agentd._run_sandboxed`
+  opened its Unix connection to the runner pool with the default 64 KB
+  StreamReader buffer; a 500-file listing produced ~90 KB and
+  `LimitOverrunError` masqueraded as `INTERNAL_ERROR`. Lifted to 16 MB,
+  matching the API→agentd direction.
+- **`launch terminal` silently no-op** — `system_agent` was launching
+  apps with `stdout=stderr=PIPE` then closing the parent's ends, which
+  delivered SIGPIPE to any child that wrote startup diagnostics
+  (including marshal-terminal). Replaced with `stdin=DEVNULL` plus
+  `stdout/stderr` to a per-app log under `~/.marshal/logs/launches/`.
+  In-tree binaries (`marshal-terminal`, `marshal-compositor`) are now
+  resolved from the project's builddir when not in PATH.
+- **Stale meson builddir after `leaves-os` → `marshal` rename** —
+  documented in bootstrap notes; resolution is `rm -rf builddir &&
+  meson setup builddir`. The terminal binary's `meson.build` already
+  produced `marshal-terminal`; only the cached path needed wiping.
+- **`ddgs not installed`** — replaced legacy `duckduckgo-search>=4.0`
+  with the renamed-upstream `ddgs>=9.0` in `pyproject.toml` and
+  `requirements.txt`. `agents/web_agent.py` was already importing from
+  `ddgs`.
+- **Watchdog dependency** — declared `watchdog>=4.0` (was used by
+  `cortex/watcher.py` but never listed; agentd boot logged the failure
+  and persistent-FS-trigger intents silently never fired).
+- **Wlroots packaging on Arch** — `bootstrap.sh --with-compositor` now
+  installs `wlroots0.18` (matches the version pinned in
+  `compositor/meson.build`); the unversioned `wlroots` package no
+  longer exists in Arch repos.
 
 ### Security
 - Security audit pass on enforcer + sandbox; full report in

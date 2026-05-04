@@ -7,11 +7,11 @@ ConditionEnvironment=XDG_SESSION_TYPE=wayland
 
 [Service]
 Type=simple
-ExecStart=%h/dev/marshal/compositor/builddir/marshal-compositor
+ExecStart=__MARSHAL_ROOT__/compositor/builddir/marshal-compositor
 Restart=on-failure
 RestartSec=3
 Environment=HOME=%h
-Environment=XDG_CURRENT_DESKTOP=marshal
+Environment=XDG_CURRENT_DESKTOP=marshal:wlroots
 Environment=XDG_SESSION_TYPE=wayland
 Environment=MARSHAL_API_URL=http://127.0.0.1:8765
 

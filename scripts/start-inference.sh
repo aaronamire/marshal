@@ -1,8 +1,12 @@
 #!/bin/bash
-# Start the llama.cpp inference server for Marshal
-# CPU-only — no GPU flags. i5-7200U / Intel HD 620.
+# Start the llama.cpp inference server for Marshal.
+# CPU-only — no GPU flags by default.
+#
+# llama.cpp install location (matches bootstrap.sh): override with
+#   LLAMA_CPP_DIR=/path/to/llama.cpp ./scripts/start-inference.sh
 
-LLAMA_SERVER="$HOME/dev/llama.cpp/build/bin/llama-server"
+LLAMA_DIR="${LLAMA_CPP_DIR:-$HOME/dev/llama.cpp}"
+LLAMA_SERVER="$LLAMA_DIR/build/bin/llama-server"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Tier-aware model resolution. hardware.py reads ~/.marshal/tier.json and
@@ -21,46 +25,60 @@ if [ -x "$(command -v python3)" ]; then
     fi
 fi
 
-# Legacy fallbacks — kept so the script still works without a tier.json.
-# Phase 2: Fine-tuned GoalSpec model Q4_K_M (ChatML format, ~1.8GB)
-# Phase 1: Qwen2.5-3B-Instruct Q4_K_M (ChatML format, ~1.88GB) — fallback
-# Phase 0: Llama-3.2-1B-Instruct Q4_K_M (Llama3 format, 771MB) — last resort
+# Fallbacks — kept so the script still works without a tier.json.
+#   Default: fine-tuned GoalSpec model Q4_K_M (ChatML, ~1.8GB)
+#   Fallback: Qwen2.5-3B-Instruct Q4_K_M (ChatML, ~1.88GB)
 if [ -z "$MODEL" ]; then
     MODEL="$REPO_ROOT/models/goalspec_qwen25_3b_q4km.gguf"
 fi
-MODEL_FALLBACK_P1="$REPO_ROOT/models/qwen2.5-3b-instruct-q4_k_m.gguf"
-MODEL_FALLBACK_P0="$HOME/marshal-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+MODEL_FALLBACK="$REPO_ROOT/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 PORT=8080
 HOST="127.0.0.1"
-THREADS=2  # Physical cores only — DO NOT use 4 (logical) on Kaby Lake HT
+
+# Thread count for llama.cpp.
+#
+# llama.cpp runs best at the number of *physical* cores. On SMT/HT systems,
+# scheduling threads onto logical siblings causes pipeline contention and
+# regressed throughput. /proc/cpuinfo gives a reliable physical-core count
+# across all x86 vendors; we fall back to nproc/2 (typical 2-way SMT) and
+# finally a hardcoded 2 if neither is available.
+#
+# Override with MARSHAL_LLAMA_THREADS=N to pin a specific value (useful for
+# benchmarking or when running alongside other CPU-heavy workloads).
+if [ -n "${MARSHAL_LLAMA_THREADS:-}" ]; then
+    THREADS="$MARSHAL_LLAMA_THREADS"
+elif command -v lscpu >/dev/null 2>&1; then
+    PHYS_CORES=$(lscpu -p=core 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    THREADS="${PHYS_CORES:-2}"
+elif [ -r /proc/cpuinfo ]; then
+    PHYS_CORES=$(awk -F: '/^core id/ {print $2}' /proc/cpuinfo | sort -u | wc -l)
+    THREADS="${PHYS_CORES:-2}"
+else
+    THREADS=$(($(nproc 2>/dev/null || echo 4) / 2))
+    [ "$THREADS" -lt 1 ] && THREADS=2
+fi
+echo "[inference] threads=$THREADS"
 
 if [ ! -f "$LLAMA_SERVER" ]; then
     echo "ERROR: llama-server not found at $LLAMA_SERVER"
-    echo "Build llama.cpp first:"
-    echo "  cd ~/dev/llama.cpp && cmake -B build -DLLAMA_CURL=OFF -DLLAMA_NATIVE=ON && cmake --build build -j\$(nproc)"
+    echo "Run ./bootstrap.sh, or build llama.cpp manually:"
+    echo "  git clone https://github.com/ggerganov/llama.cpp.git \"$LLAMA_DIR\""
+    echo "  cd \"$LLAMA_DIR\" && cmake -B build -DLLAMA_CURL=OFF -DLLAMA_NATIVE=ON && cmake --build build -j\$(nproc)"
+    echo "  (set LLAMA_CPP_DIR to install elsewhere)"
     exit 1
 fi
 
 if [ ! -f "$MODEL" ]; then
-    if [ -f "$MODEL_FALLBACK_P1" ]; then
+    if [ -f "$MODEL_FALLBACK" ]; then
         echo "WARNING: Fine-tuned model not found at $MODEL"
-        echo "         Falling back to Phase 1 base model: $MODEL_FALLBACK_P1"
-        MODEL="$MODEL_FALLBACK_P1"
-    elif [ -f "$MODEL_FALLBACK_P0" ]; then
-        echo "WARNING: Qwen2.5-3B not found. Falling back to Phase 0 model."
-        echo "         Set MODEL_FAMILY=llama3 in config.py for correct prompt format."
-        MODEL="$MODEL_FALLBACK_P0"
+        echo "         Falling back to base model: $MODEL_FALLBACK"
+        MODEL="$MODEL_FALLBACK"
     else
-        echo "ERROR: No model found."
-        echo "  Fine-tuned (Phase 2): $MODEL"
-        echo "  Qwen2.5-3B (Phase 1): $MODEL_FALLBACK_P1"
-        echo "  Llama-3.2-1B (Phase 0): $MODEL_FALLBACK_P0"
-        echo ""
-        echo "Download fine-tuned model from Google Drive or run Colab notebook."
-        echo "Or download Qwen2.5-3B base:"
-        echo "  source .os/bin/activate && python3 -c \""
-        echo "  from huggingface_hub import hf_hub_download"
-        echo "  hf_hub_download(repo_id='Qwen/Qwen2.5-3B-Instruct-GGUF',"
+        echo "ERROR: No model found at $MODEL or $MODEL_FALLBACK."
+        echo "Run ./scripts/download-model.sh, or fetch manually:"
+        echo "  source .os/bin/activate"
+        echo "  python3 -c \"from huggingface_hub import hf_hub_download; \\"
+        echo "    hf_hub_download(repo_id='Qwen/Qwen2.5-3B-Instruct-GGUF', \\"
         echo "    filename='qwen2.5-3b-instruct-q4_k_m.gguf', local_dir='models/')\""
         exit 1
     fi

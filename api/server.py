@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -84,6 +84,18 @@ async def lifespan(app: FastAPI):
     global _inference_check_task
     configure_logging()
     await _ensure_agentd()
+    # Eagerly construct IntentParser off the event loop and AWAIT it.
+    # The parser pulls in sklearn + sentence-transformers + the RAG store,
+    # which can take 30-60s on a fresh machine while metadata is fetched.
+    # If we returned without finishing this, /v1/health would report ready
+    # while the first /v1/intent call still blocked for the full load time
+    # — that was the "first-intents-time-out" symptom users hit on launch.
+    # Doing it here keeps the cost in startup where it belongs and lets the
+    # health check serve as a real readiness probe.
+    log.info("warming intent parser singleton...")
+    t_warm = time.monotonic()
+    await asyncio.get_event_loop().run_in_executor(None, _get_parser)
+    log.info("intent parser ready in %.1fs", time.monotonic() - t_warm)
     _inference_check_task = asyncio.create_task(_inference_health_loop())
     yield
     _inference_check_task.cancel()
@@ -181,15 +193,22 @@ async def _enforce_host_header(request, call_next):
 
 # Singletons — created lazily on first request
 _parser: Optional[IntentParser] = None
+_parser_lock = threading.Lock()
 _db = None
 _indexer: Optional[CortexIndexer] = None
 
 
 def _get_parser() -> IntentParser:
     global _parser
-    if _parser is None:
-        _parser = IntentParser()
-    return _parser
+    # Double-checked: a fast-path read of the singleton avoids lock contention
+    # once initialized; the lock serializes concurrent first-time builds so
+    # the eager warm-up task and an early request don't both construct.
+    if _parser is not None:
+        return _parser
+    with _parser_lock:
+        if _parser is None:
+            _parser = IntentParser()
+        return _parser
 
 
 def _get_db():
@@ -221,10 +240,10 @@ def _store_plan(intent_id: str, goal_spec: dict) -> None:
     with _plan_store_lock:
         _plan_store[intent_id] = {
             "goal_spec": goal_spec,
-            "expires_at": datetime.utcnow() + timedelta(minutes=_PLAN_TTL_MINUTES),
+            "expires_at": datetime.now(UTC) + timedelta(minutes=_PLAN_TTL_MINUTES),
         }
         # Evict expired plans while we have the lock
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         expired = [k for k, v in _plan_store.items() if v["expires_at"] < now]
         for k in expired:
             del _plan_store[k]
@@ -235,7 +254,7 @@ def _retrieve_plan(intent_id: str) -> dict | None:
         entry = _plan_store.get(intent_id)
         if entry is None:
             return None
-        if entry["expires_at"] < datetime.utcnow():
+        if entry["expires_at"] < datetime.now(UTC):
             del _plan_store[intent_id]
             return None
         del _plan_store[intent_id]  # single-use
@@ -470,8 +489,11 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
                 # Showing 25 rows is enough to identify "what's eating my
                 # battery / RAM" without overwhelming the card. To kill
                 # any of these, the user types e.g. "kill marshal-inference".
-                procs = r.get("processes", [])
-                total = r.get("count", len(procs))
+                procs = r.get("processes", []) or []
+                # `total` = process universe; `count` = rows returned.
+                # Older agents only set `count`, so fall back gracefully.
+                total = r.get("total", r.get("count", len(procs)))
+                shown = len(procs)
                 header = (
                     f"{'PID':>7}  {'NAME':<24}  {'CPU%':>6}  {'MEM (MB)':>9}  USER"
                 )
@@ -482,7 +504,7 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
                     header,
                     divider,
                 ]
-                for p in procs[:25]:
+                for p in procs:
                     name = (p.get("name") or "?")[:24]
                     pid = p.get("pid", "?")
                     cpu = p.get("cpu_percent", 0)
@@ -491,8 +513,8 @@ def _format_result_text(goal_spec: dict, results: dict) -> str:
                     lines.append(
                         f"{pid:>7}  {name:<24}  {cpu:>6.1f}  {mem:>9.1f}  {user}"
                     )
-                if total > 25:
-                    lines.append(f"… {total - 25} more (type 'kill <name>' to stop one)")
+                if total > shown:
+                    lines.append(f"… {total - shown} more (type 'kill <name>' to stop one)")
                 parts.append("\n".join(lines))
             else:
                 # Unknown system result — show as key-value pairs
@@ -1260,15 +1282,22 @@ async def resume_persistent_intent(intent_id: str):
 
 
 def _read_model_from_script() -> str:
-    """Extract the primary MODEL variable value from start-inference.sh."""
+    """Extract the GGUF basename from start-inference.sh.
+
+    The script has multiple `MODEL=...` lines (placeholder reset, dynamic
+    `$MODEL_CANDIDATE` indirection, literal `$REPO_ROOT/models/X.gguf`).
+    We just want the literal filename, so look for the first assignment
+    whose value contains `.gguf`.
+    """
     try:
         for line in _START_INFERENCE_SCRIPT.read_text().splitlines():
             line = line.strip()
-            # Match: MODEL="..." or MODEL=... but NOT MODEL_FALLBACK_...
-            if line.startswith("MODEL=") and not line.startswith("MODEL_FALLBACK"):
-                val = line[len("MODEL="):].strip().strip('"\'')
-                # val may contain $(...) or variable references — just take the filename
-                return pathlib.Path(val).name
+            if not line.startswith("MODEL=") or line.startswith("MODEL_FALLBACK"):
+                continue
+            val = line[len("MODEL="):].strip().strip('"\'')
+            if ".gguf" not in val:
+                continue
+            return pathlib.Path(val).name
     except Exception:
         pass
     return "unknown"

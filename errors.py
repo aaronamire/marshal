@@ -67,6 +67,9 @@ class MarshalErrorCode(enum.Enum):
     # Process management
     PROCESS_NOT_FOUND = "PROCESS_NOT_FOUND"
 
+    # User toggled the inference server off via `inference off`
+    INFERENCE_DISABLED = "INFERENCE_DISABLED"
+
     # Generic
     INTERNAL_ERROR = "INTERNAL_ERROR"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
@@ -113,6 +116,10 @@ USER_MESSAGES: dict[MarshalErrorCode, str] = {
     ),
     MarshalErrorCode.MAX_RETRIES_EXCEEDED: "Maximum retry attempts exceeded.",
     MarshalErrorCode.AGENT_NOT_AVAILABLE: "That agent type is not available in this phase.",
+    MarshalErrorCode.INFERENCE_DISABLED: (
+        "The inference server is turned off. Want to do it? "
+        "Type 'inference on' to start it."
+    ),
     MarshalErrorCode.DEPENDENCY_FAILED: "A required action dependency failed. Skipping.",
     MarshalErrorCode.DB_ERROR: "A database error occurred. Check logs.",
     MarshalErrorCode.USER_CANCELLED: "Operation cancelled.",

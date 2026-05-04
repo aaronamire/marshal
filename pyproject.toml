@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "marshal"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local AI agents that can't escape their plan. Runtime contract enforcer + Landlock sandbox + replayable audit log."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -56,6 +56,11 @@ dependencies = [
     # ddgs is the renamed (>=6) successor of duckduckgo-search. web_agent.py
     # imports `from ddgs import DDGS`, which only exists in this package.
     "ddgs>=9.0",
+
+    # Filesystem watcher (cortex/watcher.py). Without it agentd boots but
+    # logs "filesystem watcher failed to start" and persistent intents that
+    # depend on FS triggers never fire.
+    "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -86,8 +91,7 @@ Changelog = "https://github.com/amirewontmiss/marshal/blob/main/CHANGELOG.md"
 
 [project.scripts]
 marshal = "main:main"
-# agentd.py still has no main() — invoke as `python -m agentd` or
-# `python /path/to/agentd.py`. Will be added in a follow-up.
+marshal-agentd = "agentd:main"
 
 [tool.setuptools.packages.find]
 include = ["agents*", "agents.prompts*", "agents.schema*", "api*", "cortex*", "db*", "inference*", "rag*"]
